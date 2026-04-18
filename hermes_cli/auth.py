@@ -794,7 +794,6 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     用于限制外部凭证（如 Claude Code 的 ~/.claude/.credentials.json）的
     自动发现，确保在用户未明确选择时不会使用它们。
     """
-    """
     normalized = (provider_id or "").strip().lower()
 
     # 1. 检查 auth.json 中的 active_provider

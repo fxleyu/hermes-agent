@@ -607,8 +607,14 @@ async def vision_analyze_tool(
         
         debug_call_data["success"] = True
         debug_call_data["analysis_length"] = analysis_length
-        
+
         # 记录调试信息
+        _debug.log_call("vision_analyze_tool", debug_call_data)
+        _debug.save()
+
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    except Exception as e:
         error_msg = f"Error analyzing image: {str(e)}"
         logger.error("%s", error_msg, exc_info=True)
         
@@ -701,6 +707,7 @@ if __name__ == "__main__":
     print("🛠️ Vision tools ready for use!")
     
     # 显示调试模式状态
+    if _debug.active:
         print(f"🐛 Debug mode ENABLED - Session ID: {_debug.session_id}")
         print(f"   Debug logs will be saved to: ./logs/vision_tools_debug_{_debug.session_id}.json")
     else:

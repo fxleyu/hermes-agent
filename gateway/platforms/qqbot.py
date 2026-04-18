@@ -1227,7 +1227,6 @@ class QQAdapter(BasePlatformAdapter):
         先按原样尝试转换，如果扩展名不同则尝试重命名为 .silk 再转换。
         pilk 可以处理各种头部（或无头部）的 SILK 文件。
         """
-        """
         try:
             import pilk
         except ImportError:

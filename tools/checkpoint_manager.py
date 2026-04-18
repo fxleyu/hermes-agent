@@ -372,7 +372,7 @@ class CheckpointManager:
                     "deletions": 0,
                 }
                 # 获取此提交的差异统计
-                    stat_ok, stat_out, _ = _run_git(
+                stat_ok, stat_out, _ = _run_git(
                     ["diff", "--shortstat", f"{parts[0]}~1", parts[0]],
                     shadow, abs_dir,
                     allowed_returncodes={128, 129},  # 第一个提交没有父提交
