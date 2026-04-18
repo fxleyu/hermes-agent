@@ -2581,6 +2581,8 @@ def extract_image_from_response(response) -> tuple:
     格式 B: message.content 是内容块列表
             [{"type": "text", "text": "..."},
              {"type": "image_url", "image_url": {"url": "data:..."}}]
+    格式 C: message.images 列表（LiteLLM 代理 Gemini 的实际格式）
+            [{"type": "image_url", "image_url": {"url": "data:..."}, "index": 0}]
 
     返回:
         (image_bytes, mime_type, text_content)
@@ -2598,6 +2600,25 @@ def extract_image_from_response(response) -> tuple:
         if m:
             return _b64.b64decode(m.group(2)), m.group(1)
         return None, None
+
+    # 格式 C: message.images 列表（LiteLLM + Gemini 的实际返回格式）
+    images = getattr(msg, "images", None)
+    if images and isinstance(images, list):
+        for img in images:
+            if isinstance(img, dict):
+                url = (img.get("image_url") or {}).get("url", "")
+                if not url and isinstance(img.get("image_url"), str):
+                    url = img["image_url"]
+                if url:
+                    img_bytes, mime = _decode_data_uri(url)
+                    if img_bytes:
+                        text = (content or "") if isinstance(content, str) else ""
+                        return img_bytes, mime, text
+            elif isinstance(img, str) and img.startswith("data:image/"):
+                img_bytes, mime = _decode_data_uri(img)
+                if img_bytes:
+                    text = (content or "") if isinstance(content, str) else ""
+                    return img_bytes, mime, text
 
     # 格式 B: content 是列表（多模态内容块）
     if isinstance(content, list):
