@@ -60,6 +60,7 @@ CONFIGURABLE_TOOLSETS = [
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
     ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
+    ("image_transform", "🖌️  Image Transform / Editing", "image_transform (img2img)"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -82,7 +83,7 @@ CONFIGURABLE_TOOLSETS = [
 # Toolsets that are OFF by default for new installs.
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "video"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "video", "image_transform"}
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
@@ -352,6 +353,19 @@ TOOL_CATEGORIES = {
                     {"key": "FAL_KEY", "prompt": "FAL API key", "url": "https://fal.ai/dashboard/keys"},
                 ],
                 "imagegen_backend": "fal",
+            },
+        ],
+    },
+    "image_transform": {
+        "name": "Image Transform",
+        "icon": "🖌️",
+        "providers": [
+            {
+                "name": "LiteLLM Gateway (Custom)",
+                "badge": "custom",
+                "tag": "Gemini image models via LiteLLM proxy (set auxiliary.image_transform in config.yaml)",
+                "env_vars": [],
+                "config_hint": "auxiliary.image_transform.base_url / model",
             },
         ],
     },

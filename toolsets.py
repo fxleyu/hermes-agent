@@ -35,8 +35,8 @@ _HERMES_CORE_TOOLS = [
     "terminal", "process",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
-    # Vision + image generation
-    "vision_analyze", "image_generate",
+    # Vision + image generation + image transform (img2img)
+    "vision_analyze", "image_generate", "image_transform",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
@@ -114,6 +114,12 @@ TOOLSETS = {
             "or keyboard focus. Works with any tool-capable model."
         ),
         "tools": ["computer_use"],
+        "includes": []
+    },
+
+    "image_transform": {
+        "description": "AI image transformation and editing (img2img)",
+        "tools": ["image_transform"],
         "includes": []
     },
 
