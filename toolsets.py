@@ -34,8 +34,8 @@ _HERMES_CORE_TOOLS = [
     "terminal", "process",
     # 文件操作
     "read_file", "write_file", "patch", "search_files",
-    # 图像分析 + 图像生成
-    "vision_analyze", "image_generate",
+    # 图像分析 + 图像生成 + 图生图
+    "vision_analyze", "image_generate", "image_transform",
     # 技能
     "skills_list", "skill_view", "skill_manage",
     # 浏览器自动化
@@ -87,6 +87,12 @@ TOOLSETS = {
     "image_gen": {
         "description": "Creative generation tools (images)",
         "tools": ["image_generate"],
+        "includes": []
+    },
+
+    "image_transform": {
+        "description": "AI image transformation and editing (img2img)",
+        "tools": ["image_transform"],
         "includes": []
     },
 

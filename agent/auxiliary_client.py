@@ -2571,6 +2571,71 @@ def extract_content_or_reasoning(response) -> str:
     return ""
 
 
+def extract_image_from_response(response) -> tuple:
+    """从 LLM 响应中提取图片数据和文本内容。
+
+    处理 LiteLLM 代理 Gemini 图片模型的多种响应格式：
+
+    格式 A: message.content 是包含 data URI 的字符串
+            "data:image/png;base64,iVBOR..."
+    格式 B: message.content 是内容块列表
+            [{"type": "text", "text": "..."},
+             {"type": "image_url", "image_url": {"url": "data:..."}}]
+
+    返回:
+        (image_bytes, mime_type, text_content)
+        image_bytes 为 None 表示响应中未找到图片。
+    """
+    import base64 as _b64
+    import re as _re
+
+    msg = response.choices[0].message
+    content = msg.content
+
+    def _decode_data_uri(uri: str):
+        """解析 data URI 并返回 (bytes, mime_type)。"""
+        m = _re.match(r"data:(image/[^;]+);base64,(.+)", uri, _re.DOTALL)
+        if m:
+            return _b64.b64decode(m.group(2)), m.group(1)
+        return None, None
+
+    # 格式 B: content 是列表（多模态内容块）
+    if isinstance(content, list):
+        image_bytes = None
+        mime_type = None
+        text_parts = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            ptype = part.get("type", "")
+            if ptype == "image_url":
+                url = (part.get("image_url") or {}).get("url", "")
+                if url:
+                    image_bytes, mime_type = _decode_data_uri(url)
+            elif ptype == "text":
+                text_parts.append(part.get("text", ""))
+        return image_bytes, mime_type, "\n".join(text_parts)
+
+    # 格式 A: content 是字符串
+    if isinstance(content, str):
+        # 检查整个字符串是否是 data URI
+        if content.strip().startswith("data:image/"):
+            img_bytes, mime = _decode_data_uri(content.strip())
+            if img_bytes:
+                return img_bytes, mime, ""
+        # 检查字符串中是否嵌入了 data URI
+        m = _re.search(r"(data:image/[^;]+;base64,[A-Za-z0-9+/=\s]+)", content)
+        if m:
+            img_bytes, mime = _decode_data_uri(m.group(1).replace("\n", "").replace(" ", ""))
+            text = content[:m.start()].strip() + content[m.end():].strip()
+            if img_bytes:
+                return img_bytes, mime, text.strip()
+        # 无图片 — 纯文本响应
+        return None, None, content
+
+    return None, None, ""
+
+
 async def async_call_llm(
     task: str = None,
     *,

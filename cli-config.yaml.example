@@ -356,6 +356,15 @@ compression:
 #   web_extract:
 #     provider: "auto"
 #     model: ""
+#
+#   # Image transformation (img2img): edit images with AI
+#   # Requires a LiteLLM gateway or provider with Gemini image models
+#   image_transform:
+#     provider: "custom"
+#     base_url: "https://your-litellm-gateway.example.com/v1"
+#     model: "pub-gemini-3-pro-image-preview"
+#     api_key: ""              # if your gateway requires auth
+#     timeout: 120             # image generation can be slow
 
 # =============================================================================
 # Persistent Memory

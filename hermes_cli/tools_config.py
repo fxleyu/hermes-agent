@@ -54,6 +54,7 @@ CONFIGURABLE_TOOLSETS = [
     ("code_execution",  "⚡ Code Execution",            "execute_code"),
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
+    ("image_transform", "🖌️  Image Transform / Editing", "image_transform (img2img)"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -71,7 +72,7 @@ CONFIGURABLE_TOOLSETS = [
 # 新安装时默认关闭的工具集。
 # 它们仍在 _HERMES_CORE_TOOLS 中（启用后运行时可用），
 # 但设置向导不会为首次用户预选它们。
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "image_transform"}
 
 
 def _get_effective_configurable_toolsets():
@@ -268,6 +269,19 @@ TOOL_CATEGORIES = {
                     {"key": "FAL_KEY", "prompt": "FAL API key", "url": "https://fal.ai/dashboard/keys"},
                 ],
                 "imagegen_backend": "fal",
+            },
+        ],
+    },
+    "image_transform": {
+        "name": "Image Transform",
+        "icon": "🖌️",
+        "providers": [
+            {
+                "name": "LiteLLM Gateway (Custom)",
+                "badge": "custom",
+                "tag": "Gemini image models via LiteLLM proxy (set auxiliary.image_transform in config.yaml)",
+                "env_vars": [],
+                "config_hint": "auxiliary.image_transform.base_url / model",
             },
         ],
     },
