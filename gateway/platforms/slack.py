@@ -1,11 +1,11 @@
 """
-Slack platform adapter.
+Slack 平台适配器。
 
-Uses slack-bolt (Python) with Socket Mode for:
-- Receiving messages from channels and DMs
-- Sending responses back
-- Handling slash commands
-- Thread support
+使用 slack-bolt（Python）的 Socket Mode 实现：
+- 从频道和私信中接收消息
+- 发送回复
+- 处理斜杠命令
+- 线程支持
 """
 
 import asyncio
@@ -50,72 +50,67 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class _ThreadContextCache:
-    """Cache entry for fetched thread context."""
+    """已获取的线程上下文的缓存条目。"""
     content: str
     fetched_at: float = field(default_factory=time.monotonic)
     message_count: int = 0
 
 
 def check_slack_requirements() -> bool:
-    """Check if Slack dependencies are available."""
+    """检查 Slack 依赖项是否可用。"""
     return SLACK_AVAILABLE
 
 
 class SlackAdapter(BasePlatformAdapter):
     """
-    Slack bot adapter using Socket Mode.
+    Slack Bot 适配器，使用 Socket Mode。
 
-    Requires two tokens:
-      - SLACK_BOT_TOKEN (xoxb-...) for API calls
-      - SLACK_APP_TOKEN (xapp-...) for Socket Mode connection
+    需要两个令牌：
+      - SLACK_BOT_TOKEN（xoxb-...）用于 API 调用
+      - SLACK_APP_TOKEN（xapp-...）用于 Socket Mode 连接
 
-    Features:
-      - DMs and channel messages (mention-gated in channels)
-      - Thread support
-      - File/image/audio attachments
-      - Slash commands (/hermes)
-      - Typing indicators (not natively supported by Slack bots)
+    功能特性：
+      - 私信和频道消息（频道中需 @提及 才触发）
+      - 线程支持
+      - 文件/图片/音频附件
+      - 斜杠命令（/hermes）
+      - 正在输入指示器（Slack Bot 原生不支持）
     """
 
-    MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
+    MAX_MESSAGE_LENGTH = 39000  # Slack API 允许 40,000 字符；留出余量
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SLACK)
         self._app: Optional[AsyncApp] = None
         self._handler: Optional[AsyncSocketModeHandler] = None
         self._bot_user_id: Optional[str] = None
-        self._user_name_cache: Dict[str, str] = {}  # user_id → display name
+        self._user_name_cache: Dict[str, str] = {}  # user_id -> 显示名称
         self._socket_mode_task: Optional[asyncio.Task] = None
-        # Multi-workspace support
-        self._team_clients: Dict[str, AsyncWebClient] = {}   # team_id → WebClient
-        self._team_bot_user_ids: Dict[str, str] = {}          # team_id → bot_user_id
-        self._channel_team: Dict[str, str] = {}                # channel_id → team_id
-        # Dedup cache: prevents duplicate bot responses when Socket Mode
-        # reconnects redeliver events.
+        # 多工作空间支持
+        self._team_clients: Dict[str, AsyncWebClient] = {}   # team_id -> WebClient
+        self._team_bot_user_ids: Dict[str, str] = {}          # team_id -> bot_user_id
+        self._channel_team: Dict[str, str] = {}                # channel_id -> team_id
+        # 去重缓存：防止 Socket Mode 重连后重复投递事件时产生重复的 Bot 响应。
         self._dedup = MessageDeduplicator()
-        # Track pending approval message_ts → resolved flag to prevent
-        # double-clicks on approval buttons.
+        # 跟踪待审批消息的 message_ts -> 已解决标志，防止审批按钮被重复点击。
         self._approval_resolved: Dict[str, bool] = {}
-        # Track timestamps of messages sent by the bot so we can respond
-        # to thread replies even without an explicit @mention.
+        # 跟踪 Bot 发送的消息时间戳，这样即使没有显式 @提及也能响应线程回复。
         self._bot_message_ts: set = set()
-        self._BOT_TS_MAX = 5000  # cap to avoid unbounded growth
-        # Track threads where the bot has been @mentioned — once mentioned,
-        # respond to ALL subsequent messages in that thread automatically.
+        self._BOT_TS_MAX = 5000  # 设置上限以避免无限增长
+        # 跟踪 Bot 被 @提及 过的线程——一旦被提及，自动响应该线程中的所有后续消息。
         self._mentioned_threads: set = set()
         self._MENTIONED_THREADS_MAX = 5000
-        # Assistant thread metadata keyed by (channel_id, thread_ts). Slack's
-        # AI Assistant lifecycle events can arrive before/alongside message
-        # events, and they carry the user/thread identity needed for stable
-        # session + memory scoping.
+        # 按 (channel_id, thread_ts) 索引的 AI 助手线程元数据。Slack 的
+        # AI 助手生命周期事件可能在消息事件之前/同时到达，
+        # 它们携带了稳定会话和记忆作用域所需的用户/线程标识。
         self._assistant_threads: Dict[Tuple[str, str], Dict[str, str]] = {}
         self._ASSISTANT_THREADS_MAX = 5000
-        # Cache for _fetch_thread_context results: cache_key → _ThreadContextCache
+        # _fetch_thread_context 结果的缓存：cache_key -> _ThreadContextCache
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
         self._THREAD_CACHE_TTL = 60.0
 
     async def connect(self) -> bool:
-        """Connect to Slack via Socket Mode."""
+        """通过 Socket Mode 连接到 Slack。"""
         if not SLACK_AVAILABLE:
             logger.error(
                 "[Slack] slack-bolt not installed. Run: pip install slack-bolt",
@@ -132,10 +127,10 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] SLACK_APP_TOKEN not set")
             return False
 
-        # Support comma-separated bot tokens for multi-workspace
+            # 支持逗号分隔的 Bot 令牌以实现多工作空间
         bot_tokens = [t.strip() for t in raw_token.split(",") if t.strip()]
 
-        # Also load tokens from OAuth token file
+        # 同时从 OAuth 令牌文件加载令牌
         from hermes_constants import get_hermes_home
         tokens_file = get_hermes_home() / "slack_tokens.json"
         if tokens_file.exists():
@@ -154,11 +149,11 @@ class SlackAdapter(BasePlatformAdapter):
             if not self._acquire_platform_lock('slack-app-token', app_token, 'Slack app token'):
                 return False
 
-            # First token is the primary — used for AsyncApp / Socket Mode
+            # 第一个令牌为主令牌——用于 AsyncApp / Socket Mode
             primary_token = bot_tokens[0]
             self._app = AsyncApp(token=primary_token)
 
-            # Register each bot token and map team_id → client
+            # 注册每个 Bot 令牌并映射 team_id -> client
             for token in bot_tokens:
                 client = AsyncWebClient(token=token)
                 auth_response = await client.auth_test()
@@ -170,7 +165,7 @@ class SlackAdapter(BasePlatformAdapter):
                 self._team_clients[team_id] = client
                 self._team_bot_user_ids[team_id] = bot_user_id
 
-                # First token sets the primary bot_user_id (backward compat)
+                # 第一个令牌设置主 bot_user_id（向后兼容）
                 if self._bot_user_id is None:
                     self._bot_user_id = bot_user_id
 
@@ -179,14 +174,14 @@ class SlackAdapter(BasePlatformAdapter):
                     bot_name, team_name, team_id,
                 )
 
-            # Register message event handler
+            # 注册消息事件处理器
             @self._app.event("message")
             async def handle_message_event(event, say):
                 await self._handle_slack_message(event)
 
-            # Acknowledge app_mention events to prevent Bolt 404 errors.
-            # The "message" handler above already processes @mentions in
-            # channels, so this is intentionally a no-op to avoid duplicates.
+            # 确认 app_mention 事件以防止 Bolt 404 错误。
+            # 上面的 "message" 处理器已经处理了频道中的 @提及，
+            # 所以这里故意是空操作以避免重复处理。
             @self._app.event("app_mention")
             async def handle_app_mention(event, say):
                 pass
@@ -199,13 +194,13 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_assistant_thread_context_changed(event, say):
                 await self._handle_assistant_thread_lifecycle_event(event)
 
-            # Register slash command handler
+            # 注册斜杠命令处理器
             @self._app.command("/hermes")
             async def handle_hermes_command(ack, command):
                 await ack()
                 await self._handle_slash_command(command)
 
-            # Register Block Kit action handlers for approval buttons
+            # 注册 Block Kit 操作处理器用于审批按钮
             for _action_id in (
                 "hermes_approve_once",
                 "hermes_approve_session",
@@ -214,7 +209,7 @@ class SlackAdapter(BasePlatformAdapter):
             ):
                 self._app.action(_action_id)(self._handle_approval_action)
 
-            # Start Socket Mode handler in background
+            # 在后台启动 Socket Mode 处理器
             self._handler = AsyncSocketModeHandler(self._app, app_token)
             self._socket_mode_task = asyncio.create_task(self._handler.start_async())
 
@@ -230,7 +225,7 @@ class SlackAdapter(BasePlatformAdapter):
             return False
 
     async def disconnect(self) -> None:
-        """Disconnect from Slack."""
+        """断开与 Slack 的连接。"""
         if self._handler:
             try:
                 await self._handler.close_async()
@@ -243,11 +238,11 @@ class SlackAdapter(BasePlatformAdapter):
         logger.info("[Slack] Disconnected")
 
     def _get_client(self, chat_id: str) -> AsyncWebClient:
-        """Return the workspace-specific WebClient for a channel."""
+        """返回指定频道所属工作空间的 WebClient。"""
         team_id = self._channel_team.get(chat_id)
         if team_id and team_id in self._team_clients:
             return self._team_clients[team_id]
-        return self._app.client  # fallback to primary
+        return self._app.client  # 回退到主客户端
 
     async def send(
         self,
@@ -256,22 +251,22 @@ class SlackAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a message to a Slack channel or DM."""
+        """向 Slack 频道或私信发送消息。"""
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
         try:
-            # Convert standard markdown → Slack mrkdwn
+            # 将标准 Markdown 转换为 Slack mrkdwn 格式
             formatted = self.format_message(content)
 
-            # Split long messages, preserving code block boundaries
+            # 分割长消息，保留代码块边界
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
             last_result = None
 
-            # reply_broadcast: also post thread replies to the main channel.
-            # Controlled via platform config: gateway.slack.reply_broadcast
+            # reply_broadcast：同时将线程回复发布到主频道。
+            # 通过平台配置控制：gateway.slack.reply_broadcast
             broadcast = self.config.extra.get("reply_broadcast", False)
 
             for i, chunk in enumerate(chunks):
@@ -282,18 +277,17 @@ class SlackAdapter(BasePlatformAdapter):
                 }
                 if thread_ts:
                     kwargs["thread_ts"] = thread_ts
-                    # Only broadcast the first chunk of the first reply
+                    # 仅对第一条回复的第一个分片进行广播
                     if broadcast and i == 0:
                         kwargs["reply_broadcast"] = True
 
                 last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
 
-            # Track the sent message ts so we can auto-respond to thread
-            # replies without requiring @mention.
+            # 跟踪已发送消息的时间戳，以便在没有 @提及 的情况下自动响应线程回复。
             sent_ts = last_result.get("ts") if last_result else None
             if sent_ts:
                 self._bot_message_ts.add(sent_ts)
-                # Also register the thread root so replies-to-my-replies work
+                # 同时注册线程根消息，使"回复我的回复"也能工作
                 if thread_ts:
                     self._bot_message_ts.add(thread_ts)
                 if len(self._bot_message_ts) > self._BOT_TS_MAX:
@@ -317,7 +311,7 @@ class SlackAdapter(BasePlatformAdapter):
         message_id: str,
         content: str,
     ) -> SendResult:
-        """Edit a previously sent Slack message."""
+        """编辑之前发送的 Slack 消息。"""
         if not self._app:
             return SendResult(success=False, error="Not connected")
         try:
@@ -339,11 +333,11 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Show a typing/status indicator using assistant.threads.setStatus.
+        """使用 assistant.threads.setStatus 显示正在输入/状态指示器。
 
-        Displays "is thinking..." next to the bot name in a thread.
-        Requires the assistant:write or chat:write scope.
-        Auto-clears when the bot sends a reply to the thread.
+        在线程中 Bot 名称旁边显示 "is thinking..."。
+        需要 assistant:write 或 chat:write 权限范围。
+        当 Bot 向线程发送回复时自动清除。
         """
         if not self._app:
             return
@@ -353,7 +347,7 @@ class SlackAdapter(BasePlatformAdapter):
             thread_ts = metadata.get("thread_id") or metadata.get("thread_ts")
 
         if not thread_ts:
-            return  # Can only set status in a thread context
+            return  # 只能在线程上下文中设置状态
 
         try:
             await self._get_client(chat_id).assistant_threads_setStatus(
@@ -362,18 +356,18 @@ class SlackAdapter(BasePlatformAdapter):
                 status="is thinking...",
             )
         except Exception as e:
-            # Silently ignore — may lack assistant:write scope or not be
-            # in an assistant-enabled context. Falls back to reactions.
+            # 静默忽略——可能缺少 assistant:write 权限或不在
+            # 助手启用的上下文中。会回退到表情反应。
             logger.debug("[Slack] assistant.threads.setStatus failed: %s", e)
 
     def _dm_top_level_threads_as_sessions(self) -> bool:
-        """Whether top-level Slack DMs get per-message session threads.
+        """是否将顶级 Slack 私信视为每条消息独立的会话线程。
 
-        Defaults to ``True`` so each visible DM reply thread is isolated as its
-        own Hermes session — matching the per-thread behavior channels already
-        have.  Set ``platforms.slack.extra.dm_top_level_threads_as_sessions``
-        to ``false`` in config.yaml to revert to the legacy behavior where all
-        top-level DMs share one continuous session.
+        默认为 ``True``，这样每个可见的私信回复线程都被隔离为
+        独立的 Hermes 会话——与频道中已有的每线程行为一致。
+        在 config.yaml 中设置
+        ``platforms.slack.extra.dm_top_level_threads_as_sessions``
+        为 ``false`` 可恢复旧版行为，即所有顶级私信共享一个连续会话。
         """
         raw = self.config.extra.get("dm_top_level_threads_as_sessions")
         if raw is None:
@@ -385,18 +379,17 @@ class SlackAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
-        """Resolve the correct thread_ts for a Slack API call.
+        """解析 Slack API 调用所需的正确 thread_ts。
 
-        Prefers metadata thread_id (the thread parent's ts, set by the
-        gateway) over reply_to (which may be a child message's ts).
+        优先使用 metadata 中的 thread_id（线程父消息的 ts，由网关设置），
+        而非 reply_to（可能是子消息的 ts）。
 
-        When ``reply_in_thread`` is ``false`` in the platform extra config,
-        top-level channel messages receive direct channel replies instead of
-        thread replies.  Messages that originate inside an existing thread are
-        always replied to in-thread to preserve conversation context.
+        当平台额外配置中 ``reply_in_thread`` 为 ``false`` 时，
+        顶级频道消息会收到直接的频道回复而非线程回复。
+        源自已有线程中的消息始终在线程内回复以保持对话上下文。
         """
-        # When reply_in_thread is disabled (default: True for backward compat),
-        # only thread messages that are already part of an existing thread.
+        # 当 reply_in_thread 被禁用时（默认为 True 以向后兼容），
+        # 仅回复已属于现有线程的线程消息。
         if not self.config.extra.get("reply_in_thread", True):
             existing_thread = (metadata or {}).get("thread_id") or (metadata or {}).get("thread_ts")
             return existing_thread or None
@@ -416,7 +409,7 @@ class SlackAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Upload a local file to Slack."""
+        """上传本地文件到 Slack。"""
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
@@ -432,14 +425,14 @@ class SlackAdapter(BasePlatformAdapter):
         )
         return SendResult(success=True, raw_response=result)
 
-    # ----- Markdown → mrkdwn conversion -----
+    # ----- Markdown -> mrkdwn 转换 -----
 
     def format_message(self, content: str) -> str:
-        """Convert standard markdown to Slack mrkdwn format.
+        """将标准 Markdown 转换为 Slack mrkdwn 格式。
 
-        Protected regions (code blocks, inline code) are extracted first so
-        their contents are never modified.  Standard markdown constructs
-        (headers, bold, italic, links) are translated to mrkdwn syntax.
+        先提取受保护区域（代码块、行内代码），确保其内容不会被修改。
+        然后将标准 Markdown 结构（标题、粗体、斜体、链接）
+        转换为 mrkdwn 语法。
         """
         if not content:
             return content
@@ -448,7 +441,7 @@ class SlackAdapter(BasePlatformAdapter):
         counter = [0]
 
         def _ph(value: str) -> str:
-            """Stash value behind a placeholder that survives later passes."""
+            """将值存入占位符，使其在后续处理中保持不变。"""
             key = f"\x00SL{counter[0]}\x00"
             counter[0] += 1
             placeholders[key] = value
@@ -456,17 +449,17 @@ class SlackAdapter(BasePlatformAdapter):
 
         text = content
 
-        # 1) Protect fenced code blocks (``` ... ```)
+        # 1) 保护围栏代码块（``` ... ```）
         text = re.sub(
             r'(```(?:[^\n]*\n)?[\s\S]*?```)',
             lambda m: _ph(m.group(0)),
             text,
         )
 
-        # 2) Protect inline code (`...`)
+        # 2) 保护行内代码（`...`）
         text = re.sub(r'(`[^`]+`)', lambda m: _ph(m.group(0)), text)
 
-        # 3) Convert markdown links [text](url) → <url|text>
+        # 3) 将 Markdown 链接 [text](url) 转换为 Slack 格式 <url|text>
         def _convert_markdown_link(m):
             label = m.group(1)
             url = m.group(2).strip()
@@ -480,26 +473,25 @@ class SlackAdapter(BasePlatformAdapter):
             text,
         )
 
-        # 4) Protect existing Slack entities/manual links so escaping and later
-        #    formatting passes don't break them.
+        # 4) 保护已有的 Slack 实体/手动链接，防止转义和后续格式化处理破坏它们。
         text = re.sub(
             r'(<(?:[@#!]|(?:https?|mailto|tel):)[^>\n]+>)',
             lambda m: _ph(m.group(1)),
             text,
         )
 
-        # 5) Protect blockquote markers before escaping
+        # 5) 在转义之前保护块引用标记
         text = re.sub(r'^(>+\s)', lambda m: _ph(m.group(0)), text, flags=re.MULTILINE)
 
-        # 6) Escape Slack control characters in remaining plain text.
-        # Unescape first so already-escaped input doesn't get double-escaped.
+        # 6) 对剩余纯文本中的 Slack 控制字符进行转义。
+        # 先反转义，避免已转义的输入被双重转义。
         text = text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
         text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
-        # 7) Convert headers (## Title) → *Title* (bold)
+        # 7) 将标题（## Title）转换为 *Title*（粗体）
         def _convert_header(m):
             inner = m.group(1).strip()
-            # Strip redundant bold markers inside a header
+            # 移除标题内的冗余粗体标记
             inner = re.sub(r'\*\*(.+?)\*\*', r'\1', inner)
             return _ph(f'*{inner}*')
 
@@ -507,49 +499,49 @@ class SlackAdapter(BasePlatformAdapter):
             r'^#{1,6}\s+(.+)$', _convert_header, text, flags=re.MULTILINE
         )
 
-        # 8) Convert bold+italic: ***text*** → *_text_* (Slack bold wrapping italic)
+        # 8) 将粗斜体 ***text*** 转换为 *_text_*（Slack 粗体包裹斜体）
         text = re.sub(
             r'\*\*\*(.+?)\*\*\*',
             lambda m: _ph(f'*_{m.group(1)}_*'),
             text,
         )
 
-        # 9) Convert bold: **text** → *text* (Slack bold)
+        # 9) 将粗体 **text** 转换为 *text*（Slack 粗体）
         text = re.sub(
             r'\*\*(.+?)\*\*',
             lambda m: _ph(f'*{m.group(1)}*'),
             text,
         )
 
-        # 10) Convert italic: _text_ stays as _text_ (already Slack italic)
-        #     Single *text* → _text_ (Slack italic)
+        # 10) 转换斜体：_text_ 保持不变（已是 Slack 斜体）
+        #     单 *text* -> _text_（Slack 斜体）
         text = re.sub(
             r'(?<!\*)\*([^*\n]+)\*(?!\*)',
             lambda m: _ph(f'_{m.group(1)}_'),
             text,
         )
 
-        # 11) Convert strikethrough: ~~text~~ → ~text~
+        # 11) 将删除线 ~~text~~ 转换为 ~text~
         text = re.sub(
             r'~~(.+?)~~',
             lambda m: _ph(f'~{m.group(1)}~'),
             text,
         )
 
-        # 12) Blockquotes: > prefix is already protected by step 5 above.
+        # 12) 块引用：> 前缀已在上面第 5 步中保护。
 
-        # 13) Restore placeholders in reverse order
+        # 13) 按逆序恢复占位符
         for key in reversed(placeholders):
             text = text.replace(key, placeholders[key])
 
         return text
 
-    # ----- Reactions -----
+    # ----- 表情反应 -----
 
     async def _add_reaction(
         self, channel: str, timestamp: str, emoji: str
     ) -> bool:
-        """Add an emoji reaction to a message. Returns True on success."""
+        """为消息添加表情反应。成功时返回 True。"""
         if not self._app:
             return False
         try:
@@ -558,14 +550,14 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return True
         except Exception as e:
-            # Don't log as error — may fail if already reacted or missing scope
+            # 不记录为错误——可能已有反应或缺少权限范围
             logger.debug("[Slack] reactions.add failed (%s): %s", emoji, e)
             return False
 
     async def _remove_reaction(
         self, channel: str, timestamp: str, emoji: str
     ) -> bool:
-        """Remove an emoji reaction from a message. Returns True on success."""
+        """移除消息的表情反应。成功时返回 True。"""
         if not self._app:
             return False
         try:
@@ -577,10 +569,10 @@ class SlackAdapter(BasePlatformAdapter):
             logger.debug("[Slack] reactions.remove failed (%s): %s", emoji, e)
             return False
 
-    # ----- User identity resolution -----
+    # ----- 用户身份解析 -----
 
     async def _resolve_user_name(self, user_id: str, chat_id: str = "") -> str:
-        """Resolve a Slack user ID to a display name, with caching."""
+        """将 Slack 用户 ID 解析为显示名称，带缓存。"""
         if not user_id:
             return ""
         if user_id in self._user_name_cache:
@@ -593,7 +585,7 @@ class SlackAdapter(BasePlatformAdapter):
             client = self._get_client(chat_id) if chat_id else self._app.client
             result = await client.users_info(user=user_id)
             user = result.get("user", {})
-            # Prefer display_name → real_name → user_id
+            # 优先级：display_name -> real_name -> user_id
             profile = user.get("profile", {})
             name = (
                 profile.get("display_name")
@@ -617,7 +609,7 @@ class SlackAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a local image file to Slack by uploading it."""
+        """通过上传将本地图片文件发送到 Slack。"""
         try:
             return await self._upload_file(chat_id, image_path, caption, reply_to, metadata)
         except FileNotFoundError:
@@ -643,7 +635,7 @@ class SlackAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send an image to Slack by uploading the URL as a file."""
+        """通过将 URL 作为文件上传来向 Slack 发送图片。"""
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
@@ -656,13 +648,13 @@ class SlackAdapter(BasePlatformAdapter):
             import httpx
 
             async def _ssrf_redirect_guard(response):
-                """Re-check redirect targets so public URLs cannot bounce into private IPs."""
+                """重新检查重定向目标，防止公开 URL 跳转到私有 IP。"""
                 if response.is_redirect and response.next_request:
                     redirect_url = str(response.next_request.url)
                     if not is_safe_url(redirect_url):
                         raise ValueError("Blocked redirect to private/internal address")
 
-            # Download the image first
+            # 先下载图片
             async with httpx.AsyncClient(
                 timeout=30.0,
                 follow_redirects=True,
@@ -688,7 +680,7 @@ class SlackAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
-            # Fall back to sending the URL as text
+            # 回退到以文本方式发送 URL
             text = f"{caption}\n{image_url}" if caption else image_url
             return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
 
@@ -701,7 +693,7 @@ class SlackAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """Send an audio file to Slack."""
+        """向 Slack 发送音频文件。"""
         try:
             return await self._upload_file(chat_id, audio_path, caption, reply_to, metadata)
         except FileNotFoundError:
@@ -723,7 +715,7 @@ class SlackAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a video file to Slack."""
+        """向 Slack 发送视频文件。"""
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
@@ -762,7 +754,7 @@ class SlackAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a document/file attachment to Slack."""
+        """向 Slack 发送文档/文件附件。"""
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
@@ -795,7 +787,7 @@ class SlackAdapter(BasePlatformAdapter):
             return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
-        """Get information about a Slack channel."""
+        """获取 Slack 频道的信息。"""
         if not self._app:
             return {"name": chat_id, "type": "unknown"}
 
@@ -816,16 +808,16 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return {"name": chat_id, "type": "unknown"}
 
-    # ----- Internal handlers -----
+    # ----- 内部处理器 -----
 
     def _assistant_thread_key(self, channel_id: str, thread_ts: str) -> Optional[Tuple[str, str]]:
-        """Return a stable cache key for Slack assistant thread metadata."""
+        """返回 Slack 助手线程元数据的稳定缓存键。"""
         if not channel_id or not thread_ts:
             return None
         return (str(channel_id), str(thread_ts))
 
     def _extract_assistant_thread_metadata(self, event: dict) -> Dict[str, str]:
-        """Extract Slack Assistant thread identity data from an event payload."""
+        """从事件载荷中提取 Slack 助手线程的身份数据。"""
         assistant_thread = event.get("assistant_thread") or {}
         context = assistant_thread.get("context") or event.get("context") or {}
 
@@ -864,7 +856,7 @@ class SlackAdapter(BasePlatformAdapter):
         }
 
     def _cache_assistant_thread_metadata(self, metadata: Dict[str, str]) -> None:
-        """Remember assistant thread identity data for later message events."""
+        """记住助手线程的身份数据，供后续消息事件使用。"""
         channel_id = metadata.get("channel_id", "")
         thread_ts = metadata.get("thread_ts", "")
         key = self._assistant_thread_key(channel_id, thread_ts)
@@ -876,7 +868,7 @@ class SlackAdapter(BasePlatformAdapter):
         merged.update({k: v for k, v in metadata.items() if v})
         self._assistant_threads[key] = merged
 
-        # Evict oldest entries when the cache exceeds the limit
+        # 当缓存超出限制时淘汰最旧的条目
         if len(self._assistant_threads) > self._ASSISTANT_THREADS_MAX:
             excess = len(self._assistant_threads) - self._ASSISTANT_THREADS_MAX // 2
             for old_key in list(self._assistant_threads)[:excess]:
@@ -892,7 +884,7 @@ class SlackAdapter(BasePlatformAdapter):
         channel_id: str = "",
         thread_ts: str = "",
     ) -> Dict[str, str]:
-        """Load cached assistant-thread metadata that matches the current event."""
+        """加载与当前事件匹配的已缓存助手线程元数据。"""
         metadata = self._extract_assistant_thread_metadata(event)
         if channel_id and not metadata.get("channel_id"):
             metadata["channel_id"] = channel_id
@@ -911,7 +903,7 @@ class SlackAdapter(BasePlatformAdapter):
         return metadata
 
     def _seed_assistant_thread_session(self, metadata: Dict[str, str]) -> None:
-        """Prime the session store so assistant threads get stable user scoping."""
+        """预初始化会话存储，使助手线程获得稳定的用户作用域。"""
         session_store = getattr(self, "_session_store", None)
         if not session_store:
             return
@@ -942,22 +934,22 @@ class SlackAdapter(BasePlatformAdapter):
             )
 
     async def _handle_assistant_thread_lifecycle_event(self, event: dict) -> None:
-        """Handle Slack Assistant lifecycle events that carry user/thread identity."""
+        """处理携带用户/线程身份的 Slack 助手生命周期事件。"""
         metadata = self._extract_assistant_thread_metadata(event)
         self._cache_assistant_thread_metadata(metadata)
         self._seed_assistant_thread_session(metadata)
 
     async def _handle_slack_message(self, event: dict) -> None:
-        """Handle an incoming Slack message event."""
-        # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
+        """处理收到的 Slack 消息事件。"""
+        # 去重：Slack Socket Mode 在重连后可能重复投递事件（#4777）
         event_ts = event.get("ts", "")
         if event_ts and self._dedup.is_duplicate(event_ts):
             return
 
-        # Bot message filtering (SLACK_ALLOW_BOTS / config allow_bots):
-        #   "none"     — ignore all bot messages (default, backward-compatible)
-        #   "mentions" — accept bot messages only when they @mention us
-        #   "all"      — accept all bot messages (except our own)
+        # Bot 消息过滤（SLACK_ALLOW_BOTS / config allow_bots）：
+        #   "none"     — 忽略所有 Bot 消息（默认，向后兼容）
+        #   "mentions" — 仅接受 @提及 我们的 Bot 消息
+        #   "all"      — 接受所有 Bot 消息（除了我们自己的）
         if event.get("bot_id") or event.get("subtype") == "bot_message":
             allow_bots = self.config.extra.get("allow_bots", "")
             if not allow_bots:
@@ -969,13 +961,13 @@ class SlackAdapter(BasePlatformAdapter):
                 text_check = event.get("text", "")
                 if self._bot_user_id and f"<@{self._bot_user_id}>" not in text_check:
                     return
-            # "all" falls through to process the message
-            # Always ignore our own messages to prevent echo loops
+            # "all" 直接进入消息处理流程
+            # 始终忽略自己的消息以防止回声循环
             msg_user = event.get("user", "")
             if msg_user and self._bot_user_id and msg_user == self._bot_user_id:
                 return
 
-        # Ignore message edits and deletions
+        # 忽略消息编辑和删除
         subtype = event.get("subtype")
         if subtype in ("message_changed", "message_deleted"):
             return
@@ -997,37 +989,33 @@ class SlackAdapter(BasePlatformAdapter):
             or assistant_meta.get("team_id", "")
         )
 
-        # Track which workspace owns this channel
+        # 跟踪哪个工作空间拥有此频道
         if team_id and channel_id:
             self._channel_team[channel_id] = team_id
 
-        # Determine if this is a DM or channel message
+        # 判断是私信还是频道消息
         channel_type = event.get("channel_type", "")
         if not channel_type and channel_id.startswith("D"):
             channel_type = "im"
-        is_dm = channel_type in ("im", "mpim")  # Both 1:1 and group DMs
+        is_dm = channel_type in ("im", "mpim")  # 1:1 和群组私信
 
-        # Build thread_ts for session keying.
-        # In channels: fall back to ts so each top-level @mention starts a
-        #   new thread/session (the bot always replies in a thread).
-        # In DMs: fall back to ts so each top-level DM reply thread gets
-        #   its own session key (matching channel behavior). Set
-        #   dm_top_level_threads_as_sessions: false in config to revert to
-        #   legacy single-session-per-DM-channel behavior.
+        # 构建用于会话键的 thread_ts。
+        # 在频道中：回退到 ts，这样每个顶级 @提及 都会启动新的线程/会话（Bot 总是在线程中回复）。
+        # 在私信中：回退到 ts，这样每个顶级私信回复线程都有自己的会话键（与频道行为一致）。
+        # 在 config 中设置 dm_top_level_threads_as_sessions: false 可恢复旧版单会话行为。
         if is_dm:
             thread_ts = event.get("thread_ts") or assistant_meta.get("thread_ts")
             if not thread_ts and self._dm_top_level_threads_as_sessions():
                 thread_ts = ts
         else:
-            thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
+            thread_ts = event.get("thread_ts") or ts  # 频道使用 ts 回退
 
-        # In channels, respond if:
-        #   0. Channel is in free_response_channels, OR require_mention is
-        #      disabled — always process regardless of mention.
-        #   1. The bot is @mentioned in this message, OR
-        #   2. The message is a reply in a thread the bot started/participated in, OR
-        #   3. The message is in a thread where the bot was previously @mentioned, OR
-        #   4. There's an existing session for this thread (survives restarts)
+        # 在频道中，在以下情况下响应：
+        #   0. 频道在 free_response_channels 中，或 require_mention 被禁用——始终处理。
+        #   1. 此消息中 Bot 被 @提及，或
+        #   2. 消息是 Bot 启动/参与的线程中的回复，或
+        #   3. 消息在 Bot 之前被 @提及 的线程中，或
+        #   4. 此线程有现有会话（重启后仍有效）
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         is_mentioned = bot_uid and f"<@{bot_uid}>" in text
         event_thread_ts = event.get("thread_ts")
@@ -1035,9 +1023,9 @@ class SlackAdapter(BasePlatformAdapter):
 
         if not is_dm and bot_uid:
             if channel_id in self._slack_free_response_channels():
-                pass  # Free-response channel — always process
+                pass  # 自由回复频道——始终处理
             elif not self._slack_require_mention():
-                pass  # Mention requirement disabled globally for Slack
+                pass  # Slack 的 @提及 要求已全局禁用
             elif not is_mentioned:
                 reply_to_bot_thread = (
                     is_thread_reply and event_thread_ts in self._bot_message_ts
@@ -1058,9 +1046,9 @@ class SlackAdapter(BasePlatformAdapter):
                     return
 
         if is_mentioned:
-            # Strip the bot mention from the text
+            # 从文本中移除 Bot @提及
             text = text.replace(f"<@{bot_uid}>", "").strip()
-            # Register this thread so all future messages auto-trigger the bot
+            # 注册此线程，使后续所有消息自动触发 Bot
             if event_thread_ts:
                 self._mentioned_threads.add(event_thread_ts)
                 if len(self._mentioned_threads) > self._MENTIONED_THREADS_MAX:
@@ -1068,8 +1056,7 @@ class SlackAdapter(BasePlatformAdapter):
                     for t in to_remove:
                         self._mentioned_threads.discard(t)
 
-        # When entering a thread for the first time (no existing session),
-        # fetch thread context so the agent understands the conversation.
+        # 首次进入线程时（无现有会话），获取线程上下文让 Agent 理解对话。
         if is_thread_reply and not self._has_active_session_for_thread(
             channel_id=channel_id,
             thread_ts=event_thread_ts,
@@ -1084,12 +1071,12 @@ class SlackAdapter(BasePlatformAdapter):
             if thread_context:
                 text = thread_context + text
 
-        # Determine message type
+        # 确定消息类型
         msg_type = MessageType.TEXT
         if text.startswith("/"):
             msg_type = MessageType.COMMAND
 
-        # Handle file attachments
+        # 处理文件附件
         media_urls = []
         media_types = []
         files = event.get("files", [])
@@ -1101,7 +1088,7 @@ class SlackAdapter(BasePlatformAdapter):
                     ext = "." + mimetype.split("/")[-1].split(";")[0]
                     if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
                         ext = ".jpg"
-                    # Slack private URLs require the bot token as auth header
+                    # Slack 私有 URL 需要 Bot 令牌作为认证头
                     cached = await self._download_slack_file(url, ext, team_id=team_id)
                     media_urls.append(cached)
                     media_types.append(mimetype)
@@ -1120,7 +1107,7 @@ class SlackAdapter(BasePlatformAdapter):
                 except Exception as e:  # pragma: no cover - defensive logging
                     logger.warning("[Slack] Failed to cache audio from %s: %s", url, e, exc_info=True)
             elif url:
-                # Try to handle as a document attachment
+                    # 尝试作为文档附件处理
                 try:
                     original_filename = f.get("name", "")
                     ext = ""
@@ -1128,22 +1115,22 @@ class SlackAdapter(BasePlatformAdapter):
                         _, ext = os.path.splitext(original_filename)
                         ext = ext.lower()
 
-                    # Fallback: reverse-lookup from MIME type
+                    # 兜底：从 MIME 类型反向查找扩展名
                     if not ext and mimetype:
                         mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
                         ext = mime_to_ext.get(mimetype, "")
 
                     if ext not in SUPPORTED_DOCUMENT_TYPES:
-                        continue  # Skip unsupported file types silently
+                        continue  # 静默跳过不支持的文件类型
 
-                    # Check file size (Slack limit: 20 MB for bots)
+                    # 检查文件大小（Slack 限制：Bot 最大 20 MB）
                     file_size = f.get("size", 0)
                     MAX_DOC_BYTES = 20 * 1024 * 1024
                     if not file_size or file_size > MAX_DOC_BYTES:
                         logger.warning("[Slack] Document too large or unknown size: %s", file_size)
                         continue
 
-                    # Download and cache
+                    # 下载并缓存
                     raw_bytes = await self._download_slack_file_bytes(url, team_id=team_id)
                     cached_path = cache_document_from_bytes(
                         raw_bytes, original_filename or f"document{ext}"
@@ -1154,7 +1141,7 @@ class SlackAdapter(BasePlatformAdapter):
                     msg_type = MessageType.DOCUMENT
                     logger.debug("[Slack] Cached user document: %s", cached_path)
 
-                    # Inject text content for .txt/.md files (capped at 100 KB)
+                    # 为 .txt/.md 文件注入文本内容（上限 100 KB）
                     MAX_TEXT_INJECT_BYTES = 100 * 1024
                     if ext in (".md", ".txt") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                         try:
@@ -1167,25 +1154,25 @@ class SlackAdapter(BasePlatformAdapter):
                             else:
                                 text = injection
                         except UnicodeDecodeError:
-                            pass  # Binary content, skip injection
+                            pass  # 二进制内容，跳过注入
 
                 except Exception as e:  # pragma: no cover - defensive logging
                     logger.warning("[Slack] Failed to cache document from %s: %s", url, e, exc_info=True)
 
-        # Resolve user display name (cached after first lookup)
+        # 解析用户显示名称（首次查找后缓存）
         user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
 
-        # Build source
+        # 构建消息来源
         source = self.build_source(
             chat_id=channel_id,
-            chat_name=channel_id,  # Will be resolved later if needed
+            chat_name=channel_id,  # 如有需要将在后续解析
             chat_type="dm" if is_dm else "group",
             user_id=user_id,
             user_name=user_name,
             thread_id=thread_ts,
         )
 
-        # Per-channel ephemeral prompt
+        # 每频道临时提示词
         from gateway.platforms.base import resolve_channel_prompt
         _channel_prompt = resolve_channel_prompt(
             self.config.extra, channel_id, None,
@@ -1203,9 +1190,8 @@ class SlackAdapter(BasePlatformAdapter):
             channel_prompt=_channel_prompt,
         )
 
-        # Only react when bot is directly addressed (DM or @mention).
-        # In listen-all channels (require_mention=false), reacting to every
-        # casual message would be noisy.
+        # 仅在 Bot 被直接寻址时（私信或 @提及）添加反应。
+        # 在全监听频道（require_mention=false）中，对每条普通消息添加反应会很嘈杂。
         _should_react = is_dm or is_mentioned
 
         if _should_react:
@@ -1217,17 +1203,17 @@ class SlackAdapter(BasePlatformAdapter):
             await self._remove_reaction(channel_id, ts, "eyes")
             await self._add_reaction(channel_id, ts, "white_check_mark")
 
-    # ----- Approval button support (Block Kit) -----
+    # ----- 审批按钮支持（Block Kit）-----
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a Block Kit approval prompt with interactive buttons.
+        """发送带交互式按钮的 Block Kit 审批提示。
 
-        The buttons call ``resolve_gateway_approval()`` to unblock the waiting
-        agent thread — same mechanism as the text ``/approve`` flow.
+        按钮调用 ``resolve_gateway_approval()`` 来解除等待中的
+        Agent 线程阻塞——与文本 ``/approve`` 流程使用相同的机制。
         """
         if not self._app:
             return SendResult(success=False, error="Not connected")
@@ -1300,7 +1286,7 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     async def _handle_approval_action(self, ack, body, action) -> None:
-        """Handle an approval button click from Block Kit."""
+        """处理 Block Kit 中的审批按钮点击。"""
         await ack()
 
         action_id = action.get("action_id", "")
@@ -1311,9 +1297,8 @@ class SlackAdapter(BasePlatformAdapter):
         user_name = body.get("user", {}).get("name", "unknown")
         user_id = body.get("user", {}).get("id", "")
 
-        # Only authorized users may click approval buttons.  Button clicks
-        # bypass the normal message auth flow in gateway/run.py, so we must
-        # check here as well.
+        # 只有授权用户可以点击审批按钮。按钮点击绕过了
+        # gateway/run.py 中正常的消息认证流程，所以必须在此检查。
         allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
         if allowed_csv:
             allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
@@ -1324,7 +1309,7 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 return
 
-        # Map action_id to approval choice
+        # 将 action_id 映射到审批选项
         choice_map = {
             "hermes_approve_once": "once",
             "hermes_approve_session": "session",
@@ -1333,11 +1318,11 @@ class SlackAdapter(BasePlatformAdapter):
         }
         choice = choice_map.get(action_id, "deny")
 
-        # Prevent double-clicks — atomic pop; first caller gets False, others get True (default)
+        # 防止重复点击——原子性 pop；第一个调用者获取 False，其他获取 True（默认值）
         if self._approval_resolved.pop(msg_ts, True):
             return
 
-        # Update the message to show the decision and remove buttons
+        # 更新消息以显示决定结果并移除按钮
         label_map = {
             "once": f"✅ Approved once by {user_name}",
             "session": f"✅ Approved for session by {user_name}",
@@ -1346,7 +1331,7 @@ class SlackAdapter(BasePlatformAdapter):
         }
         decision_text = label_map.get(choice, f"Resolved by {user_name}")
 
-        # Get original text from the section block
+        # 获取 section block 中的原始文本
         original_text = ""
         for block in message.get("blocks", []):
             if block.get("type") == "section":
@@ -1379,7 +1364,7 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("[Slack] Failed to update approval message: %s", e)
 
-        # Resolve the approval — this unblocks the agent thread
+        # 解决审批——这将解除 Agent 线程的阻塞
         try:
             from tools.approval import resolve_gateway_approval
             count = resolve_gateway_approval(session_key, choice)
@@ -1390,28 +1375,25 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Slack button: %s", exc)
 
-        # (approval state already consumed by atomic pop above)
+        # （审批状态已在上面的原子 pop 中消耗）
 
-    # ----- Thread context fetching -----
+    # ----- 线程上下文获取 -----
 
     async def _fetch_thread_context(
         self, channel_id: str, thread_ts: str, current_ts: str,
         team_id: str = "", limit: int = 30,
     ) -> str:
-        """Fetch recent thread messages to provide context when the bot is
-        mentioned mid-thread for the first time.
+        """当 Bot 首次在线程中被 @提及 时，获取最近的线程消息以提供上下文。
 
-        This method is only called when there is NO active session for the
-        thread (guarded at the call site by _has_active_session_for_thread).
-        That guard ensures thread messages are prepended only on the very
-        first turn — after that the session history already holds them, so
-        there is no duplication across subsequent turns.
+        此方法仅在线程没有活动会话时调用（由调用处的
+        _has_active_session_for_thread 保护）。该保护确保线程消息
+        仅在第一次对话轮次中被前置——之后会话历史已经包含了它们，
+        所以不会在后续轮次中产生重复。
 
-        Results are cached for _THREAD_CACHE_TTL seconds per thread to avoid
-        hammering conversations.replies (Tier 3, ~50 req/min).
+        结果按线程缓存 _THREAD_CACHE_TTL 秒，避免频繁调用
+        conversations.replies（Tier 3，约 50 请求/分钟）。
 
-        Returns a formatted string with prior thread history, or empty string
-        on failure or if the thread has no prior messages.
+        返回带有之前线程历史的格式化字符串，失败或线程无先前消息时返回空字符串。
         """
         cache_key = f"{channel_id}:{thread_ts}"
         now = time.monotonic()
@@ -1422,7 +1404,7 @@ class SlackAdapter(BasePlatformAdapter):
         try:
             client = self._get_client(channel_id)
 
-            # Retry with exponential backoff for Tier-3 rate limits (429).
+            # 对 Tier-3 限速（429）进行指数退避重试。
             result = None
             for attempt in range(3):
                 try:
@@ -1434,7 +1416,7 @@ class SlackAdapter(BasePlatformAdapter):
                     )
                     break
                 except Exception as exc:
-                    # Check for rate-limit error from slack_sdk
+                    # 检查来自 slack_sdk 的限速错误
                     err_str = str(exc).lower()
                     is_rate_limit = (
                         "ratelimited" in err_str
@@ -1462,11 +1444,11 @@ class SlackAdapter(BasePlatformAdapter):
             context_parts = []
             for msg in messages:
                 msg_ts = msg.get("ts", "")
-                # Exclude the current triggering message — it will be delivered
-                # as the user message itself, so including it here would duplicate it.
+                # 排除当前触发消息——它将作为用户消息本身投递，
+                # 包含在此处会导致重复。
                 if msg_ts == current_ts:
                     continue
-                # Exclude our own bot messages to avoid circular context.
+                # 排除我们自己的 Bot 消息以避免循环上下文。
                 if msg.get("bot_id") or msg.get("subtype") == "bot_message":
                     continue
 
@@ -1474,7 +1456,7 @@ class SlackAdapter(BasePlatformAdapter):
                 if not msg_text:
                     continue
 
-                # Strip bot mentions from context messages
+                # 从上下文消息中移除 Bot @提及
                 if bot_uid:
                     msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
 
@@ -1504,34 +1486,34 @@ class SlackAdapter(BasePlatformAdapter):
             return ""
 
     async def _handle_slash_command(self, command: dict) -> None:
-        """Handle /hermes slash command."""
+        """处理 /hermes 斜杠命令。"""
         text = command.get("text", "").strip()
         user_id = command.get("user_id", "")
         channel_id = command.get("channel_id", "")
         team_id = command.get("team_id", "")
 
-        # Track which workspace owns this channel
+        # 跟踪哪个工作空间拥有此频道
         if team_id and channel_id:
             self._channel_team[channel_id] = team_id
 
-        # Map subcommands to gateway commands — derived from central registry.
-        # Also keep "compact" as a Slack-specific alias for /compress.
+        # 将子命令映射到网关命令——从中央注册表派生。
+        # 同时保留 "compact" 作为 /compress 的 Slack 专用别名。
         from hermes_cli.commands import slack_subcommand_map
         subcommand_map = slack_subcommand_map()
         subcommand_map["compact"] = "/compress"
         first_word = text.split()[0] if text else ""
         if first_word in subcommand_map:
-            # Preserve arguments after the subcommand
+            # 保留子命令后的参数
             rest = text[len(first_word):].strip()
             text = f"{subcommand_map[first_word]} {rest}".strip() if rest else subcommand_map[first_word]
         elif text:
-            pass  # Treat as a regular question
+            pass  # 作为普通问题处理
         else:
             text = "/help"
 
         source = self.build_source(
             chat_id=channel_id,
-            chat_type="dm",  # Slash commands are always in DM-like context
+            chat_type="dm",  # 斜杠命令始终在类似私信的上下文中
             user_id=user_id,
         )
 
@@ -1550,15 +1532,14 @@ class SlackAdapter(BasePlatformAdapter):
         thread_ts: str,
         user_id: str,
     ) -> bool:
-        """Check if there's an active session for a thread.
+        """检查线程是否有活动会话。
 
-        Used to determine if thread replies without @mentions should be
-        processed (they should if there's an active session).
+        用于判断没有 @提及 的线程回复是否应被处理
+        （如果有活动会话则应处理）。
 
-        Uses ``build_session_key()`` as the single source of truth for key
-        construction — avoids the bug where manual key building didn't
-        respect ``thread_sessions_per_user`` and ``group_sessions_per_user``
-        settings correctly.
+        使用 ``build_session_key()`` 作为键构建的唯一真实来源——
+        避免手动构建键时未正确遵循 ``thread_sessions_per_user``
+        和 ``group_sessions_per_user`` 设置的 bug。
         """
         session_store = getattr(self, "_session_store", None)
         if not session_store:
@@ -1575,7 +1556,7 @@ class SlackAdapter(BasePlatformAdapter):
                 thread_id=thread_ts,
             )
 
-            # Read session isolation settings from the store's config
+            # 从 store 的配置中读取会话隔离设置
             store_cfg = getattr(session_store, "config", None)
             gspu = getattr(store_cfg, "group_sessions_per_user", True) if store_cfg else True
             tspu = getattr(store_cfg, "thread_sessions_per_user", False) if store_cfg else False
@@ -1592,7 +1573,7 @@ class SlackAdapter(BasePlatformAdapter):
             return False
 
     async def _download_slack_file(self, url: str, ext: str, audio: bool = False, team_id: str = "") -> str:
-        """Download a Slack file using the bot token for auth, with retry."""
+        """使用 Bot 令牌认证下载 Slack 文件，带重试。"""
         import asyncio
         import httpx
 
@@ -1608,10 +1589,9 @@ class SlackAdapter(BasePlatformAdapter):
                     )
                     response.raise_for_status()
 
-                    # Slack may return an HTML sign-in/redirect page
-                    # instead of actual media bytes (e.g. expired token,
-                    # restricted file access).  Detect this early so we
-                    # don't cache bogus data and confuse downstream tools.
+                    # Slack 可能返回 HTML 登录/重定向页面而非实际媒体字节
+                    # （例如令牌过期、文件访问受限）。
+                    # 早期检测以避免缓存错误数据并混淆下游工具。
                     ct = response.headers.get("content-type", "")
                     if "text/html" in ct:
                         raise ValueError(
@@ -1639,7 +1619,7 @@ class SlackAdapter(BasePlatformAdapter):
         raise last_exc
 
     async def _download_slack_file_bytes(self, url: str, team_id: str = "") -> bytes:
-        """Download a Slack file and return raw bytes, with retry."""
+        """下载 Slack 文件并返回原始字节，带重试。"""
         import asyncio
         import httpx
 
@@ -1667,14 +1647,14 @@ class SlackAdapter(BasePlatformAdapter):
                     raise
         raise last_exc
 
-    # ── Channel mention gating ─────────────────────────────────────────────
+    # ── 频道 @提及 门控 ─────────────────────────────────────────────
 
     def _slack_require_mention(self) -> bool:
-        """Return whether channel messages require an explicit bot mention.
+        """返回频道消息是否需要显式的 Bot @提及。
 
-        Uses explicit-false parsing (like Discord/Matrix) rather than
-        truthy parsing, since the safe default is True (gating on).
-        Unrecognised or empty values keep gating enabled.
+        使用显式 false 解析（与 Discord/Matrix 一致），而非
+        真值解析，因为安全默认值是 True（启用门控）。
+        无法识别或空值将保持门控启用。
         """
         configured = self.config.extra.get("require_mention")
         if configured is not None:
@@ -1684,7 +1664,7 @@ class SlackAdapter(BasePlatformAdapter):
         return os.getenv("SLACK_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
 
     def _slack_free_response_channels(self) -> set:
-        """Return channel IDs where no @mention is required."""
+        """返回无需 @提及 的频道 ID 集合。"""
         raw = self.config.extra.get("free_response_channels")
         if raw is None:
             raw = os.getenv("SLACK_FREE_RESPONSE_CHANNELS", "")

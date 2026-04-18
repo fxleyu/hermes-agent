@@ -1,8 +1,8 @@
 """
-Cron job storage and management.
+定时任务存储与管理。
 
-Jobs are stored in ~/.hermes/cron/jobs.json
-Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
+任务存储在 ~/.hermes/cron/jobs.json
+输出保存到 ~/.hermes/cron/output/{job_id}/{timestamp}.md
 """
 
 import copy
@@ -28,18 +28,18 @@ except ImportError:
     HAS_CRONITER = False
 
 # =============================================================================
-# Configuration
+# 配置
 # =============================================================================
 
 HERMES_DIR = get_hermes_home().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 OUTPUT_DIR = CRON_DIR / "output"
-ONESHOT_GRACE_SECONDS = 120
+ONESHOT_GRACE_SECONDS = 120  # 一次性任务的宽限时间（秒）
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
-    """Normalize legacy/single-skill and multi-skill inputs into a unique ordered list."""
+    """将遗留的单技能和多技能输入规范化为唯一有序列表。"""
     if skills is None:
         raw_items = [skill] if skill else []
     elif isinstance(skills, str):
@@ -56,7 +56,7 @@ def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = N
 
 
 def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
-    """Return a job dict with canonical `skills` and legacy `skill` fields aligned."""
+    """返回一个规范化 `skills` 和遗留 `skill` 字段已对齐的任务字典。"""
     normalized = dict(job)
     skills = _normalize_skill_list(normalized.get("skill"), normalized.get("skills"))
     normalized["skills"] = skills
@@ -65,15 +65,15 @@ def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _secure_dir(path: Path):
-    """Set directory to owner-only access (0700). No-op on Windows."""
+    """将目录设置为仅所有者可访问（0700）。在 Windows 上无操作。"""
     try:
         os.chmod(path, 0o700)
     except (OSError, NotImplementedError):
-        pass  # Windows or other platforms where chmod is not supported
+        pass  # Windows 或其他不支持 chmod 的平台
 
 
 def _secure_file(path: Path):
-    """Set file to owner-only read/write (0600). No-op on Windows."""
+    """将文件设置为仅所有者可读写（0600）。在 Windows 上无操作。"""
     try:
         if path.exists():
             os.chmod(path, 0o600)
@@ -82,7 +82,7 @@ def _secure_file(path: Path):
 
 
 def ensure_dirs():
-    """Ensure cron directories exist with secure permissions."""
+    """确保定时任务目录存在并具有安全权限。"""
     CRON_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     _secure_dir(CRON_DIR)
@@ -90,17 +90,17 @@ def ensure_dirs():
 
 
 # =============================================================================
-# Schedule Parsing
+# 调度解析
 # =============================================================================
 
 def parse_duration(s: str) -> int:
     """
-    Parse duration string into minutes.
-    
-    Examples:
-        "30m" → 30
-        "2h" → 120
-        "1d" → 1440
+    将时间段字符串解析为分钟数。
+
+    示例：
+        "30m" -> 30
+        "2h" -> 120
+        "1d" -> 1440
     """
     s = s.strip().lower()
     match = re.match(r'^(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)$', s)
@@ -108,7 +108,7 @@ def parse_duration(s: str) -> int:
         raise ValueError(f"Invalid duration: '{s}'. Use format like '30m', '2h', or '1d'")
     
     value = int(match.group(1))
-    unit = match.group(2)[0]  # First char: m, h, or d
+    unit = match.group(2)[0]  # 首字符：m（分钟）、h（小时）或 d（天）
     
     multipliers = {'m': 1, 'h': 60, 'd': 1440}
     return value * multipliers[unit]
@@ -116,27 +116,27 @@ def parse_duration(s: str) -> int:
 
 def parse_schedule(schedule: str) -> Dict[str, Any]:
     """
-    Parse schedule string into structured format.
-    
-    Returns dict with:
+    将调度字符串解析为结构化格式。
+
+    返回字典包含：
         - kind: "once" | "interval" | "cron"
-        - For "once": "run_at" (ISO timestamp)
-        - For "interval": "minutes" (int)
-        - For "cron": "expr" (cron expression)
-    
-    Examples:
-        "30m"              → once in 30 minutes
-        "2h"               → once in 2 hours
-        "every 30m"        → recurring every 30 minutes
-        "every 2h"         → recurring every 2 hours
-        "0 9 * * *"        → cron expression
-        "2026-02-03T14:00" → once at timestamp
+        - 对于 "once"："run_at"（ISO 时间戳）
+        - 对于 "interval"："minutes"（整数）
+        - 对于 "cron"："expr"（cron 表达式）
+
+    示例：
+        "30m"              -> 30 分钟后执行一次
+        "2h"               -> 2 小时后执行一次
+        "every 30m"        -> 每 30 分钟重复执行
+        "every 2h"         -> 每 2 小时重复执行
+        "0 9 * * *"        -> cron 表达式
+        "2026-02-03T14:00" -> 在指定时间执行一次
     """
     schedule = schedule.strip()
     original = schedule
     schedule_lower = schedule.lower()
     
-    # "every X" pattern → recurring interval
+    # "every X" 模式 -> 周期性间隔
     if schedule_lower.startswith("every "):
         duration_str = schedule[6:].strip()
         minutes = parse_duration(duration_str)
@@ -146,15 +146,15 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             "display": f"every {minutes}m"
         }
     
-    # Check for cron expression (5 or 6 space-separated fields)
-    # Cron fields: minute hour day month weekday [year]
+    # 检查是否为 cron 表达式（5 或 6 个空格分隔的字段）
+    # cron 字段：分钟 小时 日 月 星期 [年]
     parts = schedule.split()
     if len(parts) >= 5 and all(
         re.match(r'^[\d\*\-,/]+$', p) for p in parts[:5]
     ):
         if not HAS_CRONITER:
             raise ValueError("Cron expressions require 'croniter' package. Install with: pip install croniter")
-        # Validate cron expression
+        # 验证 cron 表达式
         try:
             croniter(schedule)
         except Exception as e:
@@ -165,15 +165,15 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             "display": schedule
         }
     
-    # ISO timestamp (contains T or looks like date)
+    # ISO 时间戳（包含 T 或看起来像日期）
     if 'T' in schedule or re.match(r'^\d{4}-\d{2}-\d{2}', schedule):
         try:
-            # Parse and validate
+            # 解析并验证
             dt = datetime.fromisoformat(schedule.replace('Z', '+00:00'))
-            # Make naive timestamps timezone-aware at parse time so the stored
-            # value doesn't depend on the system timezone matching at check time.
+            # 在解析时将无时区的时间戳转为带时区感知的，这样存储的值
+            # 不会依赖于检查时系统时区是否匹配。
             if dt.tzinfo is None:
-                dt = dt.astimezone()  # Interpret as local timezone
+                dt = dt.astimezone()  # 解释为本地时区
             return {
                 "kind": "once",
                 "run_at": dt.isoformat(),
@@ -182,7 +182,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         except ValueError as e:
             raise ValueError(f"Invalid timestamp '{schedule}': {e}")
     
-    # Duration like "30m", "2h", "1d" → one-shot from now
+    # 类似 "30m"、"2h"、"1d" 的时间段 -> 从现在开始的一次性任务
     try:
         minutes = parse_duration(schedule)
         run_at = _hermes_now() + timedelta(minutes=minutes)
@@ -204,16 +204,16 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
 
 
 def _ensure_aware(dt: datetime) -> datetime:
-    """Return a timezone-aware datetime in Hermes configured timezone.
+    """返回 Hermes 配置时区下的时区感知 datetime。
 
-    Backward compatibility:
-    - Older stored timestamps may be naive.
-    - Naive values are interpreted as *system-local wall time* (the timezone
-      `datetime.now()` used when they were created), then converted to the
-      configured Hermes timezone.
+    向后兼容：
+    - 旧版存储的时间戳可能是无时区的。
+    - 无时区值被解释为*系统本地挂钟时间*（即创建时
+      `datetime.now()` 使用的时区），然后转换为
+      Hermes 配置的时区。
 
-    This preserves relative ordering for legacy naive timestamps across
-    timezone changes and avoids false not-due results.
+    这在时区变更时保持了遗留无时区时间戳的相对顺序，
+    避免了错误的"未到期"判断结果。
     """
     target_tz = _hermes_now().tzinfo
     if dt.tzinfo is None:
@@ -228,11 +228,11 @@ def _recoverable_oneshot_run_at(
     *,
     last_run_at: Optional[str] = None,
 ) -> Optional[str]:
-    """Return a one-shot run time if it is still eligible to fire.
+    """如果一次性任务仍有资格触发，返回其运行时间。
 
-    One-shot jobs get a small grace window so jobs created a few seconds after
-    their requested minute still run on the next tick. Once a one-shot has
-    already run, it is never eligible again.
+    一次性任务有一个小的宽限窗口，这样在请求的分钟之后几秒钟
+    创建的任务仍然会在下一个 tick 时运行。一旦一次性任务
+    已经运行过，就不再有资格触发。
     """
     if schedule.get("kind") != "once":
         return None
@@ -250,14 +250,14 @@ def _recoverable_oneshot_run_at(
 
 
 def _compute_grace_seconds(schedule: dict) -> int:
-    """Compute how late a job can be and still catch up instead of fast-forwarding.
+    """计算任务可以延迟多久仍然追赶执行而不是快进跳过。
 
-    Uses half the schedule period, clamped between 120 seconds and 2 hours.
-    This ensures daily jobs can catch up if missed by up to 2 hours,
-    while frequent jobs (every 5-10 min) still fast-forward quickly.
+    使用调度周期的一半，限制在 120 秒和 2 小时之间。
+    这确保每日任务在错过最多 2 小时后仍可追赶执行，
+    而频繁任务（每 5-10 分钟）则快速快进。
     """
     MIN_GRACE = 120
-    MAX_GRACE = 7200  # 2 hours
+    MAX_GRACE = 7200  # 2 小时
 
     kind = schedule.get("kind")
 
@@ -283,9 +283,9 @@ def _compute_grace_seconds(schedule: dict) -> int:
 
 def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None) -> Optional[str]:
     """
-    Compute the next run time for a schedule.
+    计算调度的下次运行时间。
 
-    Returns ISO timestamp string, or None if no more runs.
+    返回 ISO 时间戳字符串，如果没有更多运行则返回 None。
     """
     now = _hermes_now()
 
@@ -295,11 +295,11 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
     elif schedule["kind"] == "interval":
         minutes = schedule["minutes"]
         if last_run_at:
-            # Next run is last_run + interval
+            # 下次运行 = 上次运行时间 + 间隔
             last = _ensure_aware(datetime.fromisoformat(last_run_at))
             next_run = last + timedelta(minutes=minutes)
         else:
-            # First run is now + interval
+            # 首次运行 = 现在 + 间隔
             next_run = now + timedelta(minutes=minutes)
         return next_run.isoformat()
 
@@ -314,11 +314,11 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 
 
 # =============================================================================
-# Job CRUD Operations
+# 任务 CRUD 操作
 # =============================================================================
 
 def load_jobs() -> List[Dict[str, Any]]:
-    """Load all jobs from storage."""
+    """从存储中加载所有任务。"""
     ensure_dirs()
     if not JOBS_FILE.exists():
         return []
@@ -328,13 +328,13 @@ def load_jobs() -> List[Dict[str, Any]]:
             data = json.load(f)
             return data.get("jobs", [])
     except json.JSONDecodeError:
-        # Retry with strict=False to handle bare control chars in string values
+        # 使用 strict=False 重试，以处理字符串值中的裸控制字符
         try:
             with open(JOBS_FILE, 'r', encoding='utf-8') as f:
                 data = json.loads(f.read(), strict=False)
                 jobs = data.get("jobs", [])
                 if jobs:
-                    # Auto-repair: rewrite with proper escaping
+                    # 自动修复：以正确的转义重新写入
                     save_jobs(jobs)
                     logger.warning("Auto-repaired jobs.json (had invalid control characters)")
                 return jobs
@@ -347,7 +347,7 @@ def load_jobs() -> List[Dict[str, Any]]:
 
 
 def save_jobs(jobs: List[Dict[str, Any]]):
-    """Save all jobs to storage."""
+    """将所有任务保存到存储中。"""
     ensure_dirs()
     fd, tmp_path = tempfile.mkstemp(dir=str(JOBS_FILE.parent), suffix='.tmp', prefix='.jobs_')
     try:
@@ -380,38 +380,38 @@ def create_job(
     script: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Create a new cron job.
+    创建一个新的定时任务。
 
     Args:
-        prompt: The prompt to run (must be self-contained, or a task instruction when skill is set)
-        schedule: Schedule string (see parse_schedule)
-        name: Optional friendly name
-        repeat: How many times to run (None = forever, 1 = once)
-        deliver: Where to deliver output ("origin", "local", "telegram", etc.)
-        origin: Source info where job was created (for "origin" delivery)
-        skill: Optional legacy single skill name to load before running the prompt
-        skills: Optional ordered list of skills to load before running the prompt
-        model: Optional per-job model override
-        provider: Optional per-job provider override
-        base_url: Optional per-job base URL override
-        script: Optional path to a Python script whose stdout is injected into the
-                prompt each run.  The script runs before the agent turn, and its output
-                is prepended as context.  Useful for data collection / change detection.
+        prompt: 要运行的提示词（必须自包含，或在设置 skill 时为任务指令）
+        schedule: 调度字符串（见 parse_schedule）
+        name: 可选的友好名称
+        repeat: 运行次数（None = 无限，1 = 一次）
+        deliver: 输出投递目标（"origin"、"local"、"telegram" 等）
+        origin: 任务创建来源信息（用于 "origin" 投递）
+        skill: 可选的遗留单技能名称，在运行提示词前加载
+        skills: 可选的有序技能列表，在运行提示词前加载
+        model: 可选的每任务模型覆盖
+        provider: 可选的每任务提供商覆盖
+        base_url: 可选的每任务基础 URL 覆盖
+        script: 可选的 Python 脚本路径，其标准输出会在每次运行时注入到提示词中。
+                脚本在代理轮次之前运行，其输出作为上下文前置。
+                适用于数据采集/变更检测。
 
     Returns:
-        The created job dict
+        创建的任务字典
     """
     parsed_schedule = parse_schedule(schedule)
 
-    # Normalize repeat: treat 0 or negative values as None (infinite)
+    # 规范化 repeat：将 0 或负值视为 None（无限）
     if repeat is not None and repeat <= 0:
         repeat = None
 
-    # Auto-set repeat=1 for one-shot schedules if not specified
+    # 对一次性调度自动设置 repeat=1（如果未指定）
     if parsed_schedule["kind"] == "once" and repeat is None:
         repeat = 1
 
-    # Default delivery to origin if available, otherwise local
+    # 如果有 origin 信息，默认投递到 origin，否则投递到本地
     if deliver is None:
         deliver = "origin" if origin else "local"
 
@@ -442,7 +442,7 @@ def create_job(
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
         "repeat": {
-            "times": repeat,  # None = forever
+            "times": repeat,  # None = 无限
             "completed": 0
         },
         "enabled": True,
@@ -455,9 +455,9 @@ def create_job(
         "last_status": None,
         "last_error": None,
         "last_delivery_error": None,
-        # Delivery configuration
+        # 投递配置
         "deliver": deliver,
-        "origin": origin,  # Tracks where job was created for "origin" delivery
+        "origin": origin,  # 记录任务创建位置，用于 "origin" 投递
     }
 
     jobs = load_jobs()
@@ -468,7 +468,7 @@ def create_job(
 
 
 def get_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Get a job by ID."""
+    """根据 ID 获取任务。"""
     jobs = load_jobs()
     for job in jobs:
         if job["id"] == job_id:
@@ -477,7 +477,7 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
-    """List all jobs, optionally including disabled ones."""
+    """列出所有任务，可选择是否包含已禁用的任务。"""
     jobs = [_apply_skill_fields(j) for j in load_jobs()]
     if not include_disabled:
         jobs = [j for j in jobs if j.get("enabled", True)]
@@ -485,7 +485,7 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
 
 
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Update a job by ID, refreshing derived schedule fields when needed."""
+    """根据 ID 更新任务，在需要时刷新派生的调度字段。"""
     jobs = load_jobs()
     for i, job in enumerate(jobs):
         if job["id"] != job_id:
@@ -501,9 +501,9 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
         if schedule_changed:
             updated_schedule = updated["schedule"]
-            # The API may pass schedule as a raw string (e.g. "every 10m")
-            # instead of a pre-parsed dict.  Normalize it the same way
-            # create_job() does so downstream code can call .get() safely.
+            # API 可能会传入原始字符串形式的 schedule（例如 "every 10m"）
+            # 而非预解析的字典。按 create_job() 的方式规范化，
+            # 以便下游代码可以安全地调用 .get()。
             if isinstance(updated_schedule, str):
                 updated_schedule = parse_schedule(updated_schedule)
                 updated["schedule"] = updated_schedule
@@ -524,7 +524,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
 
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Pause a job without deleting it."""
+    """暂停任务而不删除。"""
     return update_job(
         job_id,
         {
@@ -537,7 +537,7 @@ def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, A
 
 
 def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Resume a paused job and compute the next future run from now."""
+    """恢复暂停的任务，从当前时间计算下一个未来运行时间。"""
     job = get_job(job_id)
     if not job:
         return None
@@ -556,7 +556,7 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Schedule a job to run on the next scheduler tick."""
+    """安排任务在下一个调度器 tick 时运行。"""
     job = get_job(job_id)
     if not job:
         return None
@@ -573,7 +573,7 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 def remove_job(job_id: str) -> bool:
-    """Remove a job by ID."""
+    """根据 ID 删除任务。"""
     jobs = load_jobs()
     original_len = len(jobs)
     jobs = [j for j in jobs if j["id"] != job_id]
@@ -586,13 +586,13 @@ def remove_job(job_id: str) -> bool:
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                  delivery_error: Optional[str] = None):
     """
-    Mark a job as having been run.
-    
-    Updates last_run_at, last_status, increments completed count,
-    computes next_run_at, and auto-deletes if repeat limit reached.
+    标记任务已运行。
 
-    ``delivery_error`` is tracked separately from the agent error — a job
-    can succeed (agent produced output) but fail delivery (platform down).
+    更新 last_run_at、last_status，增加已完成计数，
+    计算 next_run_at，并在达到重复限制时自动删除。
+
+    ``delivery_error`` 与代理错误分开跟踪 -- 一个任务
+    可以成功（代理产生了输出）但投递失败（平台宕机）。
     """
     jobs = load_jobs()
     for i, job in enumerate(jobs):
@@ -601,26 +601,26 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
             job["last_run_at"] = now
             job["last_status"] = "ok" if success else "error"
             job["last_error"] = error if not success else None
-            # Track delivery failures separately — cleared on successful delivery
+            # 投递失败单独跟踪 -- 投递成功时清除
             job["last_delivery_error"] = delivery_error
-            
-            # Increment completed count
+
+            # 增加已完成计数
             if job.get("repeat"):
                 job["repeat"]["completed"] = job["repeat"].get("completed", 0) + 1
-                
-                # Check if we've hit the repeat limit
+
+                # 检查是否已达到重复限制
                 times = job["repeat"].get("times")
                 completed = job["repeat"]["completed"]
                 if times is not None and times > 0 and completed >= times:
-                    # Remove the job (limit reached)
+                    # 已达限制，删除任务
                     jobs.pop(i)
                     save_jobs(jobs)
                     return
-            
-            # Compute next run
+
+            # 计算下次运行时间
             job["next_run_at"] = compute_next_run(job["schedule"], now)
 
-            # If no next run (one-shot completed), disable
+            # 如果没有下次运行（一次性任务已完成），禁用该任务
             if job["next_run_at"] is None:
                 job["enabled"] = False
                 job["state"] = "completed"
@@ -634,16 +634,16 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
 
 
 def advance_next_run(job_id: str) -> bool:
-    """Preemptively advance next_run_at for a recurring job before execution.
+    """在执行前预先将周期性任务的 next_run_at 推进到下一个时间点。
 
-    Call this BEFORE run_job() so that if the process crashes mid-execution,
-    the job won't re-fire on the next gateway restart.  This converts the
-    scheduler from at-least-once to at-most-once for recurring jobs — missing
-    one run is far better than firing dozens of times in a crash loop.
+    在 run_job() 之前调用此函数，这样如果进程在执行期间崩溃，
+    任务不会在下次网关重启时重新触发。这将调度器从
+    "至少一次" 转换为 "至多一次" 语义 -- 对于周期性任务来说
+    错过一次运行远好于在崩溃循环中触发数十次。
 
-    One-shot jobs are left unchanged so they can still retry on restart.
+    一次性任务保持不变，以便它们在重启时仍可重试。
 
-    Returns True if next_run_at was advanced, False otherwise.
+    如果 next_run_at 被推进则返回 True，否则返回 False。
     """
     jobs = load_jobs()
     for job in jobs:
@@ -662,12 +662,12 @@ def advance_next_run(job_id: str) -> bool:
 
 
 def get_due_jobs() -> List[Dict[str, Any]]:
-    """Get all jobs that are due to run now.
+    """获取所有当前到期需要运行的任务。
 
-    For recurring jobs (cron/interval), if the scheduled time is stale
-    (more than one period in the past, e.g. because the gateway was down),
-    the job is fast-forwarded to the next future run instead of firing
-    immediately.  This prevents a burst of missed jobs on gateway restart.
+    对于周期性任务（cron/interval），如果调度时间过期
+    （超过一个周期已过，例如因为网关关闭），任务将被快进到
+    下一个未来运行时间，而不是立即触发。这可以防止
+    网关重启时一批错过的任务同时触发。
     """
     now = _hermes_now()
     raw_jobs = load_jobs()
@@ -707,13 +707,13 @@ def get_due_jobs() -> List[Dict[str, Any]]:
             schedule = job.get("schedule", {})
             kind = schedule.get("kind")
 
-            # For recurring jobs, check if the scheduled time is stale
-            # (gateway was down and missed the window). Fast-forward to
-            # the next future occurrence instead of firing a stale run.
+            # 对于周期性任务，检查调度时间是否过期
+            # （网关关闭并错过了窗口）。快进到
+            # 下一个未来时间点，而不是执行过期的运行。
             grace = _compute_grace_seconds(schedule)
             if kind in ("cron", "interval") and (now - next_run_dt).total_seconds() > grace:
-                # Job is past its catch-up grace window — this is a stale missed run.
-                # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
+                # 任务已超过追赶宽限窗口 -- 这是一个过期的错过运行。
+                # 宽限时间随调度周期缩放：每日=2h，每小时=30m，10分钟=5m。
                 new_next = compute_next_run(schedule, now.isoformat())
                 if new_next:
                     logger.info(
@@ -724,13 +724,13 @@ def get_due_jobs() -> List[Dict[str, Any]]:
                         grace,
                         new_next,
                     )
-                    # Update the job in storage
+                    # 更新存储中的任务
                     for rj in raw_jobs:
                         if rj["id"] == job["id"]:
                             rj["next_run_at"] = new_next
                             needs_save = True
                             break
-                    continue  # Skip this run
+                    continue  # 跳过本次运行
 
             due.append(job)
 
@@ -741,7 +741,7 @@ def get_due_jobs() -> List[Dict[str, Any]]:
 
 
 def save_job_output(job_id: str, output: str):
-    """Save job output to file."""
+    """将任务输出保存到文件。"""
     ensure_dirs()
     job_output_dir = OUTPUT_DIR / job_id
     job_output_dir.mkdir(parents=True, exist_ok=True)

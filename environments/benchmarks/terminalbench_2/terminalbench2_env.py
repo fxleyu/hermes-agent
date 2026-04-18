@@ -1,34 +1,33 @@
 """
-TerminalBench2Env -- Terminal-Bench 2.0 Evaluation Environment
+TerminalBench2Env -- Terminal-Bench 2.0 评估环境
 
-Evaluates agentic LLMs on challenging terminal tasks from Terminal-Bench 2.0.
-Each task provides a unique Docker environment (pre-built on Docker Hub), a natural
-language instruction, and a test suite for verification. The agent uses terminal +
-file tools to complete the task, then the test suite runs inside the same sandbox.
+在 Terminal-Bench 2.0 的高难度终端任务上评估智能体 LLM。
+每个任务提供一个唯一的 Docker 环境（Docker Hub 上的预构建镜像）、一条自然语言指令
+和一个测试套件用于验证。智能体使用终端 + 文件工具完成任务，然后测试套件在同一
+沙箱中运行。
 
-This is an eval-only environment (not a training environment). It is designed to
-be run via the `evaluate` subcommand:
+这是一个纯评估环境（非训练环境），设计为通过 `evaluate` 子命令运行：
 
     python environments/terminalbench2_env.py evaluate \\
         --env.dataset_name NousResearch/terminal-bench-2
 
-The evaluate flow:
-    1. setup()     -- Loads the TB2 dataset from HuggingFace
-    2. evaluate()  -- Iterates over all tasks, running each through:
-        a. rollout_and_score_eval()  -- Per-task agent loop + test verification
-            - Resolves Docker image (pre-built Hub image or Dockerfile fallback)
-            - Registers per-task Modal sandbox via register_task_env_overrides()
-            - Runs the HermesAgentLoop (terminal + file tools)
-            - Uploads test suite and runs test.sh in the same sandbox
-            - Returns binary pass/fail result
-        b. Aggregates per-task, per-category, and overall pass rates
-        c. Logs results via evaluate_log() and wandb
+评估流程：
+    1. setup()     -- 从 HuggingFace 加载 TB2 数据集
+    2. evaluate()  -- 遍历所有任务，每个任务执行以下步骤：
+        a. rollout_and_score_eval()  -- 单任务智能体循环 + 测试验证
+            - 解析 Docker 镜像（优先使用预构建 Hub 镜像，回退到 Dockerfile 构建）
+            - 通过 register_task_env_overrides() 注册每任务的 Modal 沙箱
+            - 运行 HermesAgentLoop（终端 + 文件工具）
+            - 上传测试套件并在同一沙箱中运行 test.sh
+            - 返回二值通过/失败结果
+        b. 聚合每任务、每类别和整体通过率
+        c. 通过 evaluate_log() 和 wandb 记录结果
 
-Key features:
-  - Per-task Modal sandboxes using pre-built Docker Hub images
-  - Binary reward: 1.0 if all tests pass, 0.0 otherwise
-  - Concurrency-controlled parallel evaluation via asyncio.Semaphore
-  - Per-task, per-category, and aggregate pass rate tracking
+核心特性：
+  - 基于预构建 Docker Hub 镜像的每任务 Modal 沙箱
+  - 二值奖励：所有测试通过为 1.0，否则为 0.0
+  - 通过 asyncio.Semaphore 控制并发的并行评估
+  - 每任务、每类别和聚合通过率追踪
 """
 
 import asyncio
@@ -47,7 +46,7 @@ from collections import defaultdict
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-# Ensure repo root is on sys.path for imports
+# 确保仓库根目录在 sys.path 中，以便导入项目模块
 _repo_root = Path(__file__).resolve().parent.parent.parent.parent
 if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
@@ -70,37 +69,37 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# Configuration
+# 配置
 # =============================================================================
 
 class TerminalBench2EvalConfig(HermesAgentEnvConfig):
     """
-    Configuration for the Terminal-Bench 2.0 evaluation environment.
+    Terminal-Bench 2.0 评估环境的配置类。
 
-    Extends HermesAgentEnvConfig with TB2-specific settings for dataset loading,
-    test execution, task filtering, and eval concurrency.
+    继承 HermesAgentEnvConfig，并添加 TB2 特有的数据集加载、
+    测试执行、任务筛选和评估并发等配置项。
     """
 
-    # --- Dataset ---
+    # --- 数据集 ---
     dataset_name: str = Field(
         default="NousResearch/terminal-bench-2",
         description="HuggingFace dataset containing TB2 tasks.",
     )
 
-    # --- Test execution ---
+    # --- 测试执行 ---
     test_timeout: int = Field(
         default=180,
         description="Timeout in seconds for running the test suite after agent completes.",
     )
 
-    # --- Image strategy ---
+    # --- 镜像策略 ---
     force_build: bool = Field(
         default=False,
         description="If True, always build from Dockerfile (ignore docker_image). "
         "Useful for testing custom Dockerfiles.",
     )
 
-    # --- Task filtering (comma-separated from CLI) ---
+    # --- 任务筛选（CLI 中以逗号分隔） ---
     task_filter: Optional[str] = Field(
         default=None,
         description="Comma-separated task names to run (e.g., 'fix-git,git-multibranch'). "
@@ -111,14 +110,14 @@ class TerminalBench2EvalConfig(HermesAgentEnvConfig):
         description="Comma-separated task names to skip on top of the default skip list.",
     )
 
-    # --- Per-task wall-clock timeout ---
+    # --- 单任务挂钟超时 ---
     task_timeout: int = Field(
         default=1800,
         description="Maximum wall-clock seconds per task (agent loop + verification). "
         "Tasks exceeding this are scored as FAIL. Default 30 minutes.",
     )
 
-    # --- Concurrency control ---
+    # --- 并发控制 ---
     max_concurrent_tasks: int = Field(
         default=8,
         description="Maximum number of tasks to run concurrently. "
@@ -127,7 +126,7 @@ class TerminalBench2EvalConfig(HermesAgentEnvConfig):
         "causes blocking calls to deadlock inside the thread pool.",
     )
 
-    # --- Eval concurrency ---
+    # --- 评估并发 ---
     eval_concurrency: int = Field(
         default=0,
         description="Maximum number of tasks to evaluate in parallel. "
@@ -136,24 +135,26 @@ class TerminalBench2EvalConfig(HermesAgentEnvConfig):
     )
 
 
-# Tasks that cannot run properly on Modal and are excluded from scoring.
+# 无法在 Modal 上正常运行的任务，将从评分中排除。
 MODAL_INCOMPATIBLE_TASKS = {
-    "qemu-startup",        # Needs KVM/hardware virtualization
-    "qemu-alpine-ssh",     # Needs KVM/hardware virtualization
-    "crack-7z-hash",       # Password brute-force -- too slow for cloud sandbox timeouts
+    "qemu-startup",        # 需要 KVM/硬件虚拟化
+    "qemu-alpine-ssh",     # 需要 KVM/硬件虚拟化
+    "crack-7z-hash",       # 密码暴力破解——在云沙箱超时内速度太慢
 }
 
 
 # =============================================================================
-# Tar extraction helper
+# Tar 解压辅助函数
 # =============================================================================
 
 def _normalize_tar_member_parts(member_name: str) -> list:
-    """Return safe path components for a tar member or raise ValueError."""
+    """返回 tar 成员的安全路径组件，如果路径不安全则抛出 ValueError。"""
+    # 统一将反斜杠替换为正斜杠，兼容 Windows 路径
     normalized_name = member_name.replace("\\", "/")
     posix_path = PurePosixPath(normalized_name)
     windows_path = PureWindowsPath(member_name)
 
+    # 检查是否为绝对路径或带盘符（防止路径穿越攻击）
     if (
         not normalized_name
         or posix_path.is_absolute()
@@ -162,6 +163,7 @@ def _normalize_tar_member_parts(member_name: str) -> list:
     ):
         raise ValueError(f"Unsafe archive member path: {member_name}")
 
+    # 过滤空字符串和当前目录标记，拒绝父目录遍历
     parts = [part for part in posix_path.parts if part not in ("", ".")]
     if not parts or any(part == ".." for part in parts):
         raise ValueError(f"Unsafe archive member path: {member_name}")
@@ -169,7 +171,7 @@ def _normalize_tar_member_parts(member_name: str) -> list:
 
 
 def _safe_extract_tar(tar: tarfile.TarFile, target_dir: Path) -> None:
-    """Extract a tar archive without allowing traversal or link entries."""
+    """安全解压 tar 归档，禁止路径穿越和符号链接条目。"""
     target_dir.mkdir(parents=True, exist_ok=True)
     target_root = target_dir.resolve()
 
@@ -178,6 +180,7 @@ def _safe_extract_tar(tar: tarfile.TarFile, target_dir: Path) -> None:
         target = target_dir.joinpath(*parts)
         target_real = target.resolve(strict=False)
 
+        # 确保解压目标在目标根目录内部（防止路径穿越）
         try:
             target_real.relative_to(target_root)
         except ValueError as exc:
@@ -187,6 +190,7 @@ def _safe_extract_tar(tar: tarfile.TarFile, target_dir: Path) -> None:
             target_real.mkdir(parents=True, exist_ok=True)
             continue
 
+        # 只允许普通文件（拒绝符号链接等特殊类型）
         if not member.isfile():
             raise ValueError(f"Unsupported archive member type: {member.name}")
 
@@ -198,6 +202,7 @@ def _safe_extract_tar(tar: tarfile.TarFile, target_dir: Path) -> None:
         with extracted, open(target_real, "wb") as dst:
             shutil.copyfileobj(extracted, dst)
 
+        # 保留原始文件权限（仅保留低 9 位 rwx 权限）
         try:
             os.chmod(target_real, member.mode & 0o777)
         except OSError:
@@ -205,7 +210,7 @@ def _safe_extract_tar(tar: tarfile.TarFile, target_dir: Path) -> None:
 
 
 def _extract_base64_tar(b64_data: str, target_dir: Path):
-    """Extract a base64-encoded tar.gz archive into target_dir."""
+    """将 base64 编码的 tar.gz 归档解压到 target_dir 目录。"""
     if not b64_data:
         return
     raw = base64.b64decode(b64_data)
@@ -215,30 +220,30 @@ def _extract_base64_tar(b64_data: str, target_dir: Path):
 
 
 # =============================================================================
-# Main Environment
+# 主评估环境
 # =============================================================================
 
 class TerminalBench2EvalEnv(HermesAgentBaseEnv):
     """
-    Terminal-Bench 2.0 evaluation environment (eval-only, no training).
+    Terminal-Bench 2.0 评估环境（仅评估，非训练）。
 
-    Inherits from HermesAgentBaseEnv for:
-      - Terminal backend setup (os.environ["TERMINAL_ENV"])
-      - Tool resolution via _resolve_tools_for_group()
-      - Monkey patches for async-safe tool operation
-      - Wandb trajectory formatting
+    继承 HermesAgentBaseEnv 以获得：
+      - 终端后端设置（os.environ["TERMINAL_ENV"]）
+      - 通过 _resolve_tools_for_group() 解析工具
+      - 异步安全工具操作的猴子补丁
+      - Wandb 轨迹格式化
 
-    The evaluate flow (triggered by `environment.py evaluate`):
-      1. setup()    -- Load dataset from HuggingFace
-      2. evaluate() -- Run all tasks through rollout_and_score_eval()
+    评估流程（通过 `environment.py evaluate` 触发）：
+      1. setup()    -- 从 HuggingFace 加载数据集
+      2. evaluate() -- 对所有任务执行 rollout_and_score_eval()
 
-    Each task in rollout_and_score_eval():
-      1. Resolve Docker image (pre-built Hub image or Dockerfile fallback)
-      2. Register per-task Modal sandbox override
-      3. Run HermesAgentLoop with terminal + file tools
-      4. Upload test suite and execute test.sh in the same sandbox
-      5. Check /logs/verifier/reward.txt for pass/fail
-      6. Clean up sandbox, overrides, and temp files
+    每个任务在 rollout_and_score_eval() 中的流程：
+      1. 解析 Docker 镜像（预构建 Hub 镜像或 Dockerfile 回退）
+      2. 注册每任务的 Modal 沙箱覆盖配置
+      3. 使用终端 + 文件工具运行 HermesAgentLoop
+      4. 上传测试套件并在同一沙箱中执行 test.sh
+      5. 检查 /logs/verifier/reward.txt 获取通过/失败结果
+      6. 清理沙箱、覆盖配置和临时文件
     """
 
     name = "terminal-bench-2"
@@ -247,43 +252,43 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
     @classmethod
     def config_init(cls) -> Tuple[TerminalBench2EvalConfig, List[APIServerConfig]]:
         """
-        Default configuration for Terminal-Bench 2.0 evaluation.
+        Terminal-Bench 2.0 评估的默认配置。
 
-        Uses eval-only settings:
-          - eval_handling=STOP_TRAIN so the eval flow runs cleanly
-          - steps_per_eval=1, total_steps=1 so eval triggers immediately
-          - group_size=1 (one rollout per group, each task is expensive)
+        使用仅评估设置：
+          - eval_handling=STOP_TRAIN 使评估流程正常运行
+          - steps_per_eval=1, total_steps=1 使评估立即触发
+          - group_size=1（每组一次推演，每个任务成本较高）
 
-        Uses Modal terminal backend (cloud-isolated sandbox per task) and
-        OpenRouter with Claude for inference.
+        使用 Modal 终端后端（每任务云隔离沙箱）和
+        OpenRouter + Claude 进行推理。
         """
         env_config = TerminalBench2EvalConfig(
-            # Terminal + file tools only (the agent interacts via shell commands)
+            # 仅启用终端 + 文件工具（智能体通过 shell 命令交互）
             enabled_toolsets=["terminal", "file"],
             disabled_toolsets=None,
             distribution=None,
 
-            # Agent settings -- TB2 tasks are complex, need many turns
+            # 智能体设置——TB2 任务复杂，需要多轮对话
             max_agent_turns=60,
             max_token_length=16000,
             agent_temperature=0.6,
             system_prompt=None,
 
-            # Modal backend for per-task cloud-isolated sandboxes
+            # Modal 后端用于每任务云隔离沙箱
             terminal_backend="modal",
-            terminal_timeout=300,   # 5 min per command (builds, pip install, etc.)
+            terminal_timeout=300,   # 每条命令 5 分钟（构建、pip install 等）
 
-            # Test execution timeout (TB2 test scripts can install deps like pytest)
+            # 测试执行超时（TB2 测试脚本可能会安装 pytest 等依赖）
             test_timeout=180,
 
-            # 89 tasks run in parallel, each needs a thread for tool calls
+            # 89 个任务并行运行，每个都需要一个线程来执行工具调用
             tool_pool_size=128,
 
-            # --- Eval-only Atropos settings ---
-            # These settings make the env work as an eval-only environment:
-            #   - STOP_TRAIN: pauses training during eval (standard for eval envs)
-            #   - steps_per_eval=1, total_steps=1: eval triggers immediately
-            #   - group_size=1: one rollout per group (each task is expensive)
+            # --- 仅评估的 Atropos 设置 ---
+            # 这些设置使环境以仅评估模式工作：
+            #   - STOP_TRAIN: 评估期间暂停训练（评估环境的标准做法）
+            #   - steps_per_eval=1, total_steps=1: 评估立即触发
+            #   - group_size=1: 每组一次推演（每个任务成本较高）
             eval_handling=EvalHandlingEnum.STOP_TRAIN,
             group_size=1,
             steps_per_eval=1,
@@ -292,10 +297,10 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
             tokenizer_name="NousResearch/Hermes-3-Llama-3.1-8B",
             use_wandb=True,
             wandb_name="terminal-bench-2",
-            ensure_scores_are_not_same=False,  # Binary rewards may all be 0 or 1
+            ensure_scores_are_not_same=False,  # 二值奖励可能全为 0 或全为 1
         )
 
-        # OpenRouter with Claude -- API key loaded from .env
+        # OpenRouter + Claude——API 密钥从 .env 加载
         server_configs = [
             APIServerConfig(
                 base_url="https://openrouter.ai/api/v1",
@@ -309,16 +314,15 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
         return env_config, server_configs
 
     # =========================================================================
-    # Setup -- load dataset
+    # 初始化——加载数据集
     # =========================================================================
 
     async def setup(self):
-        """Load the Terminal-Bench 2.0 dataset from HuggingFace."""
+        """从 HuggingFace 加载 Terminal-Bench 2.0 数据集。"""
         from datasets import load_dataset
 
-        # Auto-set terminal_lifetime to task_timeout + 120s so sandboxes
-        # never get killed during an active task, but still get cleaned up
-        # promptly after the task times out.
+        # 自动将 terminal_lifetime 设为 task_timeout + 120 秒，
+        # 确保沙箱在活跃任务期间不会被杀死，但在任务超时后能及时清理。
         lifetime = self.config.task_timeout + 120
         self.config.terminal_lifetime = lifetime
         os.environ["TERMINAL_LIFETIME_SECONDS"] = str(lifetime)
@@ -327,15 +331,15 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
         print(f"Loading TB2 dataset from: {self.config.dataset_name}")
         ds = load_dataset(self.config.dataset_name, split="train")
 
-        # Apply task filters (comma-separated strings from CLI)
+        # 应用任务筛选器（CLI 中以逗号分隔的字符串）
         tasks = list(ds)
         if self.config.task_filter:
             allowed = {name.strip() for name in self.config.task_filter.split(",")}
             tasks = [t for t in tasks if t["task_name"] in allowed]
             print(f"  Filtered to {len(tasks)} tasks: {sorted(allowed)}")
 
-        # Skip tasks incompatible with the current backend (e.g., QEMU on Modal)
-        # plus any user-specified skip_tasks
+        # 跳过与当前后端不兼容的任务（例如 Modal 上的 QEMU）
+        # 以及用户指定的 skip_tasks
         skip = set(MODAL_INCOMPATIBLE_TASKS) if self.config.terminal_backend == "modal" else set()
         if self.config.skip_tasks:
             skip |= {name.strip() for name in self.config.skip_tasks.split(",")}
@@ -349,17 +353,17 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
         self.all_eval_items = tasks
         self.iter = 0
 
-        # Build category index for per-category metrics
+        # 构建类别索引，用于按类别统计指标
         self.category_index: Dict[str, List[int]] = defaultdict(list)
         for i, task in enumerate(self.all_eval_items):
             self.category_index[task.get("category", "unknown")].append(i)
 
-        # Reward tracking for wandb logging
+        # 奖励追踪，用于 wandb 日志记录
         self.eval_metrics: List[Tuple[str, float]] = []
 
-        # Streaming JSONL writer -- saves each task's full conversation
-        # immediately on completion so data is preserved even on Ctrl+C.
-        # Timestamped filename so each run produces a unique file.
+        # 流式 JSONL 写入器——每完成一个任务立即保存完整对话，
+        # 即使 Ctrl+C 中断也能保留数据。
+        # 使用时间戳文件名，确保每次运行生成唯一文件。
         import datetime
         log_dir = os.path.join(os.path.dirname(__file__), "logs")
         os.makedirs(log_dir, exist_ok=True)
@@ -374,7 +378,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
             print(f"  {cat}: {len(indices)} tasks")
 
     def _save_result(self, result: Dict[str, Any]):
-        """Write a single task result to the streaming JSONL file immediately."""
+        """将单个任务结果立即写入流式 JSONL 文件。"""
         if not hasattr(self, "_streaming_file") or self._streaming_file.closed:
             return
         with self._streaming_lock:
@@ -382,63 +386,62 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
             self._streaming_file.flush()
 
     # =========================================================================
-    # Training pipeline stubs -- NOT used in eval-only mode
+    # 训练管线桩函数——仅评估模式下不使用
     # =========================================================================
-    # These satisfy the abstract method requirements from HermesAgentBaseEnv.
-    # The evaluate subcommand calls setup() -> evaluate() directly, bypassing
-    # the training pipeline entirely.
+    # 这些方法满足 HermesAgentBaseEnv 的抽象方法要求。
+    # evaluate 子命令直接调用 setup() -> evaluate()，
+    # 完全绕过训练管线。
 
     async def get_next_item(self):
-        """Return next item (stub -- not used in eval-only mode)."""
+        """返回下一个项目（桩函数——仅评估模式下不使用）。"""
         item = self.all_eval_items[self.iter % len(self.all_eval_items)]
         self.iter += 1
         return item
 
     def format_prompt(self, item: Dict[str, Any]) -> str:
-        """Return the task's instruction as the user prompt."""
+        """将任务的指令作为用户提示返回。"""
         return item["instruction"]
 
     async def compute_reward(self, item, result, ctx) -> float:
-        """Compute reward (stub -- actual verification is in rollout_and_score_eval)."""
+        """计算奖励（桩函数——实际验证在 rollout_and_score_eval 中）。"""
         return 0.0
 
     async def collect_trajectories(self, item):
-        """Collect trajectories (stub -- not used in eval-only mode)."""
+        """收集轨迹（桩函数——仅评估模式下不使用）。"""
         return None, []
 
     async def score(self, rollout_group_data):
-        """Score rollouts (stub -- not used in eval-only mode)."""
+        """评分推演（桩函数——仅评估模式下不使用）。"""
         return None
 
     # =========================================================================
-    # Docker image resolution
+    # Docker 镜像解析
     # =========================================================================
 
     def _resolve_task_image(
         self, item: Dict[str, Any], task_name: str
     ) -> Tuple[str, Optional[Path]]:
         """
-        Resolve the Docker image for a task, with fallback to Dockerfile.
+        解析任务的 Docker 镜像，支持回退到 Dockerfile 构建。
 
-        Strategy (mirrors Harbor's approach):
-        1. If force_build=True, always build from Dockerfile in environment_tar
-        2. If docker_image is available, use the pre-built Docker Hub image (fast)
-        3. Otherwise, extract Dockerfile from environment_tar and build (slow)
+        策略（与 Harbor 的方式一致）：
+        1. 如果 force_build=True，始终从 environment_tar 中的 Dockerfile 构建
+        2. 如果 docker_image 可用，使用预构建的 Docker Hub 镜像（快速）
+        3. 否则，从 environment_tar 中提取 Dockerfile 并构建（慢速）
 
-        Returns:
-            (modal_image, temp_dir) -- modal_image is a Docker Hub name or a
-            Dockerfile path. temp_dir is set if we extracted files that need
-            cleanup later.
+        返回：
+            (modal_image, temp_dir) -- modal_image 是 Docker Hub 镜像名
+            或 Dockerfile 路径。temp_dir 在提取了需要后续清理的文件时设置。
         """
         docker_image = item.get("docker_image", "")
         environment_tar = item.get("environment_tar", "")
 
-        # Fast path: use pre-built Docker Hub image
+        # 快速路径：使用预构建的 Docker Hub 镜像
         if docker_image and not self.config.force_build:
             logger.info("Task %s: using pre-built image %s", task_name, docker_image)
             return docker_image, None
 
-        # Slow path: extract Dockerfile from environment_tar and build
+        # 慢速路径：从 environment_tar 中提取 Dockerfile 并构建
         if environment_tar:
             task_dir = Path(tempfile.mkdtemp(prefix=f"tb2-{task_name}-"))
             _extract_base64_tar(environment_tar, task_dir)
@@ -450,7 +453,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
                 )
                 return str(dockerfile_path), task_dir
 
-        # Neither available -- fall back to Hub image if force_build was True
+        # 两者都不可用——如果 force_build 为 True 则回退到 Hub 镜像
         if docker_image:
             logger.warning(
                 "Task %s: force_build=True but no environment_tar, "
@@ -461,38 +464,38 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
         return "", None
 
     # =========================================================================
-    # Per-task evaluation -- agent loop + test verification
+    # 单任务评估——智能体循环 + 测试验证
     # =========================================================================
 
     async def rollout_and_score_eval(self, eval_item: Dict[str, Any]) -> Dict:
         """
-        Evaluate a single TB2 task: run the agent loop, then verify with tests.
+        评估单个 TB2 任务：运行智能体循环，然后通过测试验证。
 
-        This is the core evaluation method. For each task it:
-        1. Resolves the Docker image and registers the Modal sandbox override
-        2. Runs HermesAgentLoop with terminal + file tools
-        3. Uploads the test suite into the sandbox
-        4. Executes test.sh and checks the result
-        5. Cleans up the sandbox and temp files
+        这是核心评估方法。对于每个任务：
+        1. 解析 Docker 镜像并注册 Modal 沙箱覆盖配置
+        2. 使用终端 + 文件工具运行 HermesAgentLoop
+        3. 将测试套件上传到沙箱中
+        4. 执行 test.sh 并检查结果
+        5. 清理沙箱和临时文件
 
-        Args:
-            eval_item: A single TB2 task dict from the dataset
+        参数：
+            eval_item: 数据集中的单个 TB2 任务字典
 
-        Returns:
-            Dict with 'passed' (bool), 'reward' (float), 'task_name' (str),
-            'category' (str), and optional debug info
+        返回：
+            包含 'passed'（布尔值）、'reward'（浮点数）、'task_name'（字符串）、
+            'category'（字符串）和可选调试信息的字典
         """
         task_name = eval_item.get("task_name", "unknown")
         category = eval_item.get("category", "unknown")
         task_id = str(uuid.uuid4())
-        task_dir = None  # Set if we extract a Dockerfile (needs cleanup)
+        task_dir = None  # 如果提取了 Dockerfile 则需要清理
 
         from tqdm import tqdm
         tqdm.write(f"  [START] {task_name} (task_id={task_id[:8]})")
         task_start = time.time()
 
         try:
-            # --- 1. Resolve Docker image ---
+            # --- 1. 解析 Docker 镜像 ---
             modal_image, task_dir = self._resolve_task_image(eval_item, task_name)
             if not modal_image:
                 logger.error("Task %s: no docker_image or environment_tar, skipping", task_name)
@@ -502,9 +505,9 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
                     "error": "no_image",
                 }
 
-            # --- 2. Register per-task image override ---
-            # Set both modal_image and docker_image so the task image is used
-            # regardless of which backend is configured.
+            # --- 2. 注册每任务的镜像覆盖配置 ---
+            # 同时设置 modal_image 和 docker_image，确保无论配置哪个后端
+            # 都使用正确的任务镜像。
             register_task_env_overrides(task_id, {
                 "modal_image": modal_image,
                 "docker_image": modal_image,
@@ -515,7 +518,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
                 task_name, task_id[:8],
             )
 
-            # --- 3. Resolve tools and build messages ---
+            # --- 3. 解析工具并构建消息 ---
             tools, valid_names = self._resolve_tools_for_group()
 
             messages: List[Dict[str, Any]] = []
@@ -523,10 +526,10 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
                 messages.append({"role": "system", "content": self.config.system_prompt})
             messages.append({"role": "user", "content": self.format_prompt(eval_item)})
 
-            # --- 4. Run agent loop ---
-            # Use ManagedServer (Phase 2) for vLLM/SGLang backends to get
-            # token-level tracking via /generate. Falls back to direct
-            # ServerManager (Phase 1) for OpenAI endpoints.
+            # --- 4. 运行智能体循环 ---
+            # 对 vLLM/SGLang 后端使用 ManagedServer（第 2 阶段），
+            # 通过 /generate 获取 token 级别的追踪。对 OpenAI 端点
+            # 回退到直接使用 ServerManager（第 1 阶段）。
             if self._use_managed_server():
                 async with self.server.managed_server(
                     tokenizer=self.tokenizer,
@@ -558,8 +561,8 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
                 )
                 result = await agent.run(messages)
 
-            # --- 5. Verify -- run test suite in the agent's sandbox ---
-            # Skip verification if the agent produced no meaningful output
+            # --- 5. 验证——在智能体的沙箱中运行测试套件 ---
+            # 如果智能体没有产生有意义的输出则跳过验证
             only_system_and_user = all(
                 msg.get("role") in ("system", "user") for msg in result.messages
             )
@@ -570,14 +573,13 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
                 )
                 reward = 0.0
             else:
-                # Run tests in a thread so the blocking ctx.terminal() calls
-                # don't freeze the entire event loop (which would stall all
-                # other tasks, tqdm updates, and timeout timers).
+                # 在线程中运行测试，避免阻塞式的 ctx.terminal() 调用
+                # 冻结整个事件循环（那会阻塞所有其他任务、tqdm 更新和超时计时器）。
                 ctx = ToolContext(task_id)
                 try:
                     loop = asyncio.get_event_loop()
                     reward = await loop.run_in_executor(
-                        None,  # default thread pool
+                        None,  # 使用默认线程池
                         self._run_tests, eval_item, ctx, task_name,
                     )
                 except Exception as e:
@@ -620,7 +622,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
             return out
 
         finally:
-            # --- Cleanup: clear overrides, sandbox, and temp files ---
+            # --- 清理：清除覆盖配置、沙箱和临时文件 ---
             clear_task_env_overrides(task_id)
             try:
                 cleanup_vm(task_id)
@@ -633,30 +635,29 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
         self, item: Dict[str, Any], ctx: ToolContext, task_name: str
     ) -> float:
         """
-        Upload and execute the test suite in the agent's sandbox, then
-        download the verifier output locally to read the reward.
+        将测试套件上传到智能体的沙箱中并执行，然后下载验证器输出到本地读取奖励。
 
-        Follows Harbor's verification pattern:
-        1. Upload tests/ directory into the sandbox
-        2. Execute test.sh inside the sandbox
-        3. Download /logs/verifier/ directory to a local temp dir
-        4. Read reward.txt locally with native Python I/O
+        遵循 Harbor 的验证模式：
+        1. 将 tests/ 目录上传到沙箱中
+        2. 在沙箱内执行 test.sh
+        3. 将 /logs/verifier/ 目录下载到本地临时目录
+        4. 使用原生 Python I/O 在本地读取 reward.txt
 
-        Downloading locally avoids issues with the file_read tool on
-        the Modal VM and matches how Harbor handles verification.
+        下载到本地避免了 Modal VM 上 file_read 工具的问题，
+        并与 Harbor 的验证方式一致。
 
-        TB2 test scripts (test.sh) typically:
-        1. Install pytest via uv/pip
-        2. Run pytest against the test files in /tests/
-        3. Write results to /logs/verifier/reward.txt
+        TB2 测试脚本（test.sh）通常：
+        1. 通过 uv/pip 安装 pytest
+        2. 对 /tests/ 中的测试文件运行 pytest
+        3. 将结果写入 /logs/verifier/reward.txt
 
-        Args:
-            item: The TB2 task dict (contains tests_tar, test_sh)
-            ctx: ToolContext scoped to this task's sandbox
-            task_name: For logging
+        参数：
+            item: TB2 任务字典（包含 tests_tar、test_sh）
+            ctx: 绑定到该任务沙箱的 ToolContext
+            task_name: 用于日志记录
 
-        Returns:
-            1.0 if tests pass, 0.0 otherwise
+        返回：
+            测试通过返回 1.0，否则返回 0.0
         """
         tests_tar = item.get("tests_tar", "")
         test_sh = item.get("test_sh", "")
@@ -665,10 +666,10 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
             logger.warning("Task %s: no test_sh content, reward=0", task_name)
             return 0.0
 
-        # Create required directories in the sandbox
+        # 在沙箱中创建所需目录
         ctx.terminal("mkdir -p /tests /logs/verifier")
 
-        # Upload test files into the sandbox (binary-safe via base64)
+        # 将测试文件上传到沙箱（通过 base64 实现二进制安全传输）
         if tests_tar:
             tests_temp = Path(tempfile.mkdtemp(prefix=f"tb2-tests-{task_name}-"))
             try:
@@ -679,11 +680,11 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
             finally:
                 shutil.rmtree(tests_temp, ignore_errors=True)
 
-        # Write the test runner script (test.sh)
+        # 写入测试运行脚本（test.sh）
         ctx.write_file("/tests/test.sh", test_sh)
         ctx.terminal("chmod +x /tests/test.sh")
 
-        # Execute the test suite
+        # 执行测试套件
         logger.info(
             "Task %s: running test suite (timeout=%ds)",
             task_name, self.config.test_timeout,
@@ -696,9 +697,8 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
         exit_code = test_result.get("exit_code", -1)
         output = test_result.get("output", "")
 
-        # Download the verifier output directory locally, then read reward.txt
-        # with native Python I/O. This avoids issues with file_read on the
-        # Modal VM and matches Harbor's verification pattern.
+        # 将验证器输出目录下载到本地，然后用原生 Python I/O 读取 reward.txt。
+        # 这避免了 Modal VM 上 file_read 的问题，并与 Harbor 的验证模式一致。
         reward = 0.0
         local_verifier_dir = Path(tempfile.mkdtemp(prefix=f"tb2-verifier-{task_name}-"))
         try:
@@ -712,7 +712,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
                 elif content == "0":
                     reward = 0.0
                 else:
-                    # Unexpected content -- try parsing as float
+                    # 内容非预期——尝试解析为浮点数
                     try:
                         reward = float(content)
                     except (ValueError, TypeError):
@@ -723,7 +723,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
                         )
                         reward = 1.0 if exit_code == 0 else 0.0
             else:
-                # reward.txt not written -- fall back to exit code
+                # reward.txt 未写入——回退到退出码判断
                 logger.warning(
                     "Task %s: reward.txt not found after download, "
                     "falling back to exit_code=%d",
@@ -740,7 +740,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
         finally:
             shutil.rmtree(local_verifier_dir, ignore_errors=True)
 
-        # Log test output for debugging failures
+        # 记录测试输出以便调试失败原因
         if reward == 0.0:
             output_preview = output[-500:] if output else "(no output)"
             logger.info(
@@ -751,15 +751,15 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
         return reward
 
     # =========================================================================
-    # Evaluate -- main entry point for the eval subcommand
+    # 评估——evaluate 子命令的主入口
     # =========================================================================
 
     async def _eval_with_timeout(self, item: Dict[str, Any]) -> Dict:
         """
-        Wrap rollout_and_score_eval with a per-task wall-clock timeout.
+        为 rollout_and_score_eval 包装单任务挂钟超时。
 
-        If the task exceeds task_timeout seconds, it's automatically scored
-        as FAIL. This prevents any single task from hanging indefinitely.
+        如果任务超过 task_timeout 秒，自动标记为 FAIL。
+        防止单个任务无限挂起。
         """
         task_name = item.get("task_name", "unknown")
         category = item.get("category", "unknown")
@@ -783,22 +783,21 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
 
     async def evaluate(self, *args, **kwargs) -> None:
         """
-        Run Terminal-Bench 2.0 evaluation over all tasks.
+        在所有任务上运行 Terminal-Bench 2.0 评估。
 
-        This is the main entry point when invoked via:
+        这是通过以下命令调用时的主入口：
             python environments/terminalbench2_env.py evaluate
 
-        Runs all tasks through rollout_and_score_eval() via asyncio.gather()
-        (same pattern as GPQA and other Atropos eval envs). Each task is
-        wrapped with a wall-clock timeout so hung tasks auto-fail.
+        通过 asyncio.gather() 对所有任务执行 rollout_and_score_eval()
+        （与 GPQA 和其他 Atropos 评估环境相同的模式）。每个任务都包装了
+        挂钟超时，超时任务自动标记为失败。
 
-        Suppresses noisy Modal/terminal output (HERMES_QUIET) so the tqdm
-        bar stays visible.
+        抑制 Modal/终端的噪音输出（HERMES_QUIET），使 tqdm 进度条保持可见。
         """
         start_time = time.time()
 
-        # Route all logging through tqdm.write() so the progress bar stays
-        # pinned at the bottom while log lines scroll above it.
+        # 将所有日志通过 tqdm.write() 输出，使进度条固定在底部，
+        # 日志行在上方滚动。
         from tqdm import tqdm
 
         class _TqdmHandler(logging.Handler):
@@ -814,14 +813,14 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
             datefmt="%H:%M:%S",
         ))
         root = logging.getLogger()
-        root.handlers = [handler]  # Replace any existing handlers
+        root.handlers = [handler]  # 替换所有现有的处理器
         root.setLevel(logging.INFO)
 
-        # Silence noisy third-party loggers that flood the output
-        logging.getLogger("httpx").setLevel(logging.WARNING)      # Every HTTP request
-        logging.getLogger("openai").setLevel(logging.WARNING)     # OpenAI client retries
-        logging.getLogger("rex-deploy").setLevel(logging.WARNING) # Swerex deployment
-        logging.getLogger("rex_image_builder").setLevel(logging.WARNING)  # Image builds
+        # 静默噪音过多的第三方日志记录器
+        logging.getLogger("httpx").setLevel(logging.WARNING)      # 每个 HTTP 请求
+        logging.getLogger("openai").setLevel(logging.WARNING)     # OpenAI 客户端重试
+        logging.getLogger("rex-deploy").setLevel(logging.WARNING) # Swerex 部署
+        logging.getLogger("rex_image_builder").setLevel(logging.WARNING)  # 镜像构建
 
         print(f"\n{'='*60}")
         print("Starting Terminal-Bench 2.0 Evaluation")
@@ -837,17 +836,17 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
         print(f"  Max concurrent tasks: {self.config.max_concurrent_tasks}")
         print(f"{'='*60}\n")
 
-        # Semaphore to limit concurrent Modal sandbox creations.
-        # Without this, all 86 tasks fire simultaneously, each creating a Modal
-        # sandbox via asyncio.run() inside a thread pool worker. Modal's blocking
-        # calls (App.lookup, etc.) deadlock when too many are created at once.
+        # 信号量控制并发的 Modal 沙箱创建。
+        # 如果不限制，所有 86 个任务会同时启动，每个都在线程池工作线程中
+        # 通过 asyncio.run() 创建 Modal 沙箱。Modal 的阻塞调用
+        # （App.lookup 等）在同时创建过多沙箱时会在线程池中死锁。
         semaphore = asyncio.Semaphore(self.config.max_concurrent_tasks)
 
         async def _eval_with_semaphore(item):
             async with semaphore:
                 return await self._eval_with_timeout(item)
 
-        # Fire all tasks with wall-clock timeout, track live accuracy on the bar
+        # 启动所有任务（带挂钟超时），在进度条上实时跟踪准确率
         total_tasks = len(self.all_eval_items)
         eval_tasks = [
             asyncio.ensure_future(_eval_with_semaphore(item))
@@ -870,12 +869,12 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
         except (KeyboardInterrupt, asyncio.CancelledError):
             pbar.close()
             print(f"\n\nInterrupted! Cleaning up {len(eval_tasks)} tasks...")
-            # Cancel all pending tasks
+            # 取消所有待执行的任务
             for task in eval_tasks:
                 task.cancel()
-            # Let cancellations propagate (finally blocks run cleanup_vm)
+            # 等待取消传播（finally 块会运行 cleanup_vm）
             await asyncio.gather(*eval_tasks, return_exceptions=True)
-            # Belt-and-suspenders: clean up any remaining sandboxes
+            # 双重保险：清理所有剩余沙箱
             from tools.terminal_tool import cleanup_all_environments
             cleanup_all_environments()
             print("All sandboxes cleaned up.")
@@ -885,24 +884,24 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
 
         end_time = time.time()
 
-        # Filter out None results (shouldn't happen, but be safe)
+        # 过滤掉 None 结果（不应发生，但做好防御）
         valid_results = [r for r in results if r is not None]
 
         if not valid_results:
             print("Warning: No valid evaluation results obtained")
             return
 
-        # ---- Compute metrics ----
+        # ---- 计算指标 ----
         total = len(valid_results)
         passed = sum(1 for r in valid_results if r.get("passed"))
         overall_pass_rate = passed / total if total > 0 else 0.0
 
-        # Per-category breakdown
+        # 按类别分组
         cat_results: Dict[str, List[Dict]] = defaultdict(list)
         for r in valid_results:
             cat_results[r.get("category", "unknown")].append(r)
 
-        # Build metrics dict
+        # 构建指标字典
         eval_metrics = {
             "eval/pass_rate": overall_pass_rate,
             "eval/total_tasks": total,
@@ -910,7 +909,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
             "eval/evaluation_time_seconds": end_time - start_time,
         }
 
-        # Per-category metrics
+        # 按类别统计指标
         for category, cat_items in sorted(cat_results.items()):
             cat_passed = sum(1 for r in cat_items if r.get("passed"))
             cat_total = len(cat_items)
@@ -918,10 +917,10 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
             cat_key = category.replace(" ", "_").replace("-", "_").lower()
             eval_metrics[f"eval/pass_rate_{cat_key}"] = cat_pass_rate
 
-        # Store metrics for wandb_log
+        # 存储指标供 wandb_log 使用
         self.eval_metrics = [(k, v) for k, v in eval_metrics.items()]
 
-        # ---- Print summary ----
+        # ---- 打印摘要 ----
         print(f"\n{'='*60}")
         print("Terminal-Bench 2.0 Evaluation Results")
         print(f"{'='*60}")
@@ -935,7 +934,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
             cat_rate = cat_passed / cat_total if cat_total > 0 else 0.0
             print(f"  {category}: {cat_rate:.1%} ({cat_passed}/{cat_total})")
 
-        # Print individual task results
+        # 打印各任务结果
         print("\nTask Results:")
         for r in sorted(valid_results, key=lambda x: x.get("task_name", "")):
             status = "PASS" if r.get("passed") else "FAIL"
@@ -946,7 +945,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
 
         print(f"{'='*60}\n")
 
-        # Build sample records for evaluate_log (includes full conversations)
+        # 构建样本记录用于 evaluate_log（包含完整对话）
         samples = [
             {
                 "task_name": r.get("task_name"),
@@ -960,7 +959,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
             for r in valid_results
         ]
 
-        # Log evaluation results
+        # 记录评估结果
         try:
             await self.evaluate_log(
                 metrics=eval_metrics,
@@ -977,34 +976,33 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
         except Exception as e:
             print(f"Error logging evaluation results: {e}")
 
-        # Close streaming file
+        # 关闭流式文件
         if hasattr(self, "_streaming_file") and not self._streaming_file.closed:
             self._streaming_file.close()
             print(f"  Live results saved to: {self._streaming_path}")
 
-        # Kill all remaining sandboxes. Timed-out tasks leave orphaned thread
-        # pool workers still executing commands -- cleanup_all stops them.
+        # 终止所有剩余沙箱。超时任务会留下孤立的线程池工作线程
+        # 仍在执行命令——cleanup_all 会停止它们。
         from tools.terminal_tool import cleanup_all_environments
         print("\nCleaning up all sandboxes...")
         cleanup_all_environments()
 
-        # Shut down the tool thread pool so orphaned workers from timed-out
-        # tasks are killed immediately instead of retrying against dead
-        # sandboxes and spamming the console with TimeoutError warnings.
+        # 关闭工具线程池，使超时任务留下的孤立工作线程立即停止，
+        # 而不是继续对已销毁的沙箱重试并在控制台中刷出 TimeoutError 警告。
         from environments.agent_loop import _tool_executor
         _tool_executor.shutdown(wait=False, cancel_futures=True)
         print("Done.")
 
     # =========================================================================
-    # Wandb logging
+    # Wandb 日志记录
     # =========================================================================
 
     async def wandb_log(self, wandb_metrics: Optional[Dict] = None):
-        """Log TB2-specific metrics to wandb."""
+        """将 TB2 特有的指标记录到 wandb。"""
         if wandb_metrics is None:
             wandb_metrics = {}
 
-        # Add stored eval metrics
+        # 添加存储的评估指标
         for metric_name, metric_value in self.eval_metrics:
             wandb_metrics[metric_name] = metric_value
         self.eval_metrics = []

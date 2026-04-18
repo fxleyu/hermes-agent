@@ -1,16 +1,16 @@
-"""Honcho memory plugin — MemoryProvider for Honcho AI-native memory.
+"""Honcho 记忆插件 — Honcho AI 原生记忆的 MemoryProvider。
 
-Provides cross-session user modeling with dialectic Q&A, semantic search,
-peer cards, and persistent conclusions via the Honcho SDK. Honcho provides AI-native cross-session user
-modeling with dialectic Q&A, semantic search, peer cards, and conclusions.
+提供跨会话用户建模，包括辩证问答、语义搜索、
+同伴卡片和持久化结论，通过 Honcho SDK 实现。Honcho 提供 AI 原生的跨会话用户
+建模，包括辩证问答、语义搜索、同伴卡片和结论。
 
-The 4 tools (profile, search, context, conclude) are exposed through
-the MemoryProvider interface.
+4 个工具（profile、search、context、conclude）通过
+MemoryProvider 接口暴露。
 
-Config: Uses the existing Honcho config chain:
-  1. $HERMES_HOME/honcho.json (profile-scoped)
-  2. ~/.honcho/config.json (legacy global)
-  3. Environment variables
+配置：使用现有的 Honcho 配置链：
+  1. $HERMES_HOME/honcho.json（配置文件作用域）
+  2. ~/.honcho/config.json（旧版全局）
+  3. 环境变量
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Tool schemas (moved from tools/honcho_tools.py)
+# 工具 schema（从 tools/honcho_tools.py 迁移）
 # ---------------------------------------------------------------------------
 
 PROFILE_SCHEMA = {
@@ -180,45 +180,45 @@ ALL_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, REASONING_SCHEMA, CONTEXT_SCH
 
 
 # ---------------------------------------------------------------------------
-# MemoryProvider implementation
+# MemoryProvider 实现
 # ---------------------------------------------------------------------------
 
 class HonchoMemoryProvider(MemoryProvider):
-    """Honcho AI-native memory with dialectic Q&A and persistent user modeling."""
+    """Honcho AI 原生记忆，具备辩证问答和持久化用户建模。"""
 
     def __init__(self):
-        self._manager = None   # HonchoSessionManager
-        self._config = None    # HonchoClientConfig
+        self._manager = None   # HonchoSessionManager 会话管理器
+        self._config = None    # HonchoClientConfig 客户端配置
         self._session_key = ""
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: Optional[threading.Thread] = None
         self._sync_thread: Optional[threading.Thread] = None
 
-        # B1: recall_mode — set during initialize from config
-        self._recall_mode = "hybrid"  # "context", "tools", or "hybrid"
+        # B1: recall_mode — 在 initialize 期间从配置设置
+        self._recall_mode = "hybrid"  # "context"、"tools" 或 "hybrid"
 
-        # Base context cache — refreshed on context_cadence, not frozen
+        # 基础上下文缓存 — 按 context_cadence 刷新，非冻结
         self._base_context_cache: Optional[str] = None
         self._base_context_lock = threading.Lock()
 
-        # B5: Cost-awareness turn counting and cadence
+        # B5: 成本感知的轮次计数和节奏控制
         self._turn_count = 0
-        self._injection_frequency = "every-turn"  # or "first-turn"
-        self._context_cadence = 1   # minimum turns between context API calls
-        self._dialectic_cadence = 3  # minimum turns between dialectic API calls
-        self._dialectic_depth = 1   # how many .chat() calls per dialectic cycle (1-3)
-        self._dialectic_depth_levels: list[str] | None = None  # per-pass reasoning levels
-        self._reasoning_level_cap: Optional[str] = None  # "minimal", "low", "medium", "high"
+        self._injection_frequency = "every-turn"  # 或 "first-turn"
+        self._context_cadence = 1   # 上下文 API 调用之间的最小轮次间隔
+        self._dialectic_cadence = 3  # 辩证 API 调用之间的最小轮次间隔
+        self._dialectic_depth = 1   # 每个辩证周期的 .chat() 调用次数（1-3）
+        self._dialectic_depth_levels: list[str] | None = None  # 每轮的推理级别
+        self._reasoning_level_cap: Optional[str] = None  # "minimal"、"low"、"medium"、"high"
         self._last_context_turn = -999
         self._last_dialectic_turn = -999
 
-        # Port #1957: lazy session init for tools-only mode
+        # Port #1957: tools-only 模式的延迟会话初始化
         self._session_initialized = False
         self._lazy_init_kwargs: Optional[dict] = None
         self._lazy_init_session_id: Optional[str] = None
 
-        # Port #4053: cron guard — when True, plugin is fully inactive
+        # Port #4053: 定时任务守卫 — 为 True 时插件完全不活跃
         self._cron_skipped = False
 
     @property
@@ -226,17 +226,17 @@ class HonchoMemoryProvider(MemoryProvider):
         return "honcho"
 
     def is_available(self) -> bool:
-        """Check if Honcho is configured. No network calls."""
+        """检查 Honcho 是否已配置。无网络调用。"""
         try:
             from plugins.memory.honcho.client import HonchoClientConfig
             cfg = HonchoClientConfig.from_global_config()
-            # Port #2645: baseUrl-only verification — api_key OR base_url suffices
+            # Port #2645: 仅 baseUrl 验证 — api_key 或 base_url 二者有一即可
             return cfg.enabled and bool(cfg.api_key or cfg.base_url)
         except Exception:
             return False
 
     def save_config(self, values, hermes_home):
-        """Write config to $HERMES_HOME/honcho.json (Honcho SDK native format)."""
+        """将配置写入 $HERMES_HOME/honcho.json（Honcho SDK 原生格式）。"""
         import json
         from pathlib import Path
         config_path = Path(hermes_home) / "honcho.json"
@@ -256,20 +256,20 @@ class HonchoMemoryProvider(MemoryProvider):
         ]
 
     def post_setup(self, hermes_home: str, config: dict) -> None:
-        """Run the full Honcho setup wizard after provider selection."""
+        """在选择提供者后运行完整的 Honcho 设置向导。"""
         import types
         from plugins.memory.honcho.cli import cmd_setup
         cmd_setup(types.SimpleNamespace())
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        """Initialize Honcho session manager.
+        """初始化 Honcho 会话管理器。
 
-        Handles: cron guard, recall_mode, session name resolution,
-        peer memory mode, SOUL.md ai_peer sync, memory file migration,
-        and pre-warming context at init.
+        处理：定时任务守卫、recall_mode、会话名称解析、
+        对等记忆模式、SOUL.md ai_peer 同步、记忆文件迁移、
+        以及初始化时的上下文预热。
         """
         try:
-            # ----- Port #4053: cron guard -----
+            # ----- Port #4053: 定时任务守卫 -----
             agent_context = kwargs.get("agent_context", "")
             platform = kwargs.get("platform", "cli")
             if agent_context in ("cron", "flush") or platform == "cron":
@@ -286,21 +286,21 @@ class HonchoMemoryProvider(MemoryProvider):
                 logger.debug("Honcho not configured — plugin inactive")
                 return
 
-            # Override peer_name with gateway user_id for per-user memory scoping.
-            # Only when no explicit peerName was configured — an explicit peerName
-            # means the user chose their identity; a raw user_id (e.g. Telegram
-            # chat ID) should not silently replace it.
+            # 使用网关 user_id 覆盖 peer_name 以实现按用户记忆隔离。
+            # 仅在未显式配置 peerName 时生效 — 显式 peerName
+            # 意味着用户选择了自己的身份；原始 user_id（如 Telegram
+            # 聊天 ID）不应静默替换它。
             _gw_user_id = kwargs.get("user_id")
             if _gw_user_id and not cfg.peer_name:
                 cfg.peer_name = _gw_user_id
 
             self._config = cfg
 
-            # ----- B1: recall_mode from config -----
+            # ----- B1: 从配置读取 recall_mode -----
             self._recall_mode = cfg.recall_mode  # "context", "tools", or "hybrid"
             logger.debug("Honcho recall_mode: %s", self._recall_mode)
 
-            # ----- B5: cost-awareness config -----
+            # ----- B5: 成本感知配置 -----
             try:
                 raw = cfg.raw or {}
                 self._injection_frequency = raw.get("injectionFrequency", "every-turn")
@@ -314,26 +314,26 @@ class HonchoMemoryProvider(MemoryProvider):
             except Exception as e:
                 logger.debug("Honcho cost-awareness config parse error: %s", e)
 
-            # ----- Port #1969: aiPeer sync from SOUL.md — REMOVED -----
-            # SOUL.md is persona content, not identity config. aiPeer should
-            # only come from honcho.json (host block or root) or the default.
-            # See scratch/memory-plugin-ux-specs.md #10 for rationale.
+            # ----- Port #1969: 从 SOUL.md 同步 aiPeer — 已移除 -----
+            # SOUL.md 是人格内容，不是身份配置。aiPeer 应仅
+            # 来自 honcho.json（主机块或根节点）或默认值。
+            # 详见 scratch/memory-plugin-ux-specs.md #10 的说明。
 
-            # ----- Port #1957: lazy session init for tools-only mode -----
+            # ----- Port #1957: tools-only 模式的延迟会话初始化 -----
             if self._recall_mode == "tools":
                 if cfg.init_on_session_start:
-                    # Eager init even in tools mode (opt-in)
+                    # 即使在 tools 模式下也立即初始化（需主动选择）
                     self._do_session_init(cfg, session_id, **kwargs)
                     return
-                # Defer actual session creation until first tool call
+                # 延迟实际会话创建到首次工具调用时
                 self._lazy_init_kwargs = kwargs
                 self._lazy_init_session_id = session_id
-                # Still need a client reference for _ensure_session
+                # 仍需客户端引用用于 _ensure_session
                 self._config = cfg
                 logger.debug("Honcho tools-only mode — deferring session init until first tool call")
                 return
 
-            # ----- Eager init (context or hybrid mode) -----
+            # ----- 立即初始化（context 或 hybrid 模式）-----
             self._do_session_init(cfg, session_id, **kwargs)
 
         except ImportError:
@@ -343,7 +343,7 @@ class HonchoMemoryProvider(MemoryProvider):
             self._manager = None
 
     def _do_session_init(self, cfg, session_id: str, **kwargs) -> None:
-        """Shared session initialization logic for both eager and lazy paths."""
+        """立即初始化和延迟初始化路径共享的会话初始化逻辑。"""
         from plugins.memory.honcho.client import get_honcho_client
         from plugins.memory.honcho.session import HonchoSessionManager
 
@@ -354,7 +354,7 @@ class HonchoMemoryProvider(MemoryProvider):
             context_tokens=cfg.context_tokens,
         )
 
-        # ----- B3: resolve_session_name -----
+        # ----- B3: 解析会话名称 -----
         session_title = kwargs.get("session_title")
         gateway_session_key = kwargs.get("gateway_session_key")
         self._session_key = (
@@ -368,15 +368,14 @@ class HonchoMemoryProvider(MemoryProvider):
         )
         logger.debug("Honcho session key resolved: %s", self._session_key)
 
-        # Create session eagerly
+        # 立即创建会话
         session = self._manager.get_or_create(self._session_key)
         self._session_initialized = True
 
-        # ----- B6: Memory file migration (one-time, for new sessions) -----
-        # Skip under per-session strategy: every Hermes run creates a fresh
-        # Honcho session by design, so uploading MEMORY.md/USER.md/SOUL.md to
-        # each one would flood the backend with short-lived duplicates instead
-        # of performing a one-time migration.
+        # ----- B6: 记忆文件迁移（一次性，用于新会话）-----
+        # 在 per-session 策略下跳过：每次 Hermes 运行按设计创建一个新的
+        # Honcho 会话，因此上传 MEMORY.md/USER.md/SOUL.md 到每个会话
+        # 会向后端充斥短生命周期的重复数据，而非执行一次性迁移。
         try:
             if not session.messages and cfg.session_strategy != "per-session":
                 from hermes_constants import get_hermes_home
@@ -391,7 +390,7 @@ class HonchoMemoryProvider(MemoryProvider):
         except Exception as e:
             logger.debug("Honcho memory file migration skipped: %s", e)
 
-        # ----- B7: Pre-warming context at init -----
+        # ----- B7: 初始化时预热上下文 -----
         if self._recall_mode in ("context", "hybrid"):
             try:
                 self._manager.prefetch_context(self._session_key)
@@ -401,9 +400,9 @@ class HonchoMemoryProvider(MemoryProvider):
                 logger.debug("Honcho pre-warm failed: %s", e)
 
     def _ensure_session(self) -> bool:
-        """Lazily initialize the Honcho session (for tools-only mode).
+        """延迟初始化 Honcho 会话（用于 tools-only 模式）。
 
-        Returns True if the manager is ready, False otherwise.
+        如果管理器已就绪返回 True，否则返回 False。
         """
         if self._manager and self._session_initialized:
             return True
@@ -418,7 +417,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 self._lazy_init_session_id or "hermes-default",
                 **self._lazy_init_kwargs,
             )
-            # Clear lazy refs
+            # 清除延迟引用
             self._lazy_init_kwargs = None
             self._lazy_init_session_id = None
             return self._manager is not None
@@ -427,10 +426,10 @@ class HonchoMemoryProvider(MemoryProvider):
             return False
 
     def _format_first_turn_context(self, ctx: dict) -> str:
-        """Format the prefetch context dict into a readable system prompt block."""
+        """将预取的上下文字典格式化为可读的系统提示块。"""
         parts = []
 
-        # Session summary — session-scoped context, placed first for relevance
+        # 会话摘要 — 会话范围的上下文，优先放在最前面
         summary = ctx.get("summary", "")
         if summary:
             parts.append(f"## Session Summary\n{summary}")
@@ -456,16 +455,16 @@ class HonchoMemoryProvider(MemoryProvider):
         return "\n\n".join(parts)
 
     def system_prompt_block(self) -> str:
-        """Return system prompt text, adapted by recall_mode.
+        """返回系统提示文本，根据 recall_mode 调整。
 
-        Returns only the mode header and tool instructions — static text
-        that doesn't change between turns (prompt-cache friendly).
-        Live context (representation, card) is injected via prefetch().
+        仅返回模式标头和工具指令 — 静态文本，
+        不会在轮次之间变化（对提示缓存友好）。
+        动态上下文（表示、卡片）通过 prefetch() 注入。
         """
         if self._cron_skipped:
             return ""
         if not self._manager or not self._session_key:
-            # tools-only mode without session yet still returns a minimal block
+            # tools-only 模式下没有会话时仍返回最小的提示块
             if self._recall_mode == "tools" and self._config:
                 return (
                     "# Honcho Memory\n"
@@ -474,7 +473,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 )
             return ""
 
-        # ----- B1: adapt text based on recall_mode -----
+        # ----- B1: 根据 recall_mode 调整文本 -----
         if self._recall_mode == "context":
             header = (
                 "# Honcho Memory\n"
@@ -504,36 +503,36 @@ class HonchoMemoryProvider(MemoryProvider):
         return header
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Return base context (representation + card) plus dialectic supplement.
+        """返回基础上下文（表示 + 卡片）加上辩证补充。
 
-        Assembles two layers:
-        1. Base context from peer.context() — cached, refreshed on context_cadence
-        2. Dialectic supplement — cached, refreshed on dialectic_cadence
+        组装两层：
+        1. 来自 peer.context() 的基础上下文 — 缓存，按 context_cadence 刷新
+        2. 辩证补充 — 缓存，按 dialectic_cadence 刷新
 
-        B1: Returns empty when recall_mode is "tools" (no injection).
-        B5: Respects injection_frequency — "first-turn" returns cached/empty after turn 0.
-        Port #3265: Truncates to context_tokens budget.
+        B1: recall_mode 为 "tools" 时返回空（不注入）。
+        B5: 遵循 injection_frequency — "first-turn" 在第 0 轮后返回缓存/空。
+        Port #3265: 截断到 context_tokens 预算。
         """
         if self._cron_skipped:
             return ""
 
-        # B1: tools-only mode — no auto-injection
+        # B1: tools-only 模式 — 不自动注入
         if self._recall_mode == "tools":
             return ""
 
-        # B5: injection_frequency — if "first-turn" and past first turn, return empty.
-        # _turn_count is 1-indexed (first user message = 1), so > 1 means "past first".
+        # B5: injection_frequency — 如果是 "first-turn" 且过了第一轮，返回空。
+        # _turn_count 从 1 开始（第一条用户消息 = 1），所以 > 1 表示"过了第一轮"。
         if self._injection_frequency == "first-turn" and self._turn_count > 1:
             return ""
 
         parts = []
 
-        # ----- Layer 1: Base context (representation + card) -----
-        # On first call, fetch synchronously so turn 1 isn't empty.
-        # After that, serve from cache and refresh in background on cadence.
+        # ----- 第 1 层：基础上下文（表示 + 卡片）-----
+        # 首次调用时同步获取，以确保第 1 轮不为空。
+        # 之后从缓存提供，并在 cadence 时在后台刷新。
         with self._base_context_lock:
             if self._base_context_cache is None:
-                # First call — synchronous fetch
+                # 首次调用 — 同步获取
                 try:
                     ctx = self._manager.get_prefetch_context(self._session_key)
                     self._base_context_cache = self._format_first_turn_context(ctx) if ctx else ""
@@ -543,7 +542,7 @@ class HonchoMemoryProvider(MemoryProvider):
                     self._base_context_cache = ""
             base_context = self._base_context_cache
 
-        # Check if background context prefetch has a fresher result
+        # 检查后台上下文预取是否有更新的结果
         if self._manager:
             fresh_ctx = self._manager.pop_context_result(self._session_key)
             if fresh_ctx:
@@ -556,12 +555,12 @@ class HonchoMemoryProvider(MemoryProvider):
         if base_context:
             parts.append(base_context)
 
-        # ----- Layer 2: Dialectic supplement -----
-        # On the very first turn, no queue_prefetch() has run yet so the
-        # dialectic result is empty.  Run with a bounded timeout so a slow
-        # Honcho connection doesn't block the first response indefinitely.
-        # On timeout the result is skipped and queue_prefetch() will pick it
-        # up at the next cadence-allowed turn.
+        # ----- 第 2 层：辩证补充 -----
+        # 在最初第一轮时，还没有运行 queue_prefetch() 所以
+        # 辩证结果为空。使用有界超时运行，避免慢速
+        # Honcho 连接无限期阻塞首次响应。
+        # 超时后跳过结果，queue_prefetch() 将在
+        # 下一个 cadence 允许的轮次中通过异步路径拾取。
         if self._last_dialectic_turn == -999 and query:
             _first_turn_timeout = (
                 self._config.timeout if self._config and self._config.timeout else 8.0
@@ -589,8 +588,8 @@ class HonchoMemoryProvider(MemoryProvider):
                     "will inject at next cadence-allowed turn",
                     _first_turn_timeout,
                 )
-                # Don't update _last_dialectic_turn: queue_prefetch() will
-                # retry at the next cadence-allowed turn via the async path.
+                # 不更新 _last_dialectic_turn：queue_prefetch() 将
+                # 在下一个 cadence 允许的轮次通过异步路径重试。
 
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=3.0)
@@ -606,19 +605,19 @@ class HonchoMemoryProvider(MemoryProvider):
 
         result = "\n\n".join(parts)
 
-        # ----- Port #3265: token budget enforcement -----
+        # ----- Port #3265: 令牌预算限制 -----
         result = self._truncate_to_budget(result)
 
         return result
 
     def _truncate_to_budget(self, text: str) -> str:
-        """Truncate text to fit within context_tokens budget if set."""
+        """将文本截断以适应 context_tokens 预算（如已设置）。"""
         if not self._config or not self._config.context_tokens:
             return text
-        budget_chars = self._config.context_tokens * 4  # conservative char estimate
+        budget_chars = self._config.context_tokens * 4  # 保守的字符估算
         if len(text) <= budget_chars:
             return text
-        # Truncate at word boundary
+        # 在单词边界处截断
         truncated = text[:budget_chars]
         last_space = truncated.rfind(" ")
         if last_space > budget_chars * 0.8:
@@ -626,22 +625,22 @@ class HonchoMemoryProvider(MemoryProvider):
         return truncated + " …"
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        """Fire background prefetch threads for the upcoming turn.
+        """为即将到来的轮次启动后台预取线程。
 
-        B5: Checks cadence independently for dialectic and context refresh.
-        Context refresh updates the base layer (representation + card).
-        Dialectic fires the LLM reasoning supplement.
+        B5: 独立检查辩证和上下文刷新的节奏。
+        上下文刷新更新基础层（表示 + 卡片）。
+        辩证触发 LLM 推理补充。
         """
         if self._cron_skipped:
             return
         if not self._manager or not self._session_key or not query:
             return
 
-        # B1: tools-only mode — no prefetch
+        # B1: tools-only 模式 — 不预取
         if self._recall_mode == "tools":
             return
 
-        # ----- Context refresh (base layer) — independent cadence -----
+        # ----- 上下文刷新（基础层）— 独立节奏 -----
         if self._context_cadence <= 1 or (self._turn_count - self._last_context_turn) >= self._context_cadence:
             self._last_context_turn = self._turn_count
             try:
@@ -649,8 +648,8 @@ class HonchoMemoryProvider(MemoryProvider):
             except Exception as e:
                 logger.debug("Honcho context prefetch failed: %s", e)
 
-        # ----- Dialectic prefetch (supplement layer) -----
-        # B5: cadence check — skip if too soon since last dialectic call
+        # ----- 辩证预取（补充层）-----
+        # B5: 节奏检查 — 如果距上次辩证调用太近则跳过
         if self._dialectic_cadence > 1:
             if (self._turn_count - self._last_dialectic_turn) < self._dialectic_cadence:
                 logger.debug("Honcho dialectic prefetch skipped: cadence %d, turns since last: %d",
@@ -673,18 +672,18 @@ class HonchoMemoryProvider(MemoryProvider):
         )
         self._prefetch_thread.start()
 
-    # ----- Dialectic depth: multi-pass .chat() with cold/warm prompts -----
+    # ----- 辩证深度：多轮 .chat() 调用，支持冷/热提示 -----
 
-    # Proportional reasoning levels per depth/pass when dialecticDepthLevels
-    # is not configured. The base level is dialecticReasoningLevel.
-    # Index: (depth, pass) → level relative to base.
+    # 当 dialecticDepthLevels 未配置时，每个深度/轮次的比例推理级别。
+    # 基础级别为 dialecticReasoningLevel。
+    # 索引: (depth, pass) -> 相对于基础的级别。
     _PROPORTIONAL_LEVELS: dict[tuple[int, int], str] = {
-        # depth 1: single pass at base level
+        # 深度 1：单轮，使用基础级别
         (1, 0): "base",
-        # depth 2: pass 0 lighter, pass 1 at base
+        # 深度 2：第 0 轮较轻，第 1 轮使用基础级别
         (2, 0): "minimal",
         (2, 1): "base",
-        # depth 3: pass 0 lighter, pass 1 at base, pass 2 one above minimal
+        # 深度 3：第 0 轮较轻，第 1 轮基础级别，第 2 轮比 minimal 高一级
         (3, 0): "minimal",
         (3, 1): "base",
         (3, 2): "low",
@@ -693,10 +692,10 @@ class HonchoMemoryProvider(MemoryProvider):
     _LEVEL_ORDER = ("minimal", "low", "medium", "high", "max")
 
     def _resolve_pass_level(self, pass_idx: int) -> str:
-        """Resolve reasoning level for a given pass index.
+        """解析给定轮次的推理级别。
 
-        Uses dialecticDepthLevels if configured, otherwise proportional
-        defaults relative to dialecticReasoningLevel.
+        如果已配置则使用 dialecticDepthLevels，否则使用
+        相对于 dialecticReasoningLevel 的比例默认值。
         """
         if self._dialectic_depth_levels and pass_idx < len(self._dialectic_depth_levels):
             return self._dialectic_depth_levels[pass_idx]
@@ -708,11 +707,11 @@ class HonchoMemoryProvider(MemoryProvider):
         return mapping
 
     def _build_dialectic_prompt(self, pass_idx: int, prior_results: list[str], is_cold: bool) -> str:
-        """Build the prompt for a given dialectic pass.
+        """为给定的辩证轮次构建提示。
 
-        Pass 0: cold start (general user query) or warm (session-scoped).
-        Pass 1: self-audit / targeted synthesis against gaps from pass 0.
-        Pass 2: reconciliation / contradiction check across prior passes.
+        第 0 轮：冷启动（通用用户查询）或热启动（会话范围）。
+        第 1 轮：自审计 / 针对第 0 轮缺口的定向综合。
+        第 2 轮：跨前几轮的调和 / 矛盾检查。
         """
         if pass_idx == 0:
             if is_cold:
@@ -736,7 +735,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 "in evidence from recent sessions."
             )
         else:
-            # pass 2: reconciliation
+            # 第 2 轮：调和
             return (
                 f"Prior passes produced:\n\n"
                 f"Pass 1:\n{prior_results[0] if len(prior_results) > 0 else '(empty)'}\n\n"
@@ -748,14 +747,14 @@ class HonchoMemoryProvider(MemoryProvider):
 
     @staticmethod
     def _signal_sufficient(result: str) -> bool:
-        """Check if a dialectic pass returned enough signal to skip further passes.
+        """检查辩证轮次是否返回了足够的信号以跳过后续轮次。
 
-        Heuristic: a response longer than 100 chars with some structure
-        (section headers, bullets, or an ordered list) is considered sufficient.
+        启发式：超过 100 个字符且具有结构化输出
+        （章节标题、项目符号或有序列表）的响应被视为充分。
         """
         if not result or len(result.strip()) < 100:
             return False
-        # Structured output with sections/bullets is strong signal
+        # 带结构化输出的章节/项目符号是强信号
         if "\n" in result and (
             "##" in result
             or "•" in result
@@ -763,16 +762,16 @@ class HonchoMemoryProvider(MemoryProvider):
             or re.search(r"^\s*\d+\. ", result, re.MULTILINE)
         ):
             return True
-        # Long enough even without structure
+        # 即使没有结构化，只要足够长也算
         return len(result.strip()) > 300
 
     def _run_dialectic_depth(self, query: str) -> str:
-        """Execute up to dialecticDepth .chat() calls with conditional bail-out.
+        """执行最多 dialecticDepth 次 .chat() 调用，支持条件提前退出。
 
-        Cold start (no base context): general user-oriented query.
-        Warm session (base context exists): session-scoped query.
-        Each pass is conditional — bails early if prior pass returned strong signal.
-        Returns the best (usually last) result.
+        冷启动（无基础上下文）：通用的面向用户的查询。
+        热会话（有基础上下文）：会话范围的查询。
+        每轮都是有条件的 — 如果前一轮返回了强信号则提前退出。
+        返回最佳（通常是最后一轮）的结果。
         """
         if not self._manager or not self._session_key:
             return ""
@@ -784,7 +783,7 @@ class HonchoMemoryProvider(MemoryProvider):
             if i == 0:
                 prompt = self._build_dialectic_prompt(0, results, is_cold)
             else:
-                # Skip further passes if prior pass delivered strong signal
+                # 如果前一轮有强信号则跳过后续轮次
                 if results and self._signal_sufficient(results[-1]):
                     logger.debug("Honcho dialectic depth %d: pass %d skipped, prior signal sufficient",
                                  self._dialectic_depth, i)
@@ -802,24 +801,23 @@ class HonchoMemoryProvider(MemoryProvider):
             )
             results.append(result or "")
 
-        # Return the last non-empty result (deepest pass that ran)
+        # 返回最后一个非空结果（运行过的最深轮次）
         for r in reversed(results):
             if r and r.strip():
                 return r
         return ""
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
-        """Track turn count for cadence and injection_frequency logic."""
+        """跟踪轮次计数，用于节奏和 injection_frequency 逻辑。"""
         self._turn_count = turn_number
 
     @staticmethod
     def _chunk_message(content: str, limit: int) -> list[str]:
-        """Split content into chunks that fit within the Honcho message limit.
+        """将内容分割成适合 Honcho 消息限制的块。
 
-        Splits at paragraph boundaries when possible, falling back to
-        sentence boundaries, then word boundaries. Each continuation
-        chunk is prefixed with "[continued] " so Honcho's representation
-        engine can reconstruct the full message.
+        尽可能在段落边界分割，回退到句子边界，
+        然后是单词边界。每个续传块以 "[continued] " 为前缀，
+        以便 Honcho 的表示引擎能重建完整消息。
         """
         if len(content) <= limit:
             return [content]
@@ -837,7 +835,7 @@ class HonchoMemoryProvider(MemoryProvider):
 
             segment = remaining[:effective]
 
-            # Try paragraph break, then sentence, then word
+            # 尝试段落分割，然后句子，最后单词
             cut = segment.rfind("\n\n")
             if cut < effective * 0.3:
                 cut = segment.rfind(". ")
@@ -858,10 +856,10 @@ class HonchoMemoryProvider(MemoryProvider):
         return chunks
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        """Record the conversation turn in Honcho (non-blocking).
+        """将对话轮次记录到 Honcho（非阻塞）。
 
-        Messages exceeding the Honcho API limit (default 25k chars) are
-        split into multiple messages with continuation markers.
+        超过 Honcho API 限制（默认 25k 字符）的消息
+        会被分割为多条带续传标记的消息。
         """
         if self._cron_skipped:
             return
@@ -889,7 +887,7 @@ class HonchoMemoryProvider(MemoryProvider):
         self._sync_thread.start()
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
-        """Mirror built-in user profile writes as Honcho conclusions."""
+        """将内置用户画像写入镜像为 Honcho 结论。"""
         if action != "add" or target != "user" or not content:
             return
         if self._cron_skipped:
@@ -907,12 +905,12 @@ class HonchoMemoryProvider(MemoryProvider):
         t.start()
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        """Flush all pending messages to Honcho on session end."""
+        """在会话结束时将所有待处理消息刷新到 Honcho。"""
         if self._cron_skipped:
             return
         if not self._manager:
             return
-        # Wait for pending sync
+        # 等待正在进行的同步
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=10.0)
         try:
@@ -921,9 +919,9 @@ class HonchoMemoryProvider(MemoryProvider):
             logger.debug("Honcho session-end flush failed: %s", e)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        """Return tool schemas, respecting recall_mode.
+        """返回工具 schema，遵循 recall_mode。
 
-        B1: context-only mode hides all tools.
+        B1: context-only 模式隐藏所有工具。
         """
         if self._cron_skipped:
             return []
@@ -932,11 +930,11 @@ class HonchoMemoryProvider(MemoryProvider):
         return list(ALL_TOOL_SCHEMAS)
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
-        """Handle a Honcho tool call, with lazy session init for tools-only mode."""
+        """处理 Honcho 工具调用，支持 tools-only 模式的延迟会话初始化。"""
         if self._cron_skipped:
             return tool_error("Honcho is not active (cron context).")
 
-        # Port #1957: ensure session is initialized for tools-only mode
+        # Port #1957: 确保 tools-only 模式下会话已初始化
         if not self._session_initialized:
             if not self._ensure_session():
                 return tool_error("Honcho session could not be initialized.")
@@ -982,7 +980,7 @@ class HonchoMemoryProvider(MemoryProvider):
                     reasoning_level=reasoning_level,
                     peer=peer,
                 )
-                # Update cadence tracker so auto-injection respects the gap after an explicit call
+                # 更新节奏跟踪器，使自动注入在显式调用后遵循间隔
                 self._last_dialectic_turn = self._turn_count
                 return json.dumps({"result": result or "No result from Honcho."})
 
@@ -1037,7 +1035,7 @@ class HonchoMemoryProvider(MemoryProvider):
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
-        # Flush any remaining messages
+        # 刷新所有剩余消息
         if self._manager:
             try:
                 self._manager.flush_all()
@@ -1046,9 +1044,9 @@ class HonchoMemoryProvider(MemoryProvider):
 
 
 # ---------------------------------------------------------------------------
-# Plugin entry point
+# 插件入口点
 # ---------------------------------------------------------------------------
 
 def register(ctx) -> None:
-    """Register Honcho as a memory provider plugin."""
+    """将 Honcho 注册为记忆提供者插件。"""
     ctx.register_memory_provider(HonchoMemoryProvider())

@@ -1,4 +1,4 @@
-"""ACP tool-call helpers for mapping hermes tools to ACP ToolKind and building content."""
+"""ACP 工具调用辅助工具，用于将 hermes 工具映射到 ACP ToolKind 并构建内容。"""
 
 from __future__ import annotations
 
@@ -14,23 +14,23 @@ from acp.schema import (
 )
 
 # ---------------------------------------------------------------------------
-# Map hermes tool names -> ACP ToolKind
+# 映射 hermes 工具名称 -> ACP ToolKind
 # ---------------------------------------------------------------------------
 
 TOOL_KIND_MAP: Dict[str, ToolKind] = {
-    # File operations
+    # 文件操作
     "read_file": "read",
     "write_file": "edit",
     "patch": "edit",
     "search_files": "search",
-    # Terminal / execution
+    # 终端 / 执行
     "terminal": "execute",
     "process": "execute",
     "execute_code": "execute",
-    # Web / fetch
+    # 网页 / 获取
     "web_search": "fetch",
     "web_extract": "fetch",
-    # Browser
+    # 浏览器
     "browser_navigate": "fetch",
     "browser_click": "execute",
     "browser_type": "execute",
@@ -40,28 +40,28 @@ TOOL_KIND_MAP: Dict[str, ToolKind] = {
     "browser_press": "execute",
     "browser_back": "execute",
     "browser_get_images": "read",
-    # Agent internals
+    # 代理内部
     "delegate_task": "execute",
     "vision_analyze": "read",
     "image_generate": "execute",
     "text_to_speech": "execute",
-    # Thinking / meta
+    # 思考 / 元操作
     "_thinking": "think",
 }
 
 
 def get_tool_kind(tool_name: str) -> ToolKind:
-    """Return the ACP ToolKind for a hermes tool, defaulting to 'other'."""
+    """返回 hermes 工具对应的 ACP ToolKind，默认为 'other'。"""
     return TOOL_KIND_MAP.get(tool_name, "other")
 
 
 def make_tool_call_id() -> str:
-    """Generate a unique tool call ID."""
+    """生成唯一的工具调用 ID。"""
     return f"tc-{uuid.uuid4().hex[:12]}"
 
 
 def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
-    """Build a human-readable title for a tool call."""
+    """为工具调用构建人类可读的标题。"""
     if tool_name == "terminal":
         cmd = args.get("command", "")
         if len(cmd) > 80:
@@ -97,7 +97,7 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Build ACP content objects for tool-call events
+# 构建工具调用事件的 ACP 内容对象
 # ---------------------------------------------------------------------------
 
 
@@ -106,7 +106,7 @@ def build_tool_start(
     tool_name: str,
     arguments: Dict[str, Any],
 ) -> ToolCallStart:
-    """Create a ToolCallStart event for the given hermes tool invocation."""
+    """为给定的 hermes 工具调用创建 ToolCallStart 事件。"""
     kind = get_tool_kind(tool_name)
     title = build_tool_title(tool_name, arguments)
     locations = extract_locations(arguments)
@@ -119,7 +119,7 @@ def build_tool_start(
             new = arguments.get("new_string", "")
             content = [acp.tool_diff_content(path=path, new_text=new, old_text=old)]
         else:
-            # Patch mode — show the patch content as text
+            # Patch 模式 -- 将 patch 内容显示为文本
             patch_text = arguments.get("patch", "")
             content = [acp.tool_content(acp.text_block(patch_text))]
         return acp.start_tool_call(
@@ -161,7 +161,7 @@ def build_tool_start(
             raw_input=arguments,
         )
 
-    # Generic fallback
+    # 通用回退
     import json
     try:
         args_text = json.dumps(arguments, indent=2, default=str)
@@ -179,10 +179,10 @@ def build_tool_complete(
     tool_name: str,
     result: Optional[str] = None,
 ) -> ToolCallProgress:
-    """Create a ToolCallUpdate (progress) event for a completed tool call."""
+    """为已完成的工具调用创建 ToolCallUpdate（进度）事件。"""
     kind = get_tool_kind(tool_name)
 
-    # Truncate very large results for the UI
+    # 为 UI 截断过大的结果
     display_result = result or ""
     if len(display_result) > 5000:
         display_result = display_result[:4900] + f"\n... ({len(result)} chars total, truncated)"
@@ -198,14 +198,14 @@ def build_tool_complete(
 
 
 # ---------------------------------------------------------------------------
-# Location extraction
+# 位置信息提取
 # ---------------------------------------------------------------------------
 
 
 def extract_locations(
     arguments: Dict[str, Any],
 ) -> List[ToolCallLocation]:
-    """Extract file-system locations from tool arguments."""
+    """从工具参数中提取文件系统位置信息。"""
     locations: List[ToolCallLocation] = []
     path = arguments.get("path")
     if path:

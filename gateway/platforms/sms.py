@@ -1,21 +1,21 @@
-"""SMS (Twilio) platform adapter.
+"""SMS（Twilio）平台适配器。
 
-Connects to the Twilio REST API for outbound SMS and runs an aiohttp
-webhook server to receive inbound messages.
+通过 Twilio REST API 发送出站短信，并运行 aiohttp
+Webhook 服务器接收入站消息。
 
-Shares credentials with the optional telephony skill — same env vars:
+与可选的电话技能共享凭据——使用相同的环境变量：
   - TWILIO_ACCOUNT_SID
   - TWILIO_AUTH_TOKEN
-  - TWILIO_PHONE_NUMBER  (E.164 from-number, e.g. +15551234567)
+  - TWILIO_PHONE_NUMBER  （E.164 格式的发送号码，例如 +15551234567）
 
-Gateway-specific env vars:
-  - SMS_WEBHOOK_PORT     (default 8080)
-  - SMS_WEBHOOK_HOST     (default 0.0.0.0)
-  - SMS_WEBHOOK_URL      (public URL for Twilio signature validation — required)
-  - SMS_INSECURE_NO_SIGNATURE  (true to disable signature validation — dev only)
-  - SMS_ALLOWED_USERS    (comma-separated E.164 phone numbers)
-  - SMS_ALLOW_ALL_USERS  (true/false)
-  - SMS_HOME_CHANNEL     (phone number for cron delivery)
+网关专用环境变量：
+  - SMS_WEBHOOK_PORT     （默认 8080）
+  - SMS_WEBHOOK_HOST     （默认 0.0.0.0）
+  - SMS_WEBHOOK_URL      （Twilio 签名验证所需的公网 URL——必填）
+  - SMS_INSECURE_NO_SIGNATURE  （设为 true 可禁用签名验证——仅限开发环境）
+  - SMS_ALLOWED_USERS    （逗号分隔的 E.164 格式电话号码列表）
+  - SMS_ALLOW_ALL_USERS  （true/false）
+  - SMS_HOME_CHANNEL     （定时任务消息投递的电话号码）
 """
 
 import asyncio
@@ -39,13 +39,13 @@ from gateway.platforms.helpers import redact_phone, strip_markdown
 logger = logging.getLogger(__name__)
 
 TWILIO_API_BASE = "https://api.twilio.com/2010-04-01/Accounts"
-MAX_SMS_LENGTH = 1600  # ~10 SMS segments
+MAX_SMS_LENGTH = 1600  # 约 10 个短信分段
 DEFAULT_WEBHOOK_PORT = 8080
 DEFAULT_WEBHOOK_HOST = "0.0.0.0"
 
 
 def check_sms_requirements() -> bool:
-    """Check if SMS adapter dependencies are available."""
+    """检查 SMS 适配器的依赖项是否可用。"""
     try:
         import aiohttp  # noqa: F401
     except ImportError:
@@ -55,10 +55,10 @@ def check_sms_requirements() -> bool:
 
 class SmsAdapter(BasePlatformAdapter):
     """
-    Twilio SMS <-> Hermes gateway adapter.
+    Twilio SMS <-> Hermes 网关适配器。
 
-    Each inbound phone number gets its own Hermes session (multi-tenant).
-    Replies are always sent from the configured TWILIO_PHONE_NUMBER.
+    每个入站电话号码对应一个独立的 Hermes 会话（多租户模式）。
+    回复始终从配置的 TWILIO_PHONE_NUMBER 发送。
     """
 
     MAX_MESSAGE_LENGTH = MAX_SMS_LENGTH
@@ -77,13 +77,13 @@ class SmsAdapter(BasePlatformAdapter):
         self._http_session: Optional["aiohttp.ClientSession"] = None
 
     def _basic_auth_header(self) -> str:
-        """Build HTTP Basic auth header value for Twilio."""
+        """构建 Twilio 所需的 HTTP Basic 认证头。"""
         creds = f"{self._account_sid}:{self._auth_token}"
         encoded = base64.b64encode(creds.encode("ascii")).decode("ascii")
         return f"Basic {encoded}"
 
     # ------------------------------------------------------------------
-    # Required abstract methods
+    # 必须实现的抽象方法
     # ------------------------------------------------------------------
 
     async def connect(self) -> bool:
@@ -91,33 +91,36 @@ class SmsAdapter(BasePlatformAdapter):
         from aiohttp import web
 
         if not self._from_number:
-            logger.error("[sms] TWILIO_PHONE_NUMBER not set — cannot send replies")
+            logger.error("[sms] 未设置 TWILIO_PHONE_NUMBER——无法发送回复")
             return False
 
+        # 检查是否禁用了签名验证（仅限开发环境）
         insecure_no_sig = os.getenv("SMS_INSECURE_NO_SIGNATURE", "").lower() == "true"
 
         if not self._webhook_url and not insecure_no_sig:
             logger.error(
-                "[sms] Refusing to start: SMS_WEBHOOK_URL is required for Twilio "
-                "signature validation. Set it to the public URL configured in your "
-                "Twilio console (e.g. https://example.com/webhooks/twilio). "
-                "For local development without validation, set "
-                "SMS_INSECURE_NO_SIGNATURE=true (NOT recommended for production).",
+                "[sms] 拒绝启动：SMS_WEBHOOK_URL 是 Twilio 签名验证所必需的。"
+                "请将其设置为在 Twilio 控制台中配置的公网 URL"
+                "（例如 https://example.com/webhooks/twilio）。"
+                "如需在本地开发环境中跳过验证，请设置 "
+                "SMS_INSECURE_NO_SIGNATURE=true（不建议在生产环境使用）。",
             )
             return False
 
         if insecure_no_sig and not self._webhook_url:
             logger.warning(
-                "[sms] SMS_INSECURE_NO_SIGNATURE=true — Twilio signature validation "
-                "is DISABLED. Any client that can reach port %d can inject messages. "
-                "Do NOT use this in production.",
+                "[sms] SMS_INSECURE_NO_SIGNATURE=true——Twilio 签名验证已禁用。"
+                "任何能访问端口 %d 的客户端都可以注入消息。"
+                "请勿在生产环境中使用此配置。",
                 self._webhook_port,
             )
 
+        # 创建 aiohttp Web 应用并注册路由
         app = web.Application()
         app.router.add_post("/webhooks/twilio", self._handle_webhook)
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
 
+        # 启动 Webhook 服务器
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, self._webhook_host, self._webhook_port)
@@ -128,7 +131,7 @@ class SmsAdapter(BasePlatformAdapter):
         self._running = True
 
         logger.info(
-            "[sms] Twilio webhook server listening on %s:%d, from: %s",
+            "[sms] Twilio Webhook 服务器已在 %s:%d 上监听，发送号码：%s",
             self._webhook_host,
             self._webhook_port,
             redact_phone(self._from_number),
@@ -143,7 +146,7 @@ class SmsAdapter(BasePlatformAdapter):
             await self._runner.cleanup()
             self._runner = None
         self._running = False
-        logger.info("[sms] Disconnected")
+        logger.info("[sms] 已断开连接")
 
     async def send(
         self,
@@ -154,6 +157,7 @@ class SmsAdapter(BasePlatformAdapter):
     ) -> SendResult:
         import aiohttp
 
+        # 格式化消息（剥离 Markdown）并按长度分片
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted)
         last_result = SendResult(success=True)
@@ -163,6 +167,7 @@ class SmsAdapter(BasePlatformAdapter):
             "Authorization": self._basic_auth_header(),
         }
 
+        # 优先使用持久化的 HTTP 会话，否则创建临时会话
         session = self._http_session or aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
         )
@@ -179,7 +184,7 @@ class SmsAdapter(BasePlatformAdapter):
                         if resp.status >= 400:
                             error_msg = body.get("message", str(body))
                             logger.error(
-                                "[sms] send failed to %s: %s %s",
+                                "[sms] 发送到 %s 失败：%s %s",
                                 redact_phone(chat_id),
                                 resp.status,
                                 error_msg,
@@ -191,10 +196,10 @@ class SmsAdapter(BasePlatformAdapter):
                         msg_sid = body.get("sid", "")
                         last_result = SendResult(success=True, message_id=msg_sid)
                 except Exception as e:
-                    logger.error("[sms] send error to %s: %s", redact_phone(chat_id), e)
+                    logger.error("[sms] 发送到 %s 时出错：%s", redact_phone(chat_id), e)
                     return SendResult(success=False, error=str(e))
         finally:
-            # Close session only if we created a fallback (no persistent session)
+            # 仅在创建了临时会话（非持久化会话）时关闭它
             if not self._http_session and session:
                 await session.close()
 
@@ -204,30 +209,31 @@ class SmsAdapter(BasePlatformAdapter):
         return {"name": chat_id, "type": "dm"}
 
     # ------------------------------------------------------------------
-    # SMS-specific formatting
+    # SMS 专用格式化
     # ------------------------------------------------------------------
 
     def format_message(self, content: str) -> str:
-        """Strip markdown — SMS renders it as literal characters."""
+        """剥离 Markdown——短信会将其作为字面字符渲染。"""
         return strip_markdown(content)
 
     # ------------------------------------------------------------------
-    # Twilio signature validation
+    # Twilio 签名验证
     # ------------------------------------------------------------------
 
     def _validate_twilio_signature(
         self, url: str, post_params: dict, signature: str,
     ) -> bool:
-        """Validate ``X-Twilio-Signature`` header (HMAC-SHA1, base64).
+        """验证 ``X-Twilio-Signature`` 请求头（HMAC-SHA1，base64 编码）。
 
-        Tries both with and without the default port for the URL scheme,
-        since Twilio may sign with either variant.
+        同时尝试带默认端口和不带默认端口的 URL 两种变体，
+        因为 Twilio 可能使用其中任一种进行签名。
 
-        Algorithm: https://www.twilio.com/docs/usage/security#validating-requests
+        算法详见：https://www.twilio.com/docs/usage/security#validating-requests
         """
         if self._check_signature(url, post_params, signature):
             return True
 
+        # 尝试端口变体 URL（添加或移除默认端口）
         variant = self._port_variant_url(url)
         if variant and self._check_signature(variant, post_params, signature):
             return True
@@ -237,7 +243,8 @@ class SmsAdapter(BasePlatformAdapter):
     def _check_signature(
         self, url: str, post_params: dict, signature: str,
     ) -> bool:
-        """Compute and compare a single Twilio signature."""
+        """计算并比较单个 Twilio 签名。"""
+        # 按照 Twilio 签名算法：URL + 按键排序的参数拼接
         data_to_sign = url
         for key in sorted(post_params.keys()):
             data_to_sign += key + post_params[key]
@@ -251,10 +258,10 @@ class SmsAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _port_variant_url(url: str) -> str | None:
-        """Return the URL with the default port toggled, or None.
+        """返回切换了默认端口的 URL 变体，如果不适用则返回 None。
 
-        Only toggles default ports (443 for https, 80 for http).
-        Non-standard ports are never modified.
+        仅切换默认端口（https 为 443，http 为 80）。
+        非标准端口不会被修改。
         """
         parsed = urllib.parse.urlparse(url)
         default_ports = {"https": 443, "http": 80}
@@ -263,24 +270,24 @@ class SmsAdapter(BasePlatformAdapter):
             return None
 
         if parsed.port == default_port:
-            # Has explicit default port → strip it
+            # URL 中有显式默认端口 -> 移除它
             return urllib.parse.urlunparse(
                 (parsed.scheme, parsed.hostname, parsed.path,
                  parsed.params, parsed.query, parsed.fragment)
             )
         elif parsed.port is None:
-            # No port → add default
+            # URL 中没有端口 -> 添加默认端口
             netloc = f"{parsed.hostname}:{default_port}"
             return urllib.parse.urlunparse(
                 (parsed.scheme, netloc, parsed.path,
                  parsed.params, parsed.query, parsed.fragment)
             )
 
-        # Non-standard port — no variant
+        # 非标准端口——没有变体
         return None
 
     # ------------------------------------------------------------------
-    # Twilio webhook handler
+    # Twilio Webhook 处理器
     # ------------------------------------------------------------------
 
     async def _handle_webhook(self, request) -> "aiohttp.web.Response":
@@ -288,38 +295,39 @@ class SmsAdapter(BasePlatformAdapter):
 
         try:
             raw = await request.read()
-            # Twilio sends form-encoded data, not JSON
+            # Twilio 发送表单编码数据，不是 JSON
             form = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True)
         except Exception as e:
-            logger.error("[sms] webhook parse error: %s", e)
+            logger.error("[sms] Webhook 解析错误：%s", e)
             return web.Response(
                 text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
                 content_type="application/xml",
                 status=400,
             )
 
-        # Validate Twilio request signature when SMS_WEBHOOK_URL is configured
+        # 当配置了 SMS_WEBHOOK_URL 时，验证 Twilio 请求签名
         if self._webhook_url:
             twilio_sig = request.headers.get("X-Twilio-Signature", "")
             if not twilio_sig:
-                logger.warning("[sms] Rejected: missing X-Twilio-Signature header")
+                logger.warning("[sms] 已拒绝：缺少 X-Twilio-Signature 请求头")
                 return web.Response(
                     text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
                     content_type="application/xml",
                     status=403,
                 )
+            # 将 parse_qs 返回的列表值展平为单个值用于签名验证
             flat_params = {k: v[0] for k, v in form.items() if v}
             if not self._validate_twilio_signature(
                 self._webhook_url, flat_params, twilio_sig
             ):
-                logger.warning("[sms] Rejected: invalid Twilio signature")
+                logger.warning("[sms] 已拒绝：Twilio 签名无效")
                 return web.Response(
                     text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
                     content_type="application/xml",
                     status=403,
                 )
 
-        # Extract fields (parse_qs returns lists)
+        # 提取字段（parse_qs 返回的是列表）
         from_number = (form.get("From", [""]))[0].strip()
         to_number = (form.get("To", [""]))[0].strip()
         text = (form.get("Body", [""]))[0].strip()
@@ -331,21 +339,22 @@ class SmsAdapter(BasePlatformAdapter):
                 content_type="application/xml",
             )
 
-        # Ignore messages from our own number (echo prevention)
+        # 忽略来自自身号码的消息（防止回声/循环）
         if from_number == self._from_number:
-            logger.debug("[sms] ignoring echo from own number %s", redact_phone(from_number))
+            logger.debug("[sms] 忽略来自自身号码 %s 的回声消息", redact_phone(from_number))
             return web.Response(
                 text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
                 content_type="application/xml",
             )
 
         logger.info(
-            "[sms] inbound from %s -> %s: %s",
+            "[sms] 收到入站消息 %s -> %s：%s",
             redact_phone(from_number),
             redact_phone(to_number),
             text[:80],
         )
 
+        # 构建消息来源信息和事件对象
         source = self.build_source(
             chat_id=from_number,
             chat_name=from_number,
@@ -361,12 +370,12 @@ class SmsAdapter(BasePlatformAdapter):
             message_id=message_sid,
         )
 
-        # Non-blocking: Twilio expects a fast response
+        # 非阻塞处理：Twilio 期望快速响应，因此异步处理消息
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
-        # Return empty TwiML — we send replies via the REST API, not inline TwiML
+        # 返回空的 TwiML——我们通过 REST API 发送回复，而不是内联 TwiML
         return web.Response(
             text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
             content_type="application/xml",

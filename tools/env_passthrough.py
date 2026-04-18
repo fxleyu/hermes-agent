@@ -1,20 +1,19 @@
-"""Environment variable passthrough registry.
+"""环境变量透传注册表。
 
-Skills that declare ``required_environment_variables`` in their frontmatter
-need those vars available in sandboxed execution environments (execute_code,
-terminal).  By default both sandboxes strip secrets from the child process
-environment for security.  This module provides a session-scoped allowlist
-so skill-declared vars (and user-configured overrides) pass through.
+在前置元数据中声明了 ``required_environment_variables`` 的技能需要这些变量
+在沙箱执行环境（execute_code、terminal）中可用。默认情况下，两种沙箱出于
+安全考虑都会从子进程环境中剥离敏感信息。本模块提供了一个会话范围的白名单，
+使技能声明的变量（以及用户配置的覆盖）能够透传。
 
-Two sources feed the allowlist:
+白名单由两个来源填充：
 
-1. **Skill declarations** — when a skill is loaded via ``skill_view``, its
-   ``required_environment_variables`` are registered here automatically.
-2. **User config** — ``terminal.env_passthrough`` in config.yaml lets users
-   explicitly allowlist vars for non-skill use cases.
+1. **技能声明** — 当通过 ``skill_view`` 加载技能时，其
+   ``required_environment_variables`` 会自动注册到此处。
+2. **用户配置** — config.yaml 中的 ``terminal.env_passthrough`` 允许用户
+   为非技能场景显式添加白名单变量。
 
-Both ``code_execution_tool.py`` and ``tools/environments/local.py`` consult
-:func:`is_env_passthrough` before stripping a variable.
+``code_execution_tool.py`` 和 ``tools/environments/local.py`` 在剥离变量
+之前都会查询 :func:`is_env_passthrough`。
 """
 
 from __future__ import annotations
@@ -25,13 +24,13 @@ from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
-# Session-scoped set of env var names that should pass through to sandboxes.
-# Backed by ContextVar to prevent cross-session data bleed in the gateway pipeline.
+# 会话范围的允许透传到沙箱的环境变量名集合。
+# 使用 ContextVar 以防止网关管道中跨会话的数据泄漏。
 _allowed_env_vars_var: ContextVar[set[str]] = ContextVar("_allowed_env_vars")
 
 
 def _get_allowed() -> set[str]:
-    """Get or create the allowed env vars set for the current context/session."""
+    """获取或创建当前上下文/会话的允许环境变量集合。"""
     try:
         return _allowed_env_vars_var.get()
     except LookupError:
@@ -40,14 +39,14 @@ def _get_allowed() -> set[str]:
         return val
 
 
-# Cache for the config-based allowlist (loaded once per process).
+# 基于配置的白名单缓存（每个进程加载一次）。
 _config_passthrough: frozenset[str] | None = None
 
 
 def register_env_passthrough(var_names: Iterable[str]) -> None:
-    """Register environment variable names as allowed in sandboxed environments.
+    """将环境变量名注册为沙箱环境中允许透传的变量。
 
-    Typically called when a skill declares ``required_environment_variables``.
+    通常在技能声明 ``required_environment_variables`` 时调用。
     """
     for name in var_names:
         name = name.strip()
@@ -57,7 +56,7 @@ def register_env_passthrough(var_names: Iterable[str]) -> None:
 
 
 def _load_config_passthrough() -> frozenset[str]:
-    """Load ``tools.env_passthrough`` from config.yaml (cached)."""
+    """从 config.yaml 加载 ``tools.env_passthrough``（已缓存）。"""
     global _config_passthrough
     if _config_passthrough is not None:
         return _config_passthrough
@@ -79,10 +78,10 @@ def _load_config_passthrough() -> frozenset[str]:
 
 
 def is_env_passthrough(var_name: str) -> bool:
-    """Check whether *var_name* is allowed to pass through to sandboxes.
+    """检查 *var_name* 是否允许透传到沙箱。
 
-    Returns ``True`` if the variable was registered by a skill or listed in
-    the user's ``tools.env_passthrough`` config.
+    如果该变量由技能注册或在用户的 ``tools.env_passthrough`` 配置中
+    列出，则返回 ``True``。
     """
     if var_name in _get_allowed():
         return True
@@ -90,12 +89,12 @@ def is_env_passthrough(var_name: str) -> bool:
 
 
 def get_all_passthrough() -> frozenset[str]:
-    """Return the union of skill-registered and config-based passthrough vars."""
+    """返回技能注册和基于配置的透传变量的并集。"""
     return frozenset(_get_allowed()) | _load_config_passthrough()
 
 
 def clear_env_passthrough() -> None:
-    """Reset the skill-scoped allowlist (e.g. on session reset)."""
+    """重置技能范围的白名单（例如在会话重置时调用）。"""
     _get_allowed().clear()
 
 

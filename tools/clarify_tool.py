@@ -1,22 +1,20 @@
 #!/usr/bin/env python3
 """
-Clarify Tool Module - Interactive Clarifying Questions
+澄清工具模块 - 交互式澄清提问
 
-Allows the agent to present structured multiple-choice questions or open-ended
-prompts to the user. In CLI mode, choices are navigable with arrow keys. On
-messaging platforms, choices are rendered as a numbered list.
+允许代理向用户提出结构化的多项选择题或开放式提示。在 CLI 模式下，
+选项可通过方向键导航。在消息平台上，选项以编号列表形式呈现。
 
-The actual user-interaction logic lives in the platform layer (cli.py for CLI,
-gateway/run.py for messaging). This module defines the schema, validation, and
-a thin dispatcher that delegates to a platform-provided callback.
+实际的用户交互逻辑位于平台层（CLI 的 cli.py，消息平台的 gateway/run.py）。
+本模块定义了数据模式、验证逻辑以及一个委托给平台提供回调函数的薄调度层。
 """
 
 import json
 from typing import List, Optional, Callable
 
 
-# Maximum number of predefined choices the agent can offer.
-# A 5th "Other (type your answer)" option is always appended by the UI.
+# 代理可以提供的预定义选项最大数量。
+# UI 层会自动追加第 5 个"其他（输入您的回答）"选项。
 MAX_CHOICES = 4
 
 
@@ -26,25 +24,24 @@ def clarify_tool(
     callback: Optional[Callable] = None,
 ) -> str:
     """
-    Ask the user a question, optionally with multiple-choice options.
+    向用户提问，可选提供多项选择选项。
 
-    Args:
-        question: The question text to present.
-        choices:  Up to 4 predefined answer choices. When omitted the
-                  question is purely open-ended.
-        callback: Platform-provided function that handles the actual UI
-                  interaction. Signature: callback(question, choices) -> str.
-                  Injected by the agent runner (cli.py / gateway).
+    参数:
+        question: 要展示的问题文本。
+        choices:  最多 4 个预定义的答案选项。省略时问题为纯开放式。
+        callback: 平台提供的处理实际 UI 交互的函数。
+                  签名: callback(question, choices) -> str。
+                  由代理运行器（cli.py / gateway）注入。
 
-    Returns:
-        JSON string with the user's response.
+    返回:
+        包含用户回应的 JSON 字符串。
     """
     if not question or not question.strip():
         return tool_error("Question text is required.")
 
     question = question.strip()
 
-    # Validate and trim choices
+    # 验证并裁剪选项列表
     if choices is not None:
         if not isinstance(choices, list):
             return tool_error("choices must be a list of strings.")
@@ -52,7 +49,7 @@ def clarify_tool(
         if len(choices) > MAX_CHOICES:
             choices = choices[:MAX_CHOICES]
         if not choices:
-            choices = None  # empty list → open-ended
+            choices = None  # 空列表 → 开放式问题
 
     if callback is None:
         return json.dumps(
@@ -76,12 +73,12 @@ def clarify_tool(
 
 
 def check_clarify_requirements() -> bool:
-    """Clarify tool has no external requirements -- always available."""
+    """澄清工具没有外部依赖要求——始终可用。"""
     return True
 
 
 # =============================================================================
-# OpenAI Function-Calling Schema
+# OpenAI 函数调用模式定义
 # =============================================================================
 
 CLARIFY_SCHEMA = {
@@ -125,7 +122,7 @@ CLARIFY_SCHEMA = {
 }
 
 
-# --- Registry ---
+# --- 注册到工具注册表 ---
 from tools.registry import registry, tool_error
 
 registry.register(

@@ -1,8 +1,8 @@
-"""Daytona cloud execution environment.
+"""Daytona 云端执行环境。
 
-Uses the Daytona Python SDK to run commands in cloud sandboxes.
-Supports persistent sandboxes: when enabled, sandboxes are stopped on cleanup
-and resumed on next creation, preserving the filesystem across sessions.
+使用 Daytona Python SDK 在云端沙箱中运行命令。
+支持持久化沙箱：启用时，清理操作会停止沙箱而非删除，下次创建时恢复运行，
+从而在会话之间保留文件系统状态。
 """
 
 import logging
@@ -28,11 +28,11 @@ logger = logging.getLogger(__name__)
 
 
 class DaytonaEnvironment(BaseEnvironment):
-    """Daytona cloud sandbox execution backend.
+    """Daytona 云端沙箱执行后端。
 
-    Spawn-per-call via _ThreadedProcessHandle wrapping blocking SDK calls.
-    cancel_fn wired to sandbox.stop() for interrupt support.
-    Shell timeout wrapper preserved (SDK timeout unreliable).
+    每次调用创建新进程：通过 _ThreadedProcessHandle 封装阻塞的 SDK 调用。
+    cancel_fn 连接到 sandbox.stop() 以支持中断。
+    保留 shell 超时封装器（SDK 超时不可靠）。
     """
 
     _stdin_mode = "heredoc"
@@ -118,7 +118,7 @@ class DaytonaEnvironment(BaseEnvironment):
             logger.info("Daytona: created sandbox %s for task %s",
                         self._sandbox.id, task_id)
 
-        # Detect remote home dir
+        # 检测远程 home 目录
         self._remote_home = "/root"
         try:
             home = self._sandbox.process.exec("echo $HOME").result.strip()
@@ -141,17 +141,16 @@ class DaytonaEnvironment(BaseEnvironment):
         self.init_session()
 
     def _daytona_upload(self, host_path: str, remote_path: str) -> None:
-        """Upload a single file via Daytona SDK."""
+        """通过 Daytona SDK 上传单个文件。"""
         parent = str(Path(remote_path).parent)
         self._sandbox.process.exec(f"mkdir -p {parent}")
         self._sandbox.fs.upload_file(host_path, remote_path)
 
     def _daytona_bulk_upload(self, files: list[tuple[str, str]]) -> None:
-        """Upload many files in a single HTTP call via Daytona SDK.
+        """通过 Daytona SDK 在单次 HTTP 调用中批量上传文件。
 
-        Uses ``sandbox.fs.upload_files()`` which batches all files into one
-        multipart POST, avoiding per-file TLS/HTTP overhead (~580 files
-        goes from ~5 min to <2 s).
+        使用 ``sandbox.fs.upload_files()`` 将所有文件合并到一个 multipart POST 中，
+        避免逐文件的 TLS/HTTP 开销（约 580 个文件从约 5 分钟缩减到不到 2 秒）。
         """
         from daytona.common.filesystem import FileUpload
 
@@ -169,38 +168,38 @@ class DaytonaEnvironment(BaseEnvironment):
         self._sandbox.fs.upload_files(uploads)
 
     def _daytona_bulk_download(self, dest: Path) -> None:
-        """Download remote .hermes/ as a tar archive."""
+        """将远程 .hermes/ 目录作为 tar 归档下载。"""
         rel_base = f"{self._remote_home}/.hermes".lstrip("/")
-        # PID-suffixed remote temp path avoids collisions if sync_back fires
-        # concurrently for the same sandbox (e.g. retry after partial failure).
+        # 使用 PID 后缀的远程临时路径，避免 sync_back 并发执行时
+        # 对同一沙箱发生冲突（例如部分失败后重试）。
         remote_tar = f"/tmp/.hermes_sync.{os.getpid()}.tar"
         self._sandbox.process.exec(
             f"tar cf {shlex.quote(remote_tar)} -C / {shlex.quote(rel_base)}"
         )
         self._sandbox.fs.download_file(remote_tar, str(dest))
-        # Clean up remote temp file
+        # 清理远程临时文件
         try:
             self._sandbox.process.exec(f"rm -f {shlex.quote(remote_tar)}")
         except Exception:
-            pass  # best-effort cleanup
+            pass  # 尽力清理
 
     def _daytona_delete(self, remote_paths: list[str]) -> None:
-        """Batch-delete remote files via SDK exec."""
+        """通过 SDK exec 批量删除远程文件。"""
         self._sandbox.process.exec(quoted_rm_command(remote_paths))
 
     # ------------------------------------------------------------------
-    # Sandbox lifecycle
+    # 沙箱生命周期管理
     # ------------------------------------------------------------------
 
     def _ensure_sandbox_ready(self) -> None:
-        """Restart sandbox if it was stopped (e.g., by a previous interrupt)."""
+        """如果沙箱已停止（例如被之前的中断操作停止），则重新启动。"""
         self._sandbox.refresh_data()
         if self._sandbox.state in (self._SandboxState.STOPPED, self._SandboxState.ARCHIVED):
             self._sandbox.start()
             logger.info("Daytona: restarted sandbox %s", self._sandbox.id)
 
     def _before_execute(self) -> None:
-        """Ensure sandbox is ready, then sync files via FileSyncManager."""
+        """确保沙箱就绪，然后通过 FileSyncManager 同步文件。"""
         with self._lock:
             self._ensure_sandbox_ready()
         self._sync_manager.sync()
@@ -208,7 +207,7 @@ class DaytonaEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None):
-        """Return a _ThreadedProcessHandle wrapping a blocking Daytona SDK call."""
+        """返回一个封装了阻塞 Daytona SDK 调用的 _ThreadedProcessHandle。"""
         sandbox = self._sandbox
         lock = self._lock
 
@@ -235,10 +234,9 @@ class DaytonaEnvironment(BaseEnvironment):
             if self._sandbox is None:
                 return
 
-            # Sync remote changes back to host before teardown. Running
-            # inside the lock (and after the _sandbox is None guard) avoids
-            # firing sync_back on an already-cleaned-up env, which would
-            # trigger a 3-attempt retry storm against a nil sandbox.
+            # 在关闭前将远程变更同步回宿主机。在锁内运行（且在
+            # _sandbox is None 检查之后），避免对已清理完毕的环境触发
+            # sync_back，否则会导致对空沙箱的 3 次重试风暴。
             if self._sync_manager:
                 logger.info("Daytona: syncing files from sandbox...")
                 try:

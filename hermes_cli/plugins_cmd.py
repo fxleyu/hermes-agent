@@ -1,10 +1,10 @@
-"""``hermes plugins`` CLI subcommand — install, update, remove, and list plugins.
+"""``hermes plugins`` CLI 子命令 — 安装、更新、移除和列出插件。
 
-Plugins are installed from Git repositories into ``~/.hermes/plugins/``.
-Supports full URLs and ``owner/repo`` shorthand (resolves to GitHub).
+插件从 Git 仓库安装到 ``~/.hermes/plugins/``。
+支持完整 URL 和 ``owner/repo`` 简写（解析为 GitHub）。
 
-After install, if the plugin ships an ``after-install.md`` file it is
-rendered with Rich Markdown.  Otherwise a default confirmation is shown.
+安装后，如果插件包含 ``after-install.md`` 文件，将使用
+Rich Markdown 渲染显示。否则显示默认确认信息。
 """
 
 from __future__ import annotations
@@ -20,24 +20,24 @@ from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
-# Minimum manifest version this installer understands.
-# Plugins may declare ``manifest_version: 1`` in plugin.yaml;
-# future breaking changes to the manifest schema bump this.
+# 此安装器理解的最低清单版本。
+# 插件可以在 plugin.yaml 中声明 ``manifest_version: 1``；
+# 未来清单架构的破坏性更改会递增此值。
 _SUPPORTED_MANIFEST_VERSION = 1
 
 
 def _plugins_dir() -> Path:
-    """Return the user plugins directory, creating it if needed."""
+    """返回用户插件目录，如不存在则创建。"""
     plugins = get_hermes_home() / "plugins"
     plugins.mkdir(parents=True, exist_ok=True)
     return plugins
 
 
 def _sanitize_plugin_name(name: str, plugins_dir: Path) -> Path:
-    """Validate a plugin name and return the safe target path inside *plugins_dir*.
+    """验证插件名称并返回 *plugins_dir* 内的安全目标路径。
 
-    Raises ``ValueError`` if the name contains path-traversal sequences or would
-    resolve outside the plugins directory.
+    如果名称包含路径遍历序列或解析到插件目录之外，
+    则抛出 ``ValueError``。
     """
     if not name:
         raise ValueError("Plugin name must not be empty.")
@@ -47,7 +47,7 @@ def _sanitize_plugin_name(name: str, plugins_dir: Path) -> Path:
             f"Invalid plugin name '{name}': must not reference the plugins directory itself."
         )
 
-    # Reject obvious traversal characters
+    # 拒绝明显的路径遍历字符
     for bad in ("/", "\\", ".."):
         if bad in name:
             raise ValueError(f"Invalid plugin name '{name}': must not contain '{bad}'.")

@@ -1,40 +1,38 @@
 """
-YCBenchEvalEnv -- YC-Bench Long-Horizon Agent Benchmark Environment
+YCBenchEvalEnv -- YC-Bench 长期决策智能体基准评估环境
 
-Evaluates agentic LLMs on YC-Bench: a deterministic, long-horizon benchmark
-where the agent acts as CEO of an AI startup over a simulated 1-3 year run.
-The agent manages cash flow, employees, tasks, and prestige across 4 domains,
-interacting exclusively via CLI subprocess calls against a SQLite-backed
-discrete-event simulation.
+在 YC-Bench 上评估智能体 LLM：一个确定性、长期决策基准测试，
+智能体扮演 AI 初创公司的 CEO，在模拟的 1-3 年运营期间，
+管理现金流、员工、任务和声望（横跨 4 个领域），
+完全通过 CLI 子进程调用与基于 SQLite 的离散事件模拟交互。
 
-Unlike TerminalBench2 (per-task binary pass/fail), YC-Bench measures sustained
-multi-turn strategic coherence -- whether an agent can manage compounding
-decisions over hundreds of turns without going bankrupt.
+与 TerminalBench2（按任务的二值通过/失败）不同，YC-Bench 衡量的是
+持续的多轮战略一致性——智能体能否在数百轮中管理复合决策而不破产。
 
-This is an eval-only environment. Run via:
+这是一个纯评估环境。运行方式：
 
-    python environments/benchmarks/yc_bench/yc_bench_env.py evaluate \
+    python environments/benchmarks/yc_bench/yc_bench_env.py evaluate \\
         --config environments/benchmarks/yc_bench/default.yaml
 
-The evaluate flow:
-    1. setup()     -- Verifies yc-bench installed, builds eval matrix (preset x seed)
-    2. evaluate()  -- Iterates over all runs sequentially through:
-        a. rollout_and_score_eval()  -- Per-run agent loop
-            - Initialises a fresh yc-bench simulation via `sim init` (NOT `run`)
-            - Runs HermesAgentLoop with terminal tool only
-            - Reads final SQLite DB to extract score
-            - Returns survival (0/1) + normalised funds score
-        b. Aggregates per-preset and overall metrics
-        c. Logs results via evaluate_log() and wandb
+评估流程：
+    1. setup()     -- 验证 yc-bench 已安装，构建评估矩阵（预设 x 种子）
+    2. evaluate()  -- 按顺序遍历所有运行：
+        a. rollout_and_score_eval()  -- 单次运行的智能体循环
+            - 通过 `sim init`（而非 `run`）初始化新的 yc-bench 模拟
+            - 仅使用终端工具运行 HermesAgentLoop
+            - 读取最终 SQLite 数据库提取分数
+            - 返回存活状态（0/1）+ 标准化资金分数
+        b. 聚合每预设和整体指标
+        c. 通过 evaluate_log() 和 wandb 记录结果
 
-Key features:
-  - CLI-only interface: agent calls yc-bench subcommands via terminal tool
-  - Deterministic: same seed + preset = same world (SHA256-based RNG)
-  - Multi-dimensional scoring: survival + normalised final funds
-  - Per-preset difficulty breakdown in results
-  - Isolated SQLite DB per run (no cross-run state leakage)
+核心特性：
+  - 仅 CLI 接口：智能体通过终端工具调用 yc-bench 子命令
+  - 确定性：相同种子 + 预设 = 相同世界（基于 SHA256 的随机数生成器）
+  - 多维度评分：存活状态 + 标准化最终资金
+  - 按预设的难度分组结果
+  - 每次运行独立的 SQLite 数据库（无跨运行状态泄漏）
 
-Requires: pip install hermes-agent[yc-bench]
+依赖：pip install hermes-agent[yc-bench]
 """
 
 import asyncio
@@ -68,7 +66,7 @@ from environments.hermes_base_env import HermesAgentBaseEnv, HermesAgentEnvConfi
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# System prompt
+# 系统提示词
 # =============================================================================
 
 YC_BENCH_SYSTEM_PROMPT = """\
@@ -156,10 +154,10 @@ Each turn:
 
 Think step by step before acting."""
 
-# Starting funds in cents ($250,000)
+# 初始资金（美分），即 $250,000
 INITIAL_FUNDS_CENTS = 25_000_000
 
-# Default horizon per preset (years)
+# 每个预设的默认模拟期限（年）
 _PRESET_HORIZONS = {
     "tutorial": 1,
     "easy": 1,
@@ -173,15 +171,15 @@ _PRESET_HORIZONS = {
 
 
 # =============================================================================
-# Configuration
+# 配置
 # =============================================================================
 
 class YCBenchEvalConfig(HermesAgentEnvConfig):
     """
-    Configuration for the YC-Bench evaluation environment.
+    YC-Bench 评估环境的配置类。
 
-    Extends HermesAgentEnvConfig with YC-Bench-specific settings for
-    preset selection, seed control, scoring, and simulation parameters.
+    继承 HermesAgentEnvConfig，并添加 YC-Bench 特有的
+    预设选择、种子控制、评分和模拟参数等配置项。
     """
 
     presets: List[str] = Field(
@@ -226,18 +224,18 @@ class YCBenchEvalConfig(HermesAgentEnvConfig):
 
 
 # =============================================================================
-# Scoring helpers
+# 评分辅助函数
 # =============================================================================
 
 def _read_final_score(db_path: str) -> Dict[str, Any]:
     """
-    Read final game state from a YC-Bench SQLite database.
+    从 YC-Bench SQLite 数据库中读取最终游戏状态。
 
-    Returns dict with final_funds_cents (int), survived (bool),
-    terminal_reason (str).
+    返回包含 final_funds_cents（整数）、survived（布尔值）、
+    terminal_reason（字符串）的字典。
 
-    Note: yc-bench table names are plural -- 'companies' not 'company',
-    'sim_events' not 'simulation_log'.
+    注意：yc-bench 的表名是复数形式——'companies' 而非 'company'，
+    'sim_events' 而非 'simulation_log'。
     """
     if not os.path.exists(db_path):
         logger.warning("DB not found at %s", db_path)
@@ -252,12 +250,12 @@ def _read_final_score(db_path: str) -> Dict[str, Any]:
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
 
-        # Read final funds from the 'companies' table
+        # 从 'companies' 表读取最终资金
         cur.execute("SELECT funds_cents FROM companies LIMIT 1")
         row = cur.fetchone()
         funds = row[0] if row else 0
 
-        # Determine terminal reason from 'sim_events' table
+        # 从 'sim_events' 表确定终止原因
         terminal_reason = "unknown"
         try:
             cur.execute(
@@ -269,7 +267,7 @@ def _read_final_score(db_path: str) -> Dict[str, Any]:
             if event_row:
                 terminal_reason = event_row[0]
         except sqlite3.OperationalError:
-            # Table may not exist if simulation didn't progress
+            # 如果模拟未推进，表可能不存在
             pass
 
         survived = funds >= 0 and terminal_reason != "bankruptcy"
@@ -299,22 +297,23 @@ def _compute_composite_score(
     initial_funds_cents: int = INITIAL_FUNDS_CENTS,
 ) -> float:
     """
-    Compute composite score from survival and final funds.
+    根据存活状态和最终资金计算综合分数。
 
-    Score = survival_weight * survival_score
-          + funds_weight * normalised_funds_score
+    分数 = survival_weight * 存活分数
+          + funds_weight * 标准化资金分数
 
-    Normalised funds uses log-scale relative to initial capital:
-    - funds <= 0:          0.0
-    - funds == initial:   ~0.15
-    - funds == 10x:       ~0.52
-    - funds == 100x:       1.0
+    标准化资金使用对数尺度相对于初始资本：
+    - 资金 <= 0:          0.0
+    - 资金 == 初始值:    ~0.15
+    - 资金 == 10 倍:     ~0.52
+    - 资金 == 100 倍:     1.0
     """
     survival_score = 1.0 if survived else 0.0
 
     if final_funds_cents <= 0:
         funds_score = 0.0
     else:
+        # 使用对数尺度将资金比率映射到 [0, 1] 范围
         max_ratio = 100.0
         ratio = final_funds_cents / max(initial_funds_cents, 1)
         funds_score = min(math.log1p(ratio) / math.log1p(max_ratio), 1.0)
@@ -323,22 +322,21 @@ def _compute_composite_score(
 
 
 # =============================================================================
-# Main Environment
+# 主评估环境
 # =============================================================================
 
 class YCBenchEvalEnv(HermesAgentBaseEnv):
     """
-    YC-Bench long-horizon agent benchmark environment (eval-only).
+    YC-Bench 长期决策智能体基准评估环境（仅评估）。
 
-    Each eval item is a (preset, seed) pair. The environment initialises the
-    simulation via ``yc-bench sim init`` (NOT ``yc-bench run`` which would start
-    a competing built-in agent loop). The HermesAgentLoop then drives the
-    interaction by calling individual yc-bench CLI commands via the terminal tool.
+    每个评估项是一个 (preset, seed) 对。环境通过 ``yc-bench sim init``
+    （而非 ``yc-bench run``，后者会启动竞争的内建智能体循环）初始化模拟。
+    然后 HermesAgentLoop 通过终端工具调用各个 yc-bench CLI 命令驱动交互。
 
-    After the agent loop ends, the SQLite DB is read to extract the final score.
+    智能体循环结束后，读取 SQLite 数据库提取最终分数。
 
-    Scoring:
-      composite = 0.5 * survival + 0.5 * normalised_funds
+    评分：
+      综合分数 = 0.5 * 存活状态 + 0.5 * 标准化资金
     """
 
     name = "yc-bench"
@@ -385,12 +383,12 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
         return env_config, server_configs
 
     # =========================================================================
-    # Setup
+    # 初始化
     # =========================================================================
 
     async def setup(self):
-        """Verify yc-bench is installed and build the eval matrix."""
-        # Verify yc-bench CLI is available
+        """验证 yc-bench 已安装并构建评估矩阵。"""
+        # 验证 yc-bench CLI 可用
         try:
             result = subprocess.run(
                 ["yc-bench", "--help"], capture_output=True, text=True, timeout=10
@@ -406,7 +404,7 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
             )
         print("yc-bench CLI verified.")
 
-        # Build eval matrix: preset x seed
+        # 构建评估矩阵：预设 x 种子
         self.all_eval_items = [
             {"preset": preset, "seed": seed}
             for preset in self.config.presets
@@ -417,7 +415,7 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
         os.makedirs(self.config.db_dir, exist_ok=True)
         self.eval_metrics: List[Tuple[str, float]] = []
 
-        # Streaming JSONL log for crash-safe result persistence
+        # 流式 JSONL 日志，确保崩溃时结果不丢失
         log_dir = os.path.join(os.path.dirname(__file__), "logs")
         os.makedirs(log_dir, exist_ok=True)
         run_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -431,7 +429,7 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
         print(f"Streaming results to: {self._streaming_path}\n")
 
     def _save_result(self, result: Dict[str, Any]):
-        """Write a single run result to the streaming JSONL file immediately."""
+        """将单次运行结果立即写入流式 JSONL 文件。"""
         if not hasattr(self, "_streaming_file") or self._streaming_file.closed:
             return
         with self._streaming_lock:
@@ -441,7 +439,7 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
             self._streaming_file.flush()
 
     # =========================================================================
-    # Training pipeline stubs (eval-only -- not used)
+    # 训练管线桩函数（仅评估——不使用）
     # =========================================================================
 
     async def get_next_item(self):
@@ -476,18 +474,18 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
         return None
 
     # =========================================================================
-    # Per-run evaluation
+    # 单次运行评估
     # =========================================================================
 
     async def rollout_and_score_eval(self, eval_item: Dict[str, Any]) -> Dict:
         """
-        Evaluate a single (preset, seed) run.
+        评估单个 (preset, seed) 运行。
 
-        1. Sets DATABASE_URL and YC_BENCH_EXPERIMENT env vars
-        2. Initialises the simulation via ``yc-bench sim init`` (NOT ``run``)
-        3. Runs HermesAgentLoop with terminal tool
-        4. Reads SQLite DB to compute final score
-        5. Returns result dict with survival, funds, and composite score
+        1. 设置 DATABASE_URL 和 YC_BENCH_EXPERIMENT 环境变量
+        2. 通过 ``yc-bench sim init``（而非 ``run``）初始化模拟
+        3. 使用终端工具运行 HermesAgentLoop
+        4. 读取 SQLite 数据库计算最终分数
+        5. 返回包含存活状态、资金和综合分数的结果字典
         """
         preset = eval_item["preset"]
         seed = eval_item["seed"]
@@ -498,21 +496,21 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
         tqdm.write(f"  [START] preset={preset!r} seed={seed} (run_id={run_id})")
         run_start = time.time()
 
-        # Isolated DB per run -- prevents cross-run state leakage
+        # 每次运行使用独立数据库——防止跨运行状态泄漏
         db_path = os.path.join(self.config.db_dir, f"yc_bench_{run_key}.db")
         os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
         os.environ["YC_BENCH_EXPERIMENT"] = preset
 
-        # Determine horizon: explicit config override > preset lookup > default 1
+        # 确定模拟期限：显式配置覆盖 > 预设查找 > 默认 1 年
         horizon = self.config.horizon_years or _PRESET_HORIZONS.get(preset, 1)
 
         try:
             # ----------------------------------------------------------
-            # Step 1: Initialise the simulation via CLI
-            # IMPORTANT: We use `sim init`, NOT `yc-bench run`.
-            # `yc-bench run` starts yc-bench's own LLM agent loop (via
-            # LiteLLM), which would compete with our HermesAgentLoop.
-            # `sim init` just sets up the world and returns.
+            # 步骤 1：通过 CLI 初始化模拟
+            # 重要：使用 `sim init`，而非 `yc-bench run`。
+            # `yc-bench run` 会启动 yc-bench 自带的 LLM 智能体循环
+            # （通过 LiteLLM），会与我们的 HermesAgentLoop 竞争。
+            # `sim init` 只是设置世界然后返回。
             # ----------------------------------------------------------
             init_cmd = [
                 "yc-bench", "sim", "init",
@@ -531,7 +529,7 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
             tqdm.write(f"    Simulation initialized (horizon={horizon}yr)")
 
             # ----------------------------------------------------------
-            # Step 2: Run the HermesAgentLoop
+            # 步骤 2：运行 HermesAgentLoop
             # ----------------------------------------------------------
             tools, valid_names = self._resolve_tools_for_group()
 
@@ -554,7 +552,7 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
             result = await agent.run(messages)
 
             # ----------------------------------------------------------
-            # Step 3: Read final score from the simulation DB
+            # 步骤 3：从模拟数据库中读取最终分数
             # ----------------------------------------------------------
             score_data = _read_final_score(db_path)
             final_funds = score_data["final_funds_cents"]
@@ -620,11 +618,11 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
             return out
 
     # =========================================================================
-    # Evaluate
+    # 评估
     # =========================================================================
 
     async def _run_with_timeout(self, item: Dict[str, Any]) -> Dict:
-        """Wrap a single rollout with a wall-clock timeout."""
+        """为单次推演包装挂钟超时。"""
         preset = item["preset"]
         seed = item["seed"]
         try:
@@ -654,15 +652,15 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
 
     async def evaluate(self, *args, **kwargs) -> None:
         """
-        Run YC-Bench evaluation over all (preset, seed) combinations.
+        在所有 (preset, seed) 组合上运行 YC-Bench 评估。
 
-        Runs sequentially -- each run is 100-500 turns, parallelising would
-        be prohibitively expensive and cause env var conflicts.
+        按顺序运行——每次运行 100-500 轮，并行化成本过高
+        且会导致环境变量冲突。
         """
         start_time = time.time()
         from tqdm import tqdm
 
-        # --- tqdm-compatible logging handler (TB2 pattern) ---
+        # --- 兼容 tqdm 的日志处理器（TB2 模式） ---
         class _TqdmHandler(logging.Handler):
             def emit(self, record):
                 try:
@@ -679,7 +677,7 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
         for noisy in ("httpx", "openai"):
             logging.getLogger(noisy).setLevel(logging.WARNING)
 
-        # --- Print config summary ---
+        # --- 打印配置摘要 ---
         print(f"\n{'='*60}")
         print("Starting YC-Bench Evaluation")
         print(f"{'='*60}")
@@ -720,7 +718,7 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
         pbar.close()
         end_time = time.time()
 
-        # --- Compute metrics ---
+        # --- 计算指标 ---
         valid = [r for r in results if r is not None]
         if not valid:
             print("Warning: No valid results.")
@@ -761,7 +759,7 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
 
         self.eval_metrics = [(k, v) for k, v in eval_metrics.items()]
 
-        # --- Print summary ---
+        # --- 打印摘要 ---
         print(f"\n{'='*60}")
         print("YC-Bench Evaluation Results")
         print(f"{'='*60}")
@@ -793,7 +791,7 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
 
         print(f"{'='*60}\n")
 
-        # --- Log results ---
+        # --- 记录结果 ---
         samples = [
             {k: v for k, v in r.items() if k != "messages"} for r in valid
         ]
@@ -813,7 +811,7 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
         except Exception as e:
             print(f"Error logging results: {e}")
 
-        # --- Cleanup (TB2 pattern) ---
+        # --- 清理（TB2 模式） ---
         if hasattr(self, "_streaming_file") and not self._streaming_file.closed:
             self._streaming_file.close()
             print(f"Results saved to: {self._streaming_path}")
@@ -831,11 +829,11 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
             pass
 
     # =========================================================================
-    # Wandb logging
+    # Wandb 日志记录
     # =========================================================================
 
     async def wandb_log(self, wandb_metrics: Optional[Dict] = None):
-        """Log YC-Bench-specific metrics to wandb."""
+        """将 YC-Bench 特有的指标记录到 wandb。"""
         if wandb_metrics is None:
             wandb_metrics = {}
         for k, v in self.eval_metrics:

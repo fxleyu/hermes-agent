@@ -1,14 +1,14 @@
-"""Mattermost gateway adapter.
+"""Mattermost 网关适配器。
 
-Connects to a self-hosted (or cloud) Mattermost instance via its REST API
-(v4) and WebSocket for real-time events.  No external Mattermost library
-required — uses aiohttp which is already a Hermes dependency.
+通过 REST API (v4) 和 WebSocket 连接到自托管（或云端）的
+Mattermost 实例，实现实时事件通信。无需外部 Mattermost 库——
+使用已作为 Hermes 依赖项的 aiohttp。
 
-Environment variables:
-    MATTERMOST_URL              Server URL (e.g. https://mm.example.com)
-    MATTERMOST_TOKEN            Bot token or personal-access token
-    MATTERMOST_ALLOWED_USERS    Comma-separated user IDs
-    MATTERMOST_HOME_CHANNEL     Channel ID for cron/notification delivery
+环境变量：
+    MATTERMOST_URL              服务器 URL（例如 https://mm.example.com）
+    MATTERMOST_TOKEN            Bot 令牌或个人访问令牌
+    MATTERMOST_ALLOWED_USERS    逗号分隔的用户 ID 列表
+    MATTERMOST_HOME_CHANNEL     用于定时任务/通知投递的频道 ID
 """
 
 from __future__ import annotations
@@ -32,44 +32,44 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
-# Mattermost post size limit (server default is 16383, but 4000 is the
-# practical limit for readable messages — matching OpenClaw's choice).
+# Mattermost 帖子大小限制（服务器默认为 16383，但 4000 是
+# 可读消息的实际限制——与 OpenClaw 的选择一致）。
 MAX_POST_LENGTH = 4000
 
-# Channel type codes returned by the Mattermost API.
+# Mattermost API 返回的频道类型代码。
 _CHANNEL_TYPE_MAP = {
-    "D": "dm",
-    "G": "group",
-    "P": "group",   # private channel → treat as group
-    "O": "channel",
+    "D": "dm",        # 私信
+    "G": "group",     # 群组消息
+    "P": "group",     # 私有频道 -> 视为群组
+    "O": "channel",   # 公开频道
 }
 
-# Reconnect parameters (exponential backoff).
-_RECONNECT_BASE_DELAY = 2.0
-_RECONNECT_MAX_DELAY = 60.0
-_RECONNECT_JITTER = 0.2
+# 重连参数（指数退避）。
+_RECONNECT_BASE_DELAY = 2.0    # 初始重连延迟（秒）
+_RECONNECT_MAX_DELAY = 60.0    # 最大重连延迟（秒）
+_RECONNECT_JITTER = 0.2        # 随机抖动系数
 
 
 def check_mattermost_requirements() -> bool:
-    """Return True if the Mattermost adapter can be used."""
+    """如果 Mattermost 适配器可以使用，则返回 True。"""
     token = os.getenv("MATTERMOST_TOKEN", "")
     url = os.getenv("MATTERMOST_URL", "")
     if not token:
-        logger.debug("Mattermost: MATTERMOST_TOKEN not set")
+        logger.debug("Mattermost：未设置 MATTERMOST_TOKEN")
         return False
     if not url:
-        logger.warning("Mattermost: MATTERMOST_URL not set")
+        logger.warning("Mattermost：未设置 MATTERMOST_URL")
         return False
     try:
         import aiohttp  # noqa: F401
         return True
     except ImportError:
-        logger.warning("Mattermost: aiohttp not installed")
+        logger.warning("Mattermost：aiohttp 未安装")
         return False
 
 
 class MattermostAdapter(BasePlatformAdapter):
-    """Gateway adapter for Mattermost (self-hosted or cloud)."""
+    """Mattermost（自托管或云端）的网关适配器。"""
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATTERMOST)
@@ -83,24 +83,24 @@ class MattermostAdapter(BasePlatformAdapter):
         self._bot_user_id: str = ""
         self._bot_username: str = ""
 
-        # aiohttp session + websocket handle
+        # aiohttp 会话 + WebSocket 句柄
         self._session: Any = None  # aiohttp.ClientSession
         self._ws: Any = None       # aiohttp.ClientWebSocketResponse
         self._ws_task: Optional[asyncio.Task] = None
         self._reconnect_task: Optional[asyncio.Task] = None
         self._closing = False
 
-        # Reply mode: "thread" to nest replies, "off" for flat messages.
+        # 回复模式："thread" 将回复嵌套在线程中，"off" 发送平级消息。
         self._reply_mode: str = (
             config.extra.get("reply_mode", "")
             or os.getenv("MATTERMOST_REPLY_MODE", "off")
         ).lower()
 
-        # Dedup cache (prevent reprocessing)
+        # 消息去重缓存（防止重复处理）
         self._dedup = MessageDeduplicator()
 
     # ------------------------------------------------------------------
-    # HTTP helpers
+    # HTTP 辅助方法
     # ------------------------------------------------------------------
 
     def _headers(self) -> Dict[str, str]:
@@ -110,24 +110,24 @@ class MattermostAdapter(BasePlatformAdapter):
         }
 
     async def _api_get(self, path: str) -> Dict[str, Any]:
-        """GET /api/v4/{path}."""
+        """GET /api/v4/{path}。"""
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
             async with self._session.get(url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=30)) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
-                    logger.error("MM API GET %s → %s: %s", path, resp.status, body[:200])
+                    logger.error("MM API GET %s -> %s：%s", path, resp.status, body[:200])
                     return {}
                 return await resp.json()
         except aiohttp.ClientError as exc:
-            logger.error("MM API GET %s network error: %s", path, exc)
+            logger.error("MM API GET %s 网络错误：%s", path, exc)
             return {}
 
     async def _api_post(
         self, path: str, payload: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """POST /api/v4/{path} with JSON body."""
+        """POST /api/v4/{path}，发送 JSON 请求体。"""
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
@@ -137,17 +137,17 @@ class MattermostAdapter(BasePlatformAdapter):
             ) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
-                    logger.error("MM API POST %s → %s: %s", path, resp.status, body[:200])
+                    logger.error("MM API POST %s -> %s：%s", path, resp.status, body[:200])
                     return {}
                 return await resp.json()
         except aiohttp.ClientError as exc:
-            logger.error("MM API POST %s network error: %s", path, exc)
+            logger.error("MM API POST %s 网络错误：%s", path, exc)
             return {}
 
     async def _api_put(
         self, path: str, payload: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """PUT /api/v4/{path} with JSON body."""
+        """PUT /api/v4/{path}，发送 JSON 请求体。"""
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
@@ -156,17 +156,17 @@ class MattermostAdapter(BasePlatformAdapter):
             ) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
-                    logger.error("MM API PUT %s → %s: %s", path, resp.status, body[:200])
+                    logger.error("MM API PUT %s -> %s：%s", path, resp.status, body[:200])
                     return {}
                 return await resp.json()
         except aiohttp.ClientError as exc:
-            logger.error("MM API PUT %s network error: %s", path, exc)
+            logger.error("MM API PUT %s 网络错误：%s", path, exc)
             return {}
 
     async def _upload_file(
         self, channel_id: str, file_data: bytes, filename: str, content_type: str = "application/octet-stream"
     ) -> Optional[str]:
-        """Upload a file and return its file ID, or None on failure."""
+        """上传文件并返回其文件 ID，失败时返回 None。"""
         import aiohttp
 
         url = f"{self._base_url}/api/v4/files"
@@ -182,22 +182,22 @@ class MattermostAdapter(BasePlatformAdapter):
         async with self._session.post(url, headers=headers, data=form, timeout=aiohttp.ClientTimeout(total=60)) as resp:
             if resp.status >= 400:
                 body = await resp.text()
-                logger.error("MM file upload → %s: %s", resp.status, body[:200])
+                logger.error("MM 文件上传 -> %s：%s", resp.status, body[:200])
                 return None
             data = await resp.json()
             infos = data.get("file_infos", [])
             return infos[0]["id"] if infos else None
 
     # ------------------------------------------------------------------
-    # Required overrides
+    # 必须实现的接口方法
     # ------------------------------------------------------------------
 
     async def connect(self) -> bool:
-        """Connect to Mattermost and start the WebSocket listener."""
+        """连接到 Mattermost 并启动 WebSocket 监听器。"""
         import aiohttp
 
         if not self._base_url or not self._token:
-            logger.error("Mattermost: URL or token not configured")
+            logger.error("Mattermost：未配置 URL 或令牌")
             return False
 
         self._session = aiohttp.ClientSession(
@@ -205,29 +205,29 @@ class MattermostAdapter(BasePlatformAdapter):
         )
         self._closing = False
 
-        # Verify credentials and fetch bot identity.
+        # 验证凭据并获取 Bot 身份信息
         me = await self._api_get("users/me")
         if not me or "id" not in me:
-            logger.error("Mattermost: failed to authenticate — check MATTERMOST_TOKEN and MATTERMOST_URL")
+            logger.error("Mattermost：认证失败——请检查 MATTERMOST_TOKEN 和 MATTERMOST_URL")
             await self._session.close()
             return False
 
         self._bot_user_id = me["id"]
         self._bot_username = me.get("username", "")
         logger.info(
-            "Mattermost: authenticated as @%s (%s) on %s",
+            "Mattermost：已认证为 @%s (%s)，服务器：%s",
             self._bot_username,
             self._bot_user_id,
             self._base_url,
         )
 
-        # Start WebSocket in background.
+        # 在后台启动 WebSocket 监听
         self._ws_task = asyncio.create_task(self._ws_loop())
         self._mark_connected()
         return True
 
     async def disconnect(self) -> None:
-        """Disconnect from Mattermost."""
+        """断开与 Mattermost 的连接。"""
         self._closing = True
 
         if self._ws_task and not self._ws_task.done():
@@ -247,7 +247,7 @@ class MattermostAdapter(BasePlatformAdapter):
         if self._session and not self._session.closed:
             await self._session.close()
 
-        logger.info("Mattermost: disconnected")
+        logger.info("Mattermost：已断开连接")
 
     async def send(
         self,
@@ -256,7 +256,7 @@ class MattermostAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a message (or multiple chunks) to a channel."""
+        """向频道发送消息（或多个分片）。"""
         if not content:
             return SendResult(success=True)
 
@@ -269,19 +269,19 @@ class MattermostAdapter(BasePlatformAdapter):
                 "channel_id": chat_id,
                 "message": chunk,
             }
-            # Thread support: reply_to is the root post ID.
+            # 线程支持：reply_to 是根帖子 ID
             if reply_to and self._reply_mode == "thread":
                 payload["root_id"] = reply_to
 
             data = await self._api_post("posts", payload)
             if not data or "id" not in data:
-                return SendResult(success=False, error="Failed to create post")
+                return SendResult(success=False, error="创建帖子失败")
             last_id = data["id"]
 
         return SendResult(success=True, message_id=last_id)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
-        """Return channel name and type."""
+        """返回频道名称和类型。"""
         data = await self._api_get(f"channels/{chat_id}")
         if not data:
             return {"name": chat_id, "type": "channel"}
@@ -291,13 +291,13 @@ class MattermostAdapter(BasePlatformAdapter):
         return {"name": display_name, "type": ch_type}
 
     # ------------------------------------------------------------------
-    # Optional overrides
+    # 可选的接口方法覆写
     # ------------------------------------------------------------------
 
     async def send_typing(
         self, chat_id: str, metadata: Optional[Dict[str, Any]] = None
     ) -> None:
-        """Send a typing indicator."""
+        """发送正在输入指示器。"""
         await self._api_post(
             f"users/{self._bot_user_id}/typing",
             {"channel_id": chat_id},
@@ -306,14 +306,14 @@ class MattermostAdapter(BasePlatformAdapter):
     async def edit_message(
         self, chat_id: str, message_id: str, content: str
     ) -> SendResult:
-        """Edit an existing post."""
+        """编辑已有的帖子。"""
         formatted = self.format_message(content)
         data = await self._api_put(
             f"posts/{message_id}/patch",
             {"message": formatted},
         )
         if not data or "id" not in data:
-            return SendResult(success=False, error="Failed to edit post")
+            return SendResult(success=False, error="编辑帖子失败")
         return SendResult(success=True, message_id=data["id"])
 
     async def send_image(
@@ -324,7 +324,7 @@ class MattermostAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Download an image and upload it as a file attachment."""
+        """下载图片并作为文件附件上传。"""
         return await self._send_url_as_file(
             chat_id, image_url, caption, reply_to, "image"
         )
@@ -337,7 +337,7 @@ class MattermostAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Upload a local image file."""
+        """上传本地图片文件。"""
         return await self._send_local_file(
             chat_id, image_path, caption, reply_to
         )
@@ -351,7 +351,7 @@ class MattermostAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Upload a local file as a document."""
+        """上传本地文件作为文档。"""
         return await self._send_local_file(
             chat_id, file_path, caption, reply_to, file_name
         )
@@ -364,7 +364,7 @@ class MattermostAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Upload an audio file."""
+        """上传音频文件。"""
         return await self._send_local_file(
             chat_id, audio_path, caption, reply_to
         )
@@ -377,23 +377,23 @@ class MattermostAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Upload a video file."""
+        """上传视频文件。"""
         return await self._send_local_file(
             chat_id, video_path, caption, reply_to
         )
 
     def format_message(self, content: str) -> str:
-        """Mattermost uses standard Markdown — mostly pass through.
+        """Mattermost 使用标准 Markdown——大部分内容直接透传。
 
-        Strip image markdown into plain links (files are uploaded separately).
+        将图片 Markdown 转换为纯链接（文件单独上传）。
         """
-        # Convert ![alt](url) to just the URL — Mattermost renders
-        # image URLs as inline previews automatically.
+        # 将 ![alt](url) 转换为纯 URL——Mattermost 会自动将
+        # 图片 URL 渲染为内联预览。
         content = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"\2", content)
         return content
 
     # ------------------------------------------------------------------
-    # File helpers
+    # 文件辅助方法
     # ------------------------------------------------------------------
 
     async def _send_url_as_file(
@@ -404,10 +404,10 @@ class MattermostAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         kind: str = "file",
     ) -> SendResult:
-        """Download a URL and upload it as a file attachment."""
+        """下载 URL 内容并作为文件附件上传。"""
         from tools.url_safety import is_safe_url
         if not is_safe_url(url):
-            logger.warning("Mattermost: blocked unsafe URL (SSRF protection)")
+            logger.warning("Mattermost：已阻止不安全的 URL（SSRF 防护）")
             return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
 
         import asyncio
@@ -418,12 +418,13 @@ class MattermostAdapter(BasePlatformAdapter):
         ct = "application/octet-stream"
         fname = url.rsplit("/", 1)[-1].split("?")[0] or f"{kind}.png"
 
+        # 带重试的文件下载（最多 3 次）
         for attempt in range(3):
             try:
                 async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                     if resp.status >= 500 or resp.status == 429:
                         if attempt < 2:
-                            logger.debug("Mattermost download retry %d/2 for %s (status %d)",
+                            logger.debug("Mattermost 下载重试 %d/2，URL：%s（状态码 %d）",
                                          attempt + 1, url[:80], resp.status)
                             await asyncio.sleep(1.5 * (attempt + 1))
                             continue
@@ -436,11 +437,11 @@ class MattermostAdapter(BasePlatformAdapter):
                 if attempt < 2:
                     await asyncio.sleep(1.5 * (attempt + 1))
                     continue
-                logger.warning("Mattermost: failed to download %s after %d attempts: %s", url, attempt + 1, exc)
+                logger.warning("Mattermost：下载 %s 失败，已尝试 %d 次：%s", url, attempt + 1, exc)
                 return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
 
         if file_data is None:
-            logger.warning("Mattermost: download returned no data for %s", url)
+            logger.warning("Mattermost：%s 下载返回空数据", url)
             return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
 
         file_id = await self._upload_file(chat_id, file_data, fname, ct)
@@ -457,7 +458,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
         data = await self._api_post("posts", payload)
         if not data or "id" not in data:
-            return SendResult(success=False, error="Failed to post with file")
+            return SendResult(success=False, error="发布带附件的帖子失败")
         return SendResult(success=True, message_id=data["id"])
 
     async def _send_local_file(
@@ -468,7 +469,7 @@ class MattermostAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         file_name: Optional[str] = None,
     ) -> SendResult:
-        """Upload a local file and attach it to a post."""
+        """上传本地文件并附加到帖子。"""
         import mimetypes
 
         p = Path(file_path)
@@ -483,7 +484,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
         file_id = await self._upload_file(chat_id, file_data, fname, ct)
         if not file_id:
-            return SendResult(success=False, error="File upload failed")
+            return SendResult(success=False, error="文件上传失败")
 
         payload: Dict[str, Any] = {
             "channel_id": chat_id,
@@ -495,7 +496,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
         data = await self._api_post("posts", payload)
         if not data or "id" not in data:
-            return SendResult(success=False, error="Failed to post with file")
+            return SendResult(success=False, error="发布带附件的帖子失败")
         return SendResult(success=True, message_id=data["id"])
 
     # ------------------------------------------------------------------
@@ -503,55 +504,55 @@ class MattermostAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def _ws_loop(self) -> None:
-        """Connect to the WebSocket and listen for events, reconnecting on failure."""
+        """连接到 WebSocket 并监听事件，失败时自动重连。"""
         delay = _RECONNECT_BASE_DELAY
         while not self._closing:
             try:
                 await self._ws_connect_and_listen()
-                # Clean disconnect — reset delay.
+                # 正常断开——重置延迟
                 delay = _RECONNECT_BASE_DELAY
             except asyncio.CancelledError:
                 return
             except Exception as exc:
                 if self._closing:
                     return
-                # Detect permanent auth/permission failures that will never
-                # succeed on retry — stop reconnecting instead of looping forever.
+                # 检测永久性认证/权限错误——这些错误不会在重试后成功，
+                # 停止重连而不是无限循环。
                 import aiohttp
                 err_str = str(exc).lower()
                 if isinstance(exc, aiohttp.WSServerHandshakeError) and exc.status in (401, 403):
-                    logger.error("Mattermost WS auth failed (HTTP %d) — stopping reconnect", exc.status)
+                    logger.error("Mattermost WS 认证失败（HTTP %d）——停止重连", exc.status)
                     return
                 if "401" in err_str or "403" in err_str or "unauthorized" in err_str:
-                    logger.error("Mattermost WS permanent error: %s — stopping reconnect", exc)
+                    logger.error("Mattermost WS 永久性错误：%s——停止重连", exc)
                     return
-                logger.warning("Mattermost WS error: %s — reconnecting in %.0fs", exc, delay)
+                logger.warning("Mattermost WS 错误：%s——将在 %.0f 秒后重连", exc, delay)
 
             if self._closing:
                 return
 
-            # Exponential backoff with jitter.
+            # 指数退避加随机抖动
             import random
             jitter = delay * _RECONNECT_JITTER * random.random()
             await asyncio.sleep(delay + jitter)
             delay = min(delay * 2, _RECONNECT_MAX_DELAY)
 
     async def _ws_connect_and_listen(self) -> None:
-        """Single WebSocket session: connect, authenticate, process events."""
-        # Build WS URL: https:// → wss://, http:// → ws://
+        """单次 WebSocket 会话：连接、认证、处理事件。"""
+        # 构建 WS URL：https:// -> wss://，http:// -> ws://
         ws_url = re.sub(r"^http", "ws", self._base_url) + "/api/v4/websocket"
-        logger.info("Mattermost: connecting to %s", ws_url)
+        logger.info("Mattermost：正在连接到 %s", ws_url)
 
         self._ws = await self._session.ws_connect(ws_url, heartbeat=30.0)
 
-        # Authenticate via the WebSocket.
+        # 通过 WebSocket 进行认证
         auth_msg = {
             "seq": 1,
             "action": "authentication_challenge",
             "data": {"token": self._token},
         }
         await self._ws.send_json(auth_msg)
-        logger.info("Mattermost: WebSocket connected and authenticated")
+        logger.info("Mattermost：WebSocket 已连接并完成认证")
 
         async for raw_msg in self._ws:
             if self._closing:
@@ -572,11 +573,11 @@ class MattermostAdapter(BasePlatformAdapter):
                 raw_msg.type.CLOSING,
                 raw_msg.type.CLOSED,
             ):
-                logger.info("Mattermost: WebSocket closed (%s)", raw_msg.type)
+                logger.info("Mattermost：WebSocket 已关闭（%s）", raw_msg.type)
                 break
 
     async def _handle_ws_event(self, event: Dict[str, Any]) -> None:
-        """Process a single WebSocket event."""
+        """处理单个 WebSocket 事件。"""
         event_type = event.get("event")
         if event_type != "posted":
             return
@@ -591,32 +592,32 @@ class MattermostAdapter(BasePlatformAdapter):
         except (json.JSONDecodeError, TypeError):
             return
 
-        # Ignore own messages.
+        # 忽略自己发送的消息
         if post.get("user_id") == self._bot_user_id:
             return
 
-        # Ignore system posts.
+        # 忽略系统帖子
         if post.get("type"):
             return
 
         post_id = post.get("id", "")
 
-        # Dedup.
+        # 消息去重
         if self._dedup.is_duplicate(post_id):
             return
 
-        # Build message event.
+        # 构建消息事件
         channel_id = post.get("channel_id", "")
         channel_type_raw = data.get("channel_type", "O")
         chat_type = _CHANNEL_TYPE_MAP.get(channel_type_raw, "channel")
 
-        # For DMs, user_id is sufficient.  For channels, check for @mention.
+        # 对于私信，user_id 足够。对于频道，需要检查 @提及。
         message_text = post.get("message", "")
 
-        # Mention-gating for non-DM channels.
-        # Config (env vars):
-        #   MATTERMOST_REQUIRE_MENTION: Require @mention in channels (default: true)
-        #   MATTERMOST_FREE_RESPONSE_CHANNELS: Channel IDs where bot responds without mention
+        # 非私信频道的 @提及 门控。
+        # 配置（环境变量）：
+        #   MATTERMOST_REQUIRE_MENTION：在频道中要求 @提及（默认：true）
+        #   MATTERMOST_FREE_RESPONSE_CHANNELS：Bot 无需 @提及 即可响应的频道 ID
         if channel_type_raw != "D":
             require_mention = os.getenv(
                 "MATTERMOST_REQUIRE_MENTION", "true"
@@ -637,33 +638,32 @@ class MattermostAdapter(BasePlatformAdapter):
 
             if require_mention and not is_free_channel and not has_mention:
                 logger.debug(
-                    "Mattermost: skipping non-DM message without @mention (channel=%s)",
+                    "Mattermost：跳过非私信中未 @提及 的消息（频道=%s）",
                     channel_id,
                 )
                 return
 
-            # Strip @mention from the message text so the agent sees clean input.
+            # 从消息文本中移除 @提及，让 Agent 看到干净的输入
             if has_mention:
                 for pattern in mention_patterns:
                     message_text = re.sub(
                         re.escape(pattern), "", message_text, flags=re.IGNORECASE
                     ).strip()
 
-        # Resolve sender info.
+        # 解析发送者信息
         sender_id = post.get("user_id", "")
         sender_name = data.get("sender_name", "").lstrip("@") or sender_id
 
-        # Thread support: if the post is in a thread, use root_id.
+        # 线程支持：如果帖子在线程中，使用 root_id
         thread_id = post.get("root_id") or None
 
-        # Determine message type.
+        # 确定消息类型
         file_ids = post.get("file_ids") or []
         msg_type = MessageType.TEXT
         if message_text.startswith("/"):
             msg_type = MessageType.COMMAND
 
-        # Download file attachments immediately (URLs require auth headers
-        # that downstream tools won't have).
+        # 立即下载文件附件（下游工具没有认证头，无法直接使用 URL）
         media_urls: List[str] = []
         media_types: List[str] = []
         for fid in file_ids:
@@ -697,11 +697,11 @@ class MattermostAdapter(BasePlatformAdapter):
                             media_urls.append(local_path)
                             media_types.append(mime)
                     else:
-                        logger.warning("Mattermost: failed to download file %s: HTTP %s", fid, resp.status)
+                        logger.warning("Mattermost：下载文件 %s 失败：HTTP %s", fid, resp.status)
             except Exception as exc:
-                logger.warning("Mattermost: error downloading file %s: %s", fid, exc)
+                logger.warning("Mattermost：下载文件 %s 时出错：%s", fid, exc)
 
-        # Set message type based on downloaded media types.
+        # 根据下载的媒体类型设置消息类型
         if media_types and msg_type == MessageType.TEXT:
             if any(m.startswith("image/") for m in media_types):
                 msg_type = MessageType.PHOTO
@@ -718,7 +718,7 @@ class MattermostAdapter(BasePlatformAdapter):
             thread_id=thread_id,
         )
 
-        # Per-channel ephemeral prompt
+        # 每频道临时提示词
         from gateway.platforms.base import resolve_channel_prompt
         _channel_prompt = resolve_channel_prompt(
             self.config.extra, channel_id, None,
@@ -736,5 +736,3 @@ class MattermostAdapter(BasePlatformAdapter):
         )
 
         await self.handle_message(msg_event)
-
-

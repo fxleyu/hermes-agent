@@ -1,51 +1,50 @@
 #!/usr/bin/env python3
 """
-Browser Tool Module
+浏览器工具模块
 
-This module provides browser automation tools using agent-browser CLI.  It
-supports multiple backends — **Browser Use** (cloud, default for Nous
-subscribers), **Browserbase** (cloud, direct credentials), and **local
-Chromium** — with identical agent-facing behaviour.  The backend is
-auto-detected from config and available credentials.
+本模块使用 agent-browser CLI 提供浏览器自动化工具。它支持
+多种后端——**Browser Use**（云端，Nous 订阅者默认）、
+**Browserbase**（云端，直接凭证）和**本地 Chromium**——
+具有相同的代理面向行为。后端根据配置和可用凭证自动检测。
 
-The tool uses agent-browser's accessibility tree (ariaSnapshot) for text-based
-page representation, making it ideal for LLM agents without vision capabilities.
+该工具使用 agent-browser 的无障碍树（ariaSnapshot）进行基于文本的
+页面表示，非常适合没有视觉能力的 LLM 代理。
 
-Features:
-- **Local mode** (default): zero-cost headless Chromium via agent-browser.
-  Works on Linux servers without a display.  One-time setup:
-  ``agent-browser install`` (downloads Chromium) or
-  ``agent-browser install --with-deps`` (also installs system libraries for
-  Debian/Ubuntu/Docker).
-- **Cloud mode**: Browserbase or Browser Use cloud execution when configured.
-- Session isolation per task ID
-- Text-based page snapshots using accessibility tree
-- Element interaction via ref selectors (@e1, @e2, etc.)
-- Task-aware content extraction using LLM summarization
-- Automatic cleanup of browser sessions
+功能：
+- **本地模式**（默认）：通过 agent-browser 使用零成本无头 Chromium。
+  可在没有显示器的 Linux 服务器上工作。一次性设置：
+  ``agent-browser install``（下载 Chromium）或
+  ``agent-browser install --with-deps``（同时安装
+  Debian/Ubuntu/Docker 的系统库）。
+- **云端模式**：配置后使用 Browserbase 或 Browser Use 云端执行。
+- 按任务 ID 进行会话隔离
+- 使用无障碍树的基于文本的页面快照
+- 通过 ref 选择器（@e1, @e2 等）进行元素交互
+- 使用 LLM 摘要的任务感知内容提取
+- 浏览器会话的自动清理
 
-Environment Variables:
-- BROWSERBASE_API_KEY: API key for direct Browserbase cloud mode
-- BROWSERBASE_PROJECT_ID: Project ID for direct Browserbase cloud mode
-- BROWSER_USE_API_KEY: API key for direct Browser Use cloud mode
-- BROWSERBASE_PROXIES: Enable/disable residential proxies (default: "true")
-- BROWSERBASE_ADVANCED_STEALTH: Enable advanced stealth mode with custom Chromium,
-  requires Scale Plan (default: "false")
-- BROWSERBASE_KEEP_ALIVE: Enable keepAlive for session reconnection after disconnects,
-  requires paid plan (default: "true")
-- BROWSERBASE_SESSION_TIMEOUT: Custom session timeout in milliseconds. Set to extend
-  beyond project default. Common values: 600000 (10min), 1800000 (30min) (default: none)
+环境变量：
+- BROWSERBASE_API_KEY: 直接 Browserbase 云端模式的 API 密钥
+- BROWSERBASE_PROJECT_ID: 直接 Browserbase 云端模式的项目 ID
+- BROWSER_USE_API_KEY: 直接 Browser Use 云端模式的 API 密钥
+- BROWSERBASE_PROXIES: 启用/禁用住宅代理（默认："true"）
+- BROWSERBASE_ADVANCED_STEALTH: 启用使用自定义 Chromium 的高级隐身模式，
+  需要 Scale 计划（默认："false"）
+- BROWSERBASE_KEEP_ALIVE: 启用 keepAlive 以便断开后重新连接会话，
+  需要付费计划（默认："true"）
+- BROWSERBASE_SESSION_TIMEOUT: 自定义会话超时（毫秒）。设置以延长
+  超出项目默认值。常用值：600000（10分钟），1800000（30分钟）（默认：无）
 
-Usage:
+用法：
     from tools.browser_tool import browser_navigate, browser_snapshot, browser_click
-    
-    # Navigate to a page
+
+    # 导航到页面
     result = browser_navigate("https://example.com", task_id="task_123")
-    
-    # Get page snapshot
+
+    # 获取页面快照
     snapshot = browser_snapshot(task_id="task_123")
-    
-    # Click an element
+
+    # 点击元素
     browser_click("@e5", task_id="task_123")
 """
 
@@ -83,9 +82,9 @@ from tools.browser_providers.browser_use import BrowserUseProvider
 from tools.browser_providers.firecrawl import FirecrawlProvider
 from tools.tool_backend_helpers import normalize_browser_cloud_provider
 
-# Camofox local anti-detection browser backend (optional).
-# When CAMOFOX_URL is set, all browser operations route through the
-# camofox REST API instead of the agent-browser CLI.
+# Camofox 本地反检测浏览器后端（可选）。
+# 当设置了 CAMOFOX_URL 时，所有浏览器操作通过
+# camofox REST API 而非 agent-browser CLI 路由。
 try:
     from tools.browser_camofox import is_camofox_mode as _is_camofox_mode
 except ImportError:
@@ -93,9 +92,9 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Standard PATH entries for environments with minimal PATH (e.g. systemd services).
-# Includes Android/Termux and macOS Homebrew locations needed for agent-browser,
-# npx, node, and Android's glibc runner (grun).
+# PATH 最小的环境（如 systemd 服务）的标准 PATH 条目。
+# 包括 agent-browser、npx、node 和 Android glibc 运行器 (grun)
+# 所需的 Android/Termux 和 macOS Homebrew 位置。
 _SANE_PATH_DIRS = (
     "/data/data/com.termux/files/usr/bin",
     "/data/data/com.termux/files/usr/sbin",
@@ -113,11 +112,11 @@ _SANE_PATH = os.pathsep.join(_SANE_PATH_DIRS)
 
 @functools.lru_cache(maxsize=1)
 def _discover_homebrew_node_dirs() -> tuple[str, ...]:
-    """Find Homebrew versioned Node.js bin directories (e.g. node@20, node@24).
+    """查找 Homebrew 版本化的 Node.js bin 目录（如 node@20, node@24）。
 
-    When Node is installed via ``brew install node@24`` and NOT linked into
-    /opt/homebrew/bin, agent-browser isn't discoverable on the default PATH.
-    This function finds those directories so they can be prepended.
+    当 Node 通过 ``brew install node@24`` 安装且未链接到
+    /opt/homebrew/bin 时，agent-browser 在默认 PATH 上不可发现。
+    此函数找到这些目录以便可以前置。
     """
     dirs: list[str] = []
     homebrew_opt = "/opt/homebrew/opt"
@@ -135,14 +134,14 @@ def _discover_homebrew_node_dirs() -> tuple[str, ...]:
 
 
 def _browser_candidate_path_dirs() -> list[str]:
-    """Return ordered browser CLI PATH candidates shared by discovery and execution."""
+    """返回发现和执行共享的有序浏览器 CLI PATH 候选项。"""
     hermes_home = get_hermes_home()
     hermes_node_bin = str(hermes_home / "node" / "bin")
     return [hermes_node_bin, *list(_discover_homebrew_node_dirs()), *_SANE_PATH_DIRS]
 
 
 def _merge_browser_path(existing_path: str = "") -> str:
-    """Prepend browser-specific PATH fallbacks without reordering existing entries."""
+    """在不重新排序现有条目的情况下前置浏览器特定的 PATH 回退。"""
     path_parts = [p for p in (existing_path or "").split(os.pathsep) if p]
     existing_parts = set(path_parts)
     prefix_parts: list[str] = []
@@ -155,20 +154,20 @@ def _merge_browser_path(existing_path: str = "") -> str:
 
     return os.pathsep.join(prefix_parts + path_parts)
 
-# Throttle screenshot cleanup to avoid repeated full directory scans.
+# 限制截图清理频率以避免重复的完整目录扫描。
 _last_screenshot_cleanup_by_dir: dict[str, float] = {}
 
 # ============================================================================
-# Configuration
+# 配置
 # ============================================================================
 
-# Default timeout for browser commands (seconds)
+# 浏览器命令的默认超时（秒）
 DEFAULT_COMMAND_TIMEOUT = 30
 
-# Max tokens for snapshot content before summarization
+# 快照内容在摘要前的最大 token 数
 SNAPSHOT_SUMMARIZE_THRESHOLD = 8000
 
-# Commands that legitimately return empty stdout (e.g. close, record).
+# 合法返回空 stdout 的命令（如 close、record）。
 _EMPTY_OK_COMMANDS: frozenset = frozenset({"close", "record"})
 
 _cached_command_timeout: Optional[int] = None
@@ -176,11 +175,11 @@ _command_timeout_resolved = False
 
 
 def _get_command_timeout() -> int:
-    """Return the configured browser command timeout from config.yaml.
+    """返回从 config.yaml 配置的浏览器命令超时。
 
-    Reads ``config["browser"]["command_timeout"]`` and falls back to
-    ``DEFAULT_COMMAND_TIMEOUT`` (30s) if unset or unreadable.  Result is
-    cached after the first call and cleared by ``cleanup_all_browsers()``.
+    读取 ``config["browser"]["command_timeout"]``，如果未设置
+    或不可读则回退到 ``DEFAULT_COMMAND_TIMEOUT``（30秒）。
+    结果在首次调用后缓存，由 ``cleanup_all_browsers()`` 清除。
     """
     global _cached_command_timeout, _command_timeout_resolved
     if _command_timeout_resolved:
@@ -201,12 +200,12 @@ def _get_command_timeout() -> int:
 
 
 def _get_vision_model() -> Optional[str]:
-    """Model for browser_vision (screenshot analysis — multimodal)."""
+    """浏览器视觉分析的模型（截图分析——多模态）。"""
     return os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
 
 
 def _get_extraction_model() -> Optional[str]:
-    """Model for page snapshot text summarization — same as web_extract."""
+    """页面快照文本摘要的模型——与 web_extract 相同。"""
     return os.getenv("AUXILIARY_WEB_EXTRACT_MODEL", "").strip() or None
 
 
@@ -270,7 +269,7 @@ def _get_cdp_override() -> str:
 
 
 # ============================================================================
-# Cloud Provider Registry
+# 云端提供者注册表
 # ============================================================================
 
 _PROVIDER_REGISTRY: Dict[str, type] = {
@@ -352,7 +351,7 @@ def _termux_browser_install_error() -> str:
 
 
 def _is_local_mode() -> bool:
-    """Return True when the browser tool will use a local browser backend."""
+    """当浏览器工具将使用本地浏览器后端时返回 True。"""
     if _get_cdp_override():
         return False
     return _get_cloud_provider() is None
@@ -409,30 +408,30 @@ def _socket_safe_tmpdir() -> str:
     return tempfile.gettempdir()
 
 
-# Track active sessions per task
-# Stores: session_name (always), bb_session_id + cdp_url (cloud mode only)
+# 跟踪每个任务的活动会话
+# 存储：session_name（始终），bb_session_id + cdp_url（仅云端模式）
 _active_sessions: Dict[str, Dict[str, str]] = {}  # task_id -> {session_name, ...}
 _recording_sessions: set = set()  # task_ids with active recordings
 
-# Flag to track if cleanup has been done
+# 跟踪是否已完成清理的标志
 _cleanup_done = False
 
 # =============================================================================
-# Inactivity Timeout Configuration
+# 不活动超时配置
 # =============================================================================
 
-# Session inactivity timeout (seconds) - cleanup if no activity for this long
-# Default: 5 minutes. Needs headroom for LLM reasoning between browser commands,
+# 会话不活动超时（秒）- 如果超过这个时间没有活动则清理
+# 默认：5 分钟。需要为浏览器命令之间的 LLM 推理留出余量，
 # especially when subagents are doing multi-step browser tasks.
 BROWSER_SESSION_INACTIVITY_TIMEOUT = int(os.environ.get("BROWSER_INACTIVITY_TIMEOUT", "300"))
 
-# Track last activity time per session
+# 跟踪每个会话的最后活动时间
 _session_last_activity: Dict[str, float] = {}
 
-# Background cleanup thread state
+# 后台清理线程状态
 _cleanup_thread = None
 _cleanup_running = False
-# Protects _session_last_activity AND _active_sessions for thread safety
+# 保护 _session_last_activity 和 _active_sessions 的线程安全
 # (subagents run concurrently via ThreadPoolExecutor)
 _cleanup_lock = threading.Lock()
 
@@ -474,7 +473,7 @@ atexit.register(_emergency_cleanup_all_sessions)
 
 
 # =============================================================================
-# Inactivity Cleanup Functions
+# 不活动清理函数
 # =============================================================================
 
 def _cleanup_inactive_browser_sessions():
@@ -617,7 +616,7 @@ def _browser_cleanup_thread_worker():
 
 
 def _start_browser_cleanup_thread():
-    """Start the background cleanup thread if not already running."""
+    """如果尚未运行则启动后台清理线程。"""
     global _cleanup_thread, _cleanup_running
     
     with _cleanup_lock:
@@ -633,7 +632,7 @@ def _start_browser_cleanup_thread():
 
 
 def _stop_browser_cleanup_thread():
-    """Stop the background cleanup thread."""
+    """停止后台清理线程。"""
     global _cleanup_running
     _cleanup_running = False
     if _cleanup_thread is not None:
@@ -641,17 +640,17 @@ def _stop_browser_cleanup_thread():
 
 
 def _update_session_activity(task_id: str):
-    """Update the last activity timestamp for a session."""
+    """更新会话的最后活动时间戳。"""
     with _cleanup_lock:
         _session_last_activity[task_id] = time.time()
 
 
-# Register cleanup thread stop on exit
+# 退出时注册清理线程停止
 atexit.register(_stop_browser_cleanup_thread)
 
 
 # ============================================================================
-# Tool Schemas
+# 工具 Schema
 # ============================================================================
 
 BROWSER_TOOL_SCHEMAS = [
@@ -805,7 +804,7 @@ BROWSER_TOOL_SCHEMAS = [
 
 
 # ============================================================================
-# Utility Functions
+# 实用函数
 # ============================================================================
 
 def _create_local_session(task_id: str) -> Dict[str, str]:
@@ -822,7 +821,7 @@ def _create_local_session(task_id: str) -> Dict[str, str]:
 
 
 def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
-    """Create a session that connects to a user-supplied CDP endpoint."""
+    """创建连接到用户提供的 CDP 端点的会话。"""
     import uuid
     session_name = f"cdp_{uuid.uuid4().hex[:10]}"
     logger.info("Created CDP browser session %s → %s for task %s",
@@ -990,7 +989,7 @@ def _find_agent_browser() -> str:
 
 
 def _extract_screenshot_path_from_text(text: str) -> Optional[str]:
-    """Extract a screenshot file path from agent-browser human-readable output."""
+    """从 agent-browser 人类可读输出中提取截图文件路径。"""
     if not text:
         return None
 
@@ -1265,18 +1264,17 @@ def _extract_relevant_content(
 
 
 def _truncate_snapshot(snapshot_text: str, max_chars: int = 8000) -> str:
-    """Structure-aware truncation for snapshots.
+    """结构感知的快照截断。
 
-    Cuts at line boundaries so that accessibility tree elements are never
-    split mid-line, and appends a note telling the agent how much was
-    omitted.
+    在行边界处截断，确保无障碍树元素不会在行中间被拆分，
+    并附加说明告诉代理被省略了多少内容。
 
     Args:
-        snapshot_text: The snapshot text to truncate
-        max_chars: Maximum characters to keep
+        snapshot_text: 要截断的快照文本
+        max_chars: 保留的最大字符数
 
     Returns:
-        Truncated text with indicator if truncated
+        如果被截断则返回带有指示器的截断文本
     """
     if len(snapshot_text) <= max_chars:
         return snapshot_text
@@ -1296,7 +1294,7 @@ def _truncate_snapshot(snapshot_text: str, max_chars: int = 8000) -> str:
 
 
 # ============================================================================
-# Browser Tool Functions
+# 浏览器工具函数
 # ============================================================================
 
 def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
@@ -1734,7 +1732,7 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
 
 
 def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
-    """Evaluate a JavaScript expression in the page context and return the result."""
+    """在页面上下文中执行 JavaScript 表达式并返回结果。"""
     if _is_camofox_mode():
         return _camofox_eval(expression, task_id)
 
@@ -1774,7 +1772,7 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
 
 
 def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
-    """Evaluate JS via Camofox's /tabs/{tab_id}/eval endpoint (if available)."""
+    """通过 Camofox 的 /tabs/{tab_id}/eval 端点执行 JS（如果可用）。"""
     from tools.browser_camofox import _ensure_tab, _post
     try:
         tab_info = _ensure_tab(task_id or "default")
@@ -1808,7 +1806,7 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
 
 
 def _maybe_start_recording(task_id: str):
-    """Start recording if browser.record_sessions is enabled in config."""
+    """如果 config 中启用了 browser.record_sessions 则开始录制。"""
     with _cleanup_lock:
         if task_id in _recording_sessions:
             return
@@ -1841,7 +1839,7 @@ def _maybe_start_recording(task_id: str):
 
 
 def _maybe_stop_recording(task_id: str):
-    """Stop recording if one is active for this session."""
+    """如果此会话有活动录制则停止录制。"""
     with _cleanup_lock:
         if task_id not in _recording_sessions:
             return
@@ -2118,7 +2116,7 @@ def _cleanup_old_screenshots(screenshots_dir, max_age_hours=24):
 
 
 def _cleanup_old_recordings(max_age_hours=72):
-    """Remove browser recordings older than max_age_hours to prevent disk bloat."""
+    """移除超过 max_age_hours 的浏览器录制以防止磁盘膨胀。"""
     import time
     try:
         hermes_home = get_hermes_home()
@@ -2137,7 +2135,7 @@ def _cleanup_old_recordings(max_age_hours=72):
 
 
 # ============================================================================
-# Cleanup and Management Functions
+# 清理和管理函数
 # ============================================================================
 
 def cleanup_browser(task_id: Optional[str] = None) -> None:
@@ -2244,7 +2242,7 @@ def cleanup_all_browsers() -> None:
 
 
 # ============================================================================
-# Requirements Check
+# 依赖检查
 # ============================================================================
 
 def check_browser_requirements() -> bool:
@@ -2286,7 +2284,7 @@ def check_browser_requirements() -> bool:
 
 
 # ============================================================================
-# Module Test
+# 模块测试
 # ============================================================================
 
 if __name__ == "__main__":
@@ -2328,7 +2326,7 @@ if __name__ == "__main__":
 
 
 # ---------------------------------------------------------------------------
-# Registry
+# 注册表
 # ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
 

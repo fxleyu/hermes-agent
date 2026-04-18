@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""OpenClaw -> Hermes migration helper.
+"""OpenClaw -> Hermes 迁移辅助工具。
 
-This script migrates the parts of an OpenClaw user footprint that map cleanly
-into Hermes Agent, archives selected unmapped docs for manual review, and
-reports exactly what was skipped and why.
+此脚本将 OpenClaw 用户数据中可直接映射到 Hermes Agent 的部分进行迁移，
+将无法映射的文档归档以供手动审查，并详细报告跳过的内容及原因。
 """
 
 from __future__ import annotations
@@ -305,15 +304,15 @@ def ensure_parent(path: Path) -> None:
 
 
 def resolve_secret_input(value: Any, env: Optional[Dict[str, str]] = None) -> Optional[str]:
-    """Resolve an OpenClaw SecretInput value to a plain string.
+    """将 OpenClaw SecretInput 值解析为纯字符串。
 
-    SecretInput can be:
-    - A plain string: "sk-..."
-    - An env template: "${OPENROUTER_API_KEY}"
-    - A SecretRef object: {"source": "env", "id": "OPENROUTER_API_KEY"}
+    SecretInput 可以是:
+    - 纯字符串: "sk-..."
+    - 环境变量模板: "${OPENROUTER_API_KEY}"
+    - SecretRef 对象: {"source": "env", "id": "OPENROUTER_API_KEY"}
     """
     if isinstance(value, str):
-        # Check for env template: "${VAR_NAME}"
+        # 检查环境变量模板: "${VAR_NAME}"
         m = re.match(r"^\$\{(\w+)\}$", value.strip())
         if m and env:
             return env.get(m.group(1), "").strip() or None
@@ -323,7 +322,7 @@ def resolve_secret_input(value: Any, env: Optional[Dict[str, str]] = None) -> Op
         ref_id = value.get("id", "")
         if source == "env" and ref_id and env:
             return env.get(ref_id, "").strip() or None
-        # File/exec sources can't be resolved here — return None
+        # 文件/exec 来源无法在此解析 — 返回 None
     return None
 
 
@@ -376,10 +375,10 @@ def backup_existing(path: Path, backup_root: Path) -> Optional[Path]:
     return dest
 
 
-# ── Brand rewriting ─────────────────────────────────────────
-# Replace OpenClaw brand names with Hermes in migrated text so that
-# memory entries, user profiles, SOUL.md, and workspace instructions
-# read as self-referential to the new agent identity.
+# ── 品牌名称替换 ─────────────────────────────────────────
+# 将迁移文本中的 OpenClaw 品牌名替换为 Hermes，
+# 使记忆条目、用户档案、SOUL.md 和工作区指令
+# 在新代理身份下保持自引用一致性。
 _REBRAND_PATTERNS: List[Tuple[re.Pattern, str]] = [
     (re.compile(r'\bOpen[\s-]?Claw\b', re.IGNORECASE), 'Hermes'),
     (re.compile(r'\bClawdBot\b', re.IGNORECASE), 'Hermes'),
@@ -388,7 +387,7 @@ _REBRAND_PATTERNS: List[Tuple[re.Pattern, str]] = [
 
 
 def rebrand_text(text: str) -> str:
-    """Replace OpenClaw / ClawdBot / MoltBot brand names with Hermes."""
+    """将 OpenClaw / ClawdBot / MoltBot 品牌名替换为 Hermes。"""
     for pattern, replacement in _REBRAND_PATTERNS:
         text = pattern.sub(replacement, text)
     return text
@@ -635,8 +634,8 @@ class Migrator:
             candidate = self.source_root / rel
             if candidate.exists():
                 return candidate
-            # OpenClaw renamed workspace/ to workspace-main/ (and workspace-{agentId}
-            # for multi-agent).  Try the new path as a fallback.
+            # OpenClaw 将 workspace/ 重命名为 workspace-main/（多代理时为 workspace-{agentId}）。
+            # 尝试新路径作为备选。
             if rel.startswith("workspace/"):
                 suffix = rel[len("workspace/"):]
                 for variant in ("workspace-main", "workspace-assistant"):
@@ -713,7 +712,7 @@ class Migrator:
         )
         self.run_if_selected("archive", self.archive_docs)
 
-        # ── v2 migration modules ──────────────────────────────
+        # ── v2 迁移模块 ──────────────────────────────
         self.run_if_selected("mcp-servers", lambda: self.migrate_mcp_servers(config))
         self.run_if_selected("plugins-config", lambda: self.migrate_plugins_config(config))
         self.run_if_selected("cron-jobs", lambda: self.migrate_cron_jobs(config))
@@ -731,7 +730,7 @@ class Migrator:
         self.run_if_selected("ui-identity", lambda: self.migrate_ui_identity(config))
         self.run_if_selected("logging-config", lambda: self.migrate_logging_config(config))
 
-        # Generate migration notes
+        # 生成迁移说明
         self.generate_migration_notes()
 
         return self.build_report()
@@ -952,7 +951,7 @@ class Migrator:
             self.record("command-allowlist", source, destination, "migrated", "Would merge patterns", added_patterns=added)
 
     def load_openclaw_config(self) -> Dict[str, Any]:
-        # Check current name and legacy config filenames
+        # 检查当前名称和旧版配置文件名
         for name in ("openclaw.json", "clawdbot.json", "moltbot.json"):
             config_path = self.source_root / name
             if config_path.exists():
@@ -964,7 +963,7 @@ class Migrator:
         return {}
 
     def load_openclaw_env(self) -> Dict[str, str]:
-        """Load the OpenClaw .env file for secrets that live there instead of config."""
+        """加载 OpenClaw 的 .env 文件，用于读取存放在其中而非配置文件中的密钥。"""
         return parse_env_file(self.source_root / ".env")
 
     def merge_env_values(self, additions: Dict[str, str], kind: str, source: Path) -> None:
@@ -1024,10 +1023,10 @@ class Migrator:
         )
         if isinstance(workspace, str) and workspace.strip():
             ws_path = workspace.strip()
-            # Skip if the workspace points inside the OpenClaw source directory —
-            # that path will be stale after migration and would cause the Hermes
-            # gateway to use the old OpenClaw workspace as its cwd, picking up
-            # OpenClaw's AGENTS.md, MEMORY.md, etc.
+            # 如果工作区指向 OpenClaw 源目录内部则跳过 —
+            # 迁移后该路径将失效，会导致 Hermes 网关使用旧的
+            # OpenClaw 工作区作为工作目录，从而读取 OpenClaw 的
+            # AGENTS.md、MEMORY.md 等文件。
             try:
                 inside_source = Path(ws_path).resolve().is_relative_to(self.source_root.resolve())
             except (ValueError, OSError):
@@ -1100,12 +1099,12 @@ class Migrator:
             )
 
     def _resolve_channel_secret(self, value: Any) -> Optional[str]:
-        """Resolve a channel config value that may be a SecretRef."""
+        """解析可能是 SecretRef 的频道配置值。"""
         return resolve_secret_input(value, self.load_openclaw_env())
 
     @staticmethod
     def _get_channel_field(ch_cfg: Dict[str, Any], field: str) -> Any:
-        """Get a field from channel config, checking both flat and accounts.default layout."""
+        """从频道配置中获取字段，同时检查扁平结构和 accounts.default 嵌套结构。"""
         val = ch_cfg.get(field)
         if val is not None:
             return val
@@ -1209,8 +1208,8 @@ class Migrator:
     def migrate_provider_keys(self, config: Dict[str, Any]) -> None:
         secret_additions: Dict[str, str] = {}
 
-        # Extract provider API keys from models.providers
-        # Note: apiKey values can be strings, env templates, or SecretRef objects
+        # 从 models.providers 中提取 API 密钥
+        # 注意: apiKey 值可以是字符串、环境变量模板或 SecretRef 对象
         openclaw_env = self.load_openclaw_env()
         providers = config.get("models", {}).get("providers", {})
         if isinstance(providers, dict):
@@ -1220,7 +1219,7 @@ class Migrator:
                 raw_key = provider_cfg.get("apiKey")
                 api_key = resolve_secret_input(raw_key, openclaw_env)
                 if not api_key:
-                    # Warn if a SecretRef with file/exec source was silently unresolvable
+                    # 当 SecretRef 使用 file/exec 来源时无法自动解析，发出警告
                     if isinstance(raw_key, dict) and raw_key.get("source") in ("file", "exec"):
                         self.record(
                             "provider-keys",
@@ -1236,7 +1235,7 @@ class Migrator:
                 api_type = provider_cfg.get("api", "")
                 env_var = None
 
-                # Match by baseUrl first
+                # 先按 baseUrl 匹配
                 if isinstance(base_url, str):
                     if "openrouter" in base_url.lower():
                         env_var = "OPENROUTER_API_KEY"
@@ -1245,11 +1244,11 @@ class Migrator:
                     elif "anthropic" in base_url.lower():
                         env_var = "ANTHROPIC_API_KEY"
 
-                # Match by api type
+                # 按 API 类型匹配
                 if not env_var and isinstance(api_type, str) and api_type == "anthropic-messages":
                     env_var = "ANTHROPIC_API_KEY"
 
-                # Match by provider name
+                # 按提供商名称匹配
                 if not env_var:
                     name_lower = provider_name.lower()
                     if name_lower == "openrouter":
@@ -1260,7 +1259,7 @@ class Migrator:
                 if env_var:
                     secret_additions[env_var] = api_key
 
-        # Extract TTS API keys
+        # 提取 TTS API 密钥
         tts = config.get("messages", {}).get("tts", {})
         if isinstance(tts, dict):
             elevenlabs = tts.get("elevenlabs", {})
@@ -1274,8 +1273,8 @@ class Migrator:
                 if isinstance(oai_key, str) and oai_key.strip():
                     secret_additions["VOICE_TOOLS_OPENAI_KEY"] = oai_key.strip()
 
-        # Also check the OpenClaw .env file — many users store keys there
-        # instead of inline in openclaw.json
+        # 同时检查 OpenClaw .env 文件 — 许多用户将密钥存储在此
+        # 而非内联在 openclaw.json 中
         openclaw_env = self.load_openclaw_env()
         env_key_mapping = {
             "OPENROUTER_API_KEY": "OPENROUTER_API_KEY",
@@ -1293,9 +1292,9 @@ class Migrator:
             if val and hermes_key not in secret_additions:
                 secret_additions[hermes_key] = val
 
-        # Check the openclaw.json "env" sub-object — some OpenClaw setups
-        # store API keys here instead of in a separate .env file.
-        # Keys can be at env.<KEY> or env.vars.<KEY>.
+        # 检查 openclaw.json 的 "env" 子对象 — 部分 OpenClaw 配置
+        # 将 API 密钥存储在此而非单独的 .env 文件中。
+        # 密钥可以在 env.<KEY> 或 env.vars.<KEY> 下。
         json_env = config.get("env")
         if isinstance(json_env, dict):
             env_vars = json_env.get("vars")
@@ -1308,18 +1307,18 @@ class Migrator:
                     if isinstance(val, str) and val.strip() and hermes_key not in secret_additions:
                         secret_additions[hermes_key] = val.strip()
 
-        # Check per-agent auth-profiles.json for additional credentials
+        # 检查每个代理的 auth-profiles.json 以获取额外凭据
         auth_profiles_path = self.source_root / "agents" / "main" / "agent" / "auth-profiles.json"
         if auth_profiles_path.exists():
             try:
                 profiles = json.loads(auth_profiles_path.read_text(encoding="utf-8"))
                 if isinstance(profiles, dict):
-                    # auth-profiles.json wraps profiles in a "profiles" key
+                    # auth-profiles.json 将配置包装在 "profiles" 键下
                     profile_entries = profiles.get("profiles", profiles) if isinstance(profiles.get("profiles"), dict) else profiles
                     for profile_name, profile_data in profile_entries.items():
                         if not isinstance(profile_data, dict):
                             continue
-                        # Canonical field is "key", "apiKey" is accepted as alias
+                        # 标准字段是 "key"，"apiKey" 作为别名也可接受
                         api_key = profile_data.get("key", "") or profile_data.get("apiKey", "")
                         if not isinstance(api_key, str) or not api_key.strip():
                             continue
@@ -1409,19 +1408,19 @@ class Migrator:
 
         provider = tts.get("provider")
         if isinstance(provider, str) and provider in ("elevenlabs", "openai", "edge", "microsoft"):
-            # OpenClaw renamed "edge" to "microsoft"; Hermes still uses "edge"
+            # OpenClaw 将 "edge" 重命名为 "microsoft"；Hermes 仍使用 "edge"
             tts_data["provider"] = "edge" if provider == "microsoft" else provider
 
-        # TTS provider settings live under messages.tts.providers.{provider}
-        # in OpenClaw (not messages.tts.elevenlabs directly)
+        # TTS 提供商设置在 OpenClaw 中位于 messages.tts.providers.{provider}
+        # 下（而非 messages.tts.elevenlabs 等直接路径）
         providers = tts.get("providers") or {}
 
-        # Also check the top-level "talk" config which has provider settings too
+        # 同时检查顶层 "talk" 配置（也包含提供商设置）
         talk_cfg = (config or self.load_openclaw_config()).get("talk") or {}
         talk_providers = talk_cfg.get("providers") or {}
 
-        # Merge: messages.tts.providers takes priority, then talk.providers,
-        # then legacy flat keys (messages.tts.elevenlabs, etc.)
+        # 合并优先级: messages.tts.providers 优先，其次是 talk.providers，
+        # 最后是旧版扁平键（messages.tts.elevenlabs 等）
         elevenlabs = (
             (providers.get("elevenlabs") or {})
             if isinstance(providers.get("elevenlabs"), dict) else
@@ -1492,7 +1491,7 @@ class Migrator:
             self.record("tts-config", source_path, destination, "migrated", "Would set TTS config", settings=list(tts_data.keys()))
 
     def migrate_shared_skills(self) -> None:
-        # Check all OpenClaw skill sources: managed, personal, project-level
+        # 检查所有 OpenClaw 技能来源: 托管技能、个人技能、项目级技能
         skill_sources = [
             (self.source_root / "skills", "shared-skills", "managed skills"),
             (Path.home() / ".agents" / "skills", "personal-skills", "personal cross-project skills"),
@@ -1509,7 +1508,7 @@ class Migrator:
             self.record("shared-skills", None, destination_root, "skipped", "No shared OpenClaw skills directories found")
 
     def _import_skill_directory(self, source_root: Path, kind_label: str, desc: str) -> None:
-        """Import skills from a single source directory into openclaw-imports."""
+        """从单个来源目录导入技能到 openclaw-imports。"""
         destination_root = self.target_root / "skills" / SKILL_CATEGORY_DIRNAME
 
         skill_dirs = [p for p in sorted(source_root.iterdir()) if p.is_dir() and (p / "SKILL.md").exists()]
@@ -1771,7 +1770,7 @@ class Migrator:
         else:
             self.record("archive", source, destination, "archived", reason)
 
-    # ── MCP servers ─────────────────────────────────────────────
+    # ── MCP 服务器 ─────────────────────────────────────────────
     def migrate_mcp_servers(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         mcp_raw = (config.get("mcp") or {}).get("servers") or {}
@@ -1793,7 +1792,7 @@ class Migrator:
                 continue
 
             hermes_srv: Dict[str, Any] = {}
-            # STDIO transport
+            # STDIO 传输
             if srv.get("command"):
                 hermes_srv["command"] = srv["command"]
                 if srv.get("args"):
@@ -1802,21 +1801,21 @@ class Migrator:
                     hermes_srv["env"] = srv["env"]
                 if srv.get("cwd"):
                     hermes_srv["cwd"] = srv["cwd"]
-            # HTTP/SSE transport
+            # HTTP/SSE 传输
             if srv.get("url"):
                 hermes_srv["url"] = srv["url"]
                 if srv.get("headers"):
                     hermes_srv["headers"] = srv["headers"]
                 if srv.get("auth"):
                     hermes_srv["auth"] = srv["auth"]
-            # Common fields
+            # 通用字段
             if srv.get("enabled") is False:
                 hermes_srv["enabled"] = False
             if srv.get("timeout"):
                 hermes_srv["timeout"] = srv["timeout"]
             if srv.get("connectTimeout"):
                 hermes_srv["connect_timeout"] = srv["connectTimeout"]
-            # Tool filtering
+            # 工具过滤
             tools_cfg = srv.get("tools") or {}
             if tools_cfg.get("include") or tools_cfg.get("exclude"):
                 hermes_srv["tools"] = {}
@@ -1824,7 +1823,7 @@ class Migrator:
                     hermes_srv["tools"]["include"] = tools_cfg["include"]
                 if tools_cfg.get("exclude"):
                     hermes_srv["tools"]["exclude"] = tools_cfg["exclude"]
-            # Sampling
+            # 采样配置
             sampling = srv.get("sampling")
             if sampling and isinstance(sampling, dict):
                 hermes_srv["sampling"] = {
@@ -1847,7 +1846,7 @@ class Migrator:
             hermes_cfg["mcp_servers"] = existing_mcp
             dump_yaml_file(hermes_cfg_path, hermes_cfg)
 
-    # ── Plugins ───────────────────────────────────────────────
+    # ── 插件 ───────────────────────────────────────────────
     def migrate_plugins_config(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         plugins = config.get("plugins") or {}
@@ -1855,7 +1854,7 @@ class Migrator:
             self.record("plugins-config", None, None, "skipped", "No plugins configuration found")
             return
 
-        # Archive the full plugins config
+        # 归档完整插件配置
         if self.archive_dir and self.execute:
             self.archive_dir.mkdir(parents=True, exist_ok=True)
             dest = self.archive_dir / "plugins-config.json"
@@ -1866,7 +1865,7 @@ class Migrator:
             self.record("plugins-config", "openclaw.json plugins.*", "archive/plugins-config.json",
                         "archived" if not self.execute else "migrated", "Would archive plugins config")
 
-        # Copy extensions directory if it exists
+        # 如果存在扩展目录则复制
         ext_dir = self.source_root / "extensions"
         if ext_dir.is_dir() and self.archive_dir:
             dest_ext = self.archive_dir / "extensions"
@@ -1875,7 +1874,7 @@ class Migrator:
             self.record("plugins-config", str(ext_dir), str(dest_ext), "archived",
                         "Extensions directory archived")
 
-        # Extract any plugin env vars
+        # 提取插件环境变量
         entries = plugins.get("entries") or {}
         for plugin_name, plugin_cfg in entries.items():
             if isinstance(plugin_cfg, dict):
@@ -1885,14 +1884,15 @@ class Migrator:
                     env_key = f"PLUGIN_{plugin_name.upper().replace('-', '_')}_API_KEY"
                     self._set_env_var(env_key, api_key, f"plugins.entries.{plugin_name}.apiKey")
 
-    # ── Cron jobs ─────────────────────────────────────────────
+    # ── 定时任务 ─────────────────────────────────────────────
     def migrate_cron_jobs(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         cron = config.get("cron") or {}
         cron_store = self.source_root / "cron"
         found_any = False
 
-        # Archive the full cron config when present
+        # 即使 config.cron 为空，也检查定时任务存储文件
+        # 归档完整的定时任务配置（如果存在）
         if cron:
             found_any = True
             if self.archive_dir and self.execute:
@@ -1905,7 +1905,7 @@ class Migrator:
                 self.record("cron-jobs", "openclaw.json cron.*", "archive/cron-config.json",
                             "archived", "Would archive cron config")
 
-        # Also check for cron store files even when config.cron is missing
+        # 即使 config.cron 为空也检查定时任务存储文件
         if cron_store.is_dir() and self.archive_dir:
             found_any = True
             dest_cron = self.archive_dir / "cron-store"
@@ -1917,7 +1917,7 @@ class Migrator:
         if not found_any:
             self.record("cron-jobs", None, None, "skipped", "No cron configuration found")
 
-    # ── Hooks ─────────────────────────────────────────────────
+    # ── 钩子 ─────────────────────────────────────────────────
     def migrate_hooks_config(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         hooks = config.get("hooks") or {}
@@ -1925,7 +1925,7 @@ class Migrator:
             self.record("hooks-config", None, None, "skipped", "No hooks configuration found")
             return
 
-        # Archive the full hooks config
+        # 归档完整钩子配置
         if self.archive_dir and self.execute:
             self.archive_dir.mkdir(parents=True, exist_ok=True)
             dest = self.archive_dir / "hooks-config.json"
@@ -1936,7 +1936,7 @@ class Migrator:
             self.record("hooks-config", "openclaw.json hooks.*", "archive/hooks-config.json",
                         "archived", "Would archive hooks config")
 
-        # Copy workspace hooks directory
+        # 复制工作区钩子目录
         for ws_name in ("workspace", "workspace.default"):
             hooks_dir = self.source_root / ws_name / "hooks"
             if hooks_dir.is_dir() and self.archive_dir:
@@ -1947,7 +1947,7 @@ class Migrator:
                             "Workspace hooks directory archived")
                 break
 
-    # ── Agent config ──────────────────────────────────────────
+    # ── 代理配置 ──────────────────────────────────────────
     def migrate_agent_config(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         agents = config.get("agents") or {}
@@ -1962,10 +1962,10 @@ class Migrator:
         hermes_cfg = load_yaml_file(hermes_cfg_path)
         changes = False
 
-        # Map agent defaults
+        # 映射代理默认设置
         agent_cfg = hermes_cfg.get("agent") or {}
         if defaults.get("contextTokens"):
-            # No direct mapping but useful context
+            # 无直接映射但有参考价值
             pass
         if defaults.get("timeoutSeconds"):
             agent_cfg["max_turns"] = min(defaults["timeoutSeconds"] // 10, 200)
@@ -1974,7 +1974,7 @@ class Migrator:
             agent_cfg["verbose"] = defaults["verboseDefault"]
             changes = True
         if defaults.get("thinkingDefault"):
-            # Map OpenClaw thinking -> Hermes reasoning_effort
+            # 将 OpenClaw thinking 映射到 Hermes reasoning_effort
             thinking = defaults["thinkingDefault"]
             if thinking in ("always", "high", "xhigh"):
                 agent_cfg["reasoning_effort"] = "high"
@@ -1984,7 +1984,7 @@ class Migrator:
                 agent_cfg["reasoning_effort"] = "low"
             changes = True
 
-        # Map compaction -> compression
+        # 映射 compaction -> compression（压缩设置）
         compaction = defaults.get("compaction") or {}
         if compaction:
             compression = hermes_cfg.get("compression") or {}
@@ -1993,7 +1993,7 @@ class Migrator:
             else:
                 compression["enabled"] = True
             if compaction.get("timeout"):
-                pass  # No direct mapping
+                pass  # 无直接映射
             if compaction.get("model"):
                 aux = hermes_cfg.setdefault("auxiliary", {})
                 aux_comp = aux.setdefault("compression", {})
@@ -2001,7 +2001,7 @@ class Migrator:
             hermes_cfg["compression"] = compression
             changes = True
 
-        # Map humanDelay
+        # 映射 humanDelay（模拟人类打字延迟）
         human_delay = defaults.get("humanDelay") or {}
         if human_delay:
             hd = hermes_cfg.get("human_delay") or {}
@@ -2015,12 +2015,12 @@ class Migrator:
             hermes_cfg["human_delay"] = hd
             changes = True
 
-        # Map userTimezone
+        # 映射用户时区
         if defaults.get("userTimezone"):
             hermes_cfg["timezone"] = defaults["userTimezone"]
             changes = True
 
-        # Map terminal/exec settings
+        # 映射终端/执行设置
         exec_cfg = (config.get("tools") or {}).get("exec") or {}
         if exec_cfg:
             terminal_cfg = hermes_cfg.get("terminal") or {}
@@ -2029,7 +2029,7 @@ class Migrator:
                 changes = True
             hermes_cfg["terminal"] = terminal_cfg
 
-        # Map sandbox -> terminal docker settings
+        # 映射 sandbox -> 终端 Docker 设置
         sandbox = defaults.get("sandbox") or {}
         if sandbox and sandbox.get("backend") == "docker":
             terminal_cfg = hermes_cfg.get("terminal") or {}
@@ -2047,7 +2047,7 @@ class Migrator:
             self.record("agent-config", "openclaw.json agents.defaults", "config.yaml agent/compression/terminal",
                         "migrated", "Agent defaults mapped to Hermes config")
 
-        # Archive multi-agent list
+        # 归档多代理列表
         if agent_list:
             if self.archive_dir and self.execute:
                 self.archive_dir.mkdir(parents=True, exist_ok=True)
@@ -2056,7 +2056,7 @@ class Migrator:
             self.record("agent-config", "openclaw.json agents.list", "archive/agents-list.json",
                         "archived", f"Multi-agent setup ({len(agent_list)} agents) archived for manual recreation")
 
-        # Archive bindings
+        # 归档绑定规则
         bindings = config.get("bindings") or []
         if bindings:
             if self.archive_dir and self.execute:
@@ -2066,7 +2066,7 @@ class Migrator:
             self.record("agent-config", "openclaw.json bindings", "archive/bindings.json",
                         "archived", f"Agent routing bindings ({len(bindings)} rules) archived")
 
-    # ── Gateway config ────────────────────────────────────────
+    # ── 网关配置 ────────────────────────────────────────
     def migrate_gateway_config(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         gateway = config.get("gateway") or {}
@@ -2074,7 +2074,7 @@ class Migrator:
             self.record("gateway-config", None, None, "skipped", "No gateway configuration found")
             return
 
-        # Archive the full gateway config (complex, many settings)
+        # 归档完整网关配置（设置复杂，选项众多）
         if self.archive_dir and self.execute:
             self.archive_dir.mkdir(parents=True, exist_ok=True)
             dest = self.archive_dir / "gateway-config.json"
@@ -2082,12 +2082,12 @@ class Migrator:
         self.record("gateway-config", "openclaw.json gateway.*", "archive/gateway-config.json",
                     "archived", "Gateway config archived. Use 'hermes gateway' to configure.")
 
-        # Extract gateway auth token to .env if present
+        # 如果存在网关认证令牌则提取到 .env
         auth = gateway.get("auth") or {}
         if auth.get("token") and self.migrate_secrets:
             self._set_env_var("HERMES_GATEWAY_TOKEN", auth["token"], "gateway.auth.token")
 
-    # ── Session config ────────────────────────────────────────
+    # ── 会话配置 ────────────────────────────────────────
     def migrate_session_config(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         session = config.get("session") or {}
@@ -2100,12 +2100,12 @@ class Migrator:
         sr = hermes_cfg.get("session_reset") or {}
         changes = False
 
-        # OpenClaw uses session.reset (structured) and session.resetTriggers (string array)
+        # OpenClaw 使用 session.reset（结构化）和 session.resetTriggers（字符串数组）
         reset = session.get("reset") or {}
         reset_triggers = session.get("resetTriggers") or session.get("reset_triggers") or []
 
         if reset:
-            # Structured reset config: has mode, atHour, idleMinutes
+            # 结构化重置配置: 含 mode, atHour, idleMinutes
             mode = reset.get("mode", "")
             if mode == "daily":
                 sr["mode"] = "daily"
@@ -2119,7 +2119,7 @@ class Migrator:
                 sr["idle_minutes"] = reset["idleMinutes"]
             changes = True
         elif isinstance(reset_triggers, list) and reset_triggers:
-            # Simple string triggers: ["daily", "idle"]
+            # 简单字符串触发器: ["daily", "idle"]
             has_daily = "daily" in reset_triggers
             has_idle = "idle" in reset_triggers
             if has_daily and has_idle:
@@ -2138,7 +2138,7 @@ class Migrator:
             self.record("session-config", "openclaw.json session.resetTriggers",
                         "config.yaml session_reset", "migrated")
 
-        # Archive full session config (identity links, thread bindings, etc.)
+        # 归档完整会话配置（身份关联、线程绑定等）
         complex_keys = {"identityLinks", "threadBindings", "maintenance", "scope", "sendPolicy"}
         complex_session = {k: v for k, v in session.items() if k in complex_keys and v}
         if complex_session and self.archive_dir:
@@ -2150,7 +2150,7 @@ class Migrator:
                         "archive/session-config.json", "archived",
                         "Advanced session settings archived (identity links, thread bindings, etc.)")
 
-    # ── Full model providers ──────────────────────────────────
+    # ── 完整模型提供商 ──────────────────────────────────
     def migrate_full_providers(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         models = config.get("models") or {}
@@ -2164,22 +2164,22 @@ class Migrator:
         custom_providers = hermes_cfg.get("custom_providers") or []
         added = 0
 
-        # Well-known providers: just extract API keys
+        # 知名提供商: 仅提取 API 密钥
         WELL_KNOWN = {"openrouter", "openai", "anthropic", "deepseek", "google", "groq"}
 
         for prov_name, prov_cfg in providers.items():
             if not isinstance(prov_cfg, dict):
                 continue
 
-            # Extract API key to .env
+            # 将 API 密钥提取到 .env
             api_key = prov_cfg.get("apiKey") or prov_cfg.get("api_key")
             if api_key and self.migrate_secrets:
                 env_key = f"{prov_name.upper().replace('-', '_')}_API_KEY"
                 self._set_env_var(env_key, api_key, f"models.providers.{prov_name}.apiKey")
 
-            # For non-well-known providers, create custom_providers entry
+            # 对于非知名提供商，创建 custom_providers 条目
             if prov_name.lower() not in WELL_KNOWN and prov_cfg.get("baseUrl"):
-                # Check if already exists
+                # 检查是否已存在
                 existing_names = {p.get("name", "").lower() for p in custom_providers}
                 if prov_name.lower() in existing_names and not self.overwrite:
                     self.record("full-providers", f"models.providers.{prov_name}",
@@ -2213,7 +2213,7 @@ class Migrator:
             hermes_cfg["custom_providers"] = custom_providers
             dump_yaml_file(hermes_cfg_path, hermes_cfg)
 
-        # Archive model aliases/catalog
+        # 归档模型别名/目录
         agent_defaults = (config.get("agents") or {}).get("defaults") or {}
         model_aliases = agent_defaults.get("models") or {}
         if model_aliases:
@@ -2224,7 +2224,7 @@ class Migrator:
             self.record("full-providers", "agents.defaults.models", "archive/model-aliases.json",
                         "archived", f"Model aliases/catalog ({len(model_aliases)} entries) archived")
 
-    # ── Deep channel config ───────────────────────────────────
+    # ── 深层频道配置 ───────────────────────────────────
     def migrate_deep_channels(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         channels = config.get("channels") or {}
@@ -2232,7 +2232,7 @@ class Migrator:
             self.record("deep-channels", None, None, "skipped", "No channel configuration found")
             return
 
-        # Extended channel token/allowlist mapping
+        # 扩展频道令牌/白名单映射
         CHANNEL_ENV_MAP = {
             "matrix": {"token": "MATRIX...OKEN", "tokenField": "accessToken", "allowFrom": "MATRIX_ALLOWED_USERS",
                         "extras": {"homeserverUrl": "MATRIX_HOMESERVER_URL", "userId": "MATRIX_USER_ID"}},
@@ -2252,7 +2252,7 @@ class Migrator:
             if not ch_cfg:
                 continue
 
-            # Extract tokens (check flat path, then accounts.default)
+            # 提取令牌（检查扁平路径，然后检查 accounts.default）
             token_field = ch_mapping.get("tokenField", "botToken")
             bot_token = self._get_channel_field(ch_cfg, token_field)
             if ch_mapping.get("token") and bot_token and self.migrate_secrets:
@@ -2264,7 +2264,7 @@ class Migrator:
                     allow_val = ",".join(str(x) for x in allow_val)
                 self._set_env_var(ch_mapping["allowFrom"], str(allow_val),
                                   f"channels.{ch_name}.allowFrom")
-            # Extra fields
+            # 额外字段
             for oc_key, env_key in (ch_mapping.get("extras") or {}).items():
                 val = self._get_channel_field(ch_cfg, oc_key)
                 if val:
@@ -2275,7 +2275,7 @@ class Migrator:
                         continue
                     self._set_env_var(env_key, str(val), f"channels.{ch_name}.{oc_key}")
 
-        # Map Discord-specific settings to Hermes config
+        # 将 Discord 特定设置映射到 Hermes 配置
         discord_cfg = channels.get("discord") or {}
         if discord_cfg:
             hermes_cfg_path = self.target_root / "config.yaml"
@@ -2292,7 +2292,7 @@ class Migrator:
                 hermes_cfg["discord"] = discord_hermes
                 dump_yaml_file(hermes_cfg_path, hermes_cfg)
 
-        # Archive complex channel configs (group settings, thread bindings, etc.)
+        # 归档复杂频道配置（群组设置、线程绑定等）
         complex_archive = {}
         for ch_name, ch_cfg in channels.items():
             if not isinstance(ch_cfg, dict):
@@ -2312,7 +2312,7 @@ class Migrator:
                         "archive/channels-deep-config.json", "archived",
                         f"Deep channel config for {len(complex_archive)} channels archived")
 
-    # ── Browser config ────────────────────────────────────────
+    # ── 浏览器配置 ────────────────────────────────────────
     def migrate_browser_config(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         browser = config.get("browser") or {}
@@ -2325,7 +2325,7 @@ class Migrator:
         browser_hermes = hermes_cfg.get("browser") or {}
         changed = False
 
-        # Map fields that have Hermes equivalents
+        # 映射具有 Hermes 对应项的字段
         if browser.get("cdpUrl"):
             browser_hermes["cdp_url"] = browser["cdpUrl"]
             changed = True
@@ -2341,7 +2341,7 @@ class Migrator:
             self.record("browser-config", "openclaw.json browser.*", "config.yaml browser",
                         "migrated")
 
-        # Archive remaining browser settings
+        # 归档剩余浏览器设置
         advanced = {k: v for k, v in browser.items()
                    if k not in ("cdpUrl", "headless") and v}
         if advanced and self.archive_dir:
@@ -2352,7 +2352,7 @@ class Migrator:
             self.record("browser-config", "openclaw.json browser (advanced)",
                         "archive/browser-config.json", "archived")
 
-    # ── Tools config ──────────────────────────────────────────
+    # ── 工具配置 ──────────────────────────────────────────
     def migrate_tools_config(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         tools = config.get("tools") or {}
@@ -2364,7 +2364,7 @@ class Migrator:
         hermes_cfg = load_yaml_file(hermes_cfg_path)
         changed = False
 
-        # Map exec timeout -> terminal timeout (field is timeoutSec in OpenClaw)
+        # 映射 exec 超时 -> 终端超时（OpenClaw 中字段为 timeoutSec）
         exec_cfg = tools.get("exec") or {}
         timeout_val = exec_cfg.get("timeoutSec") or exec_cfg.get("timeout")
         if timeout_val:
@@ -2373,7 +2373,7 @@ class Migrator:
             hermes_cfg["terminal"] = terminal_cfg
             changed = True
 
-        # Map web search API key (path: tools.web.search.brave.apiKey in OpenClaw)
+        # 映射网页搜索 API 密钥（路径: OpenClaw 中的 tools.web.search.brave.apiKey）
         web_cfg = tools.get("web") or tools.get("webSearch") or {}
         search_cfg = web_cfg.get("search") or web_cfg if not web_cfg.get("search") else web_cfg["search"]
         brave_cfg = search_cfg.get("brave") or {}
@@ -2387,7 +2387,7 @@ class Migrator:
             self.record("tools-config", "openclaw.json tools.*", "config.yaml terminal",
                         "migrated")
 
-        # Archive full tools config
+        # 归档完整工具配置
         if self.archive_dir:
             if self.execute:
                 self.archive_dir.mkdir(parents=True, exist_ok=True)
@@ -2396,7 +2396,7 @@ class Migrator:
             self.record("tools-config", "openclaw.json tools (full)", "archive/tools-config.json",
                         "archived", "Full tools config archived for reference")
 
-    # ── Approvals config ──────────────────────────────────────
+    # ── 审批配置 ──────────────────────────────────────
     def migrate_approvals_config(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         approvals = config.get("approvals") or {}
@@ -2407,7 +2407,7 @@ class Migrator:
         hermes_cfg_path = self.target_root / "config.yaml"
         hermes_cfg = load_yaml_file(hermes_cfg_path)
 
-        # Map approval mode (nested under approvals.exec.mode in OpenClaw)
+        # 映射审批模式（OpenClaw 中嵌套在 approvals.exec.mode 下）
         exec_approvals = approvals.get("exec") or {}
         mode = (exec_approvals.get("mode") if isinstance(exec_approvals, dict) else None) or approvals.get("mode") or approvals.get("defaultMode")
         if mode:
@@ -2420,7 +2420,7 @@ class Migrator:
             self.record("approvals-config", "openclaw.json approvals.mode",
                         "config.yaml approvals.mode", "migrated", f"Mapped '{mode}' -> '{hermes_mode}'")
 
-        # Archive full approvals config
+        # 归档完整审批配置
         if len(approvals) > 1 and self.archive_dir:
             if self.execute:
                 self.archive_dir.mkdir(parents=True, exist_ok=True)
@@ -2429,7 +2429,7 @@ class Migrator:
             self.record("approvals-config", "openclaw.json approvals (rules)",
                         "archive/approvals-config.json", "archived")
 
-    # ── Memory backend ────────────────────────────────────────
+    # ── 记忆后端 ────────────────────────────────────────
     def migrate_memory_backend(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         memory = config.get("memory") or {}
@@ -2444,7 +2444,7 @@ class Migrator:
         self.record("memory-backend", "openclaw.json memory.*", "archive/memory-backend-config.json",
                     "archived", "Memory backend config (QMD, vector search, citations) archived for manual review")
 
-    # ── Skills config ─────────────────────────────────────────
+    # ── 技能配置 ─────────────────────────────────────────
     def migrate_skills_config(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         skills = config.get("skills") or {}
@@ -2460,7 +2460,7 @@ class Migrator:
         self.record("skills-config", "openclaw.json skills.*", "archive/skills-registry-config.json",
                     "archived", f"Skills registry config ({len(entries)} entries) archived")
 
-    # ── UI / Identity ─────────────────────────────────────────
+    # ── UI / 身份设置 ─────────────────────────────────────────
     def migrate_ui_identity(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         ui = config.get("ui") or {}
@@ -2475,7 +2475,7 @@ class Migrator:
         self.record("ui-identity", "openclaw.json ui.*", "archive/ui-identity-config.json",
                     "archived", "UI theme and identity settings archived")
 
-    # ── Logging / Diagnostics ─────────────────────────────────
+    # ── 日志 / 诊断 ─────────────────────────────────
     def migrate_logging_config(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         logging_cfg = config.get("logging") or {}
@@ -2496,7 +2496,7 @@ class Migrator:
         self.record("logging-config", "openclaw.json logging/diagnostics",
                     "archive/logging-diagnostics-config.json", "archived")
 
-    # ── Helper: set env var ───────────────────────────────────
+    # ── 辅助函数: 设置环境变量 ───────────────────────────────────
     def _set_env_var(self, key: str, value: str, source_label: str) -> None:
         env_path = self.target_root / ".env"
         if self.execute:
@@ -2509,7 +2509,7 @@ class Migrator:
             save_env_file(env_path, env_data)
         self.record("env-var", source_label, f".env {key}", "migrated")
 
-    # ── Generate migration notes ──────────────────────────────
+    # ── 生成迁移说明 ──────────────────────────────
     def generate_migration_notes(self) -> None:
         if not self.output_dir:
             return
@@ -2694,7 +2694,7 @@ def main() -> int:
     )
     report = migrator.migrate()
 
-    # ── Human-readable terminal recap ─────────────────────────
+    # ── 人类可读的终端摘要 ─────────────────────────
     s = report["summary"]
     items = report["items"]
     mode_label = "DRY RUN" if not args.execute else "EXECUTED"
@@ -2712,7 +2712,7 @@ def main() -> int:
     print(f"  ║  ✖ Errors:    {s.get('error', 0):>3d}    Total:       {total:>3d}        ║")
     print(f"  ╚══════════════════════════════════════════════════════╝")
 
-    # Show what was migrated
+    # 显示已迁移的内容
     migrated = [i for i in items if i["status"] == "migrated"]
     if migrated:
         print()
@@ -2730,7 +2730,7 @@ def main() -> int:
             display = meta.get("label", label)
             print(f"    ✔ {display:<35s} -> {dest}")
 
-    # Show what was archived
+    # 显示已归档的内容
     archived = [i for i in items if i["status"] == "archived"]
     if archived:
         print()
@@ -2747,7 +2747,7 @@ def main() -> int:
             short_reason = reason[:50] + "..." if len(reason) > 50 else reason
             print(f"    ◆ {display:<35s}  {short_reason}")
 
-    # Show conflicts
+    # 显示冲突
     conflicts = [i for i in items if i["status"] == "conflict"]
     if conflicts:
         print()
@@ -2755,7 +2755,7 @@ def main() -> int:
         for item in conflicts:
             print(f"    ⚠ {item['kind']}: {item.get('reason', '')}")
 
-    # Show errors
+    # 显示错误
     errors = [i for i in items if i["status"] == "error"]
     if errors:
         print()
@@ -2763,11 +2763,11 @@ def main() -> int:
         for item in errors:
             print(f"    ✖ {item['kind']}: {item.get('reason', '')}")
 
-    # PM2 reassurance
+    # PM2 安心提示
     print()
     print("  ℹ PM2 processes (Discord/Telegram bots) are NOT affected.")
 
-    # Next steps
+    # 下一步操作
     if args.execute:
         print()
         print("  Next steps:")
@@ -2783,7 +2783,7 @@ def main() -> int:
 
     print()
 
-    # Also dump JSON for programmatic use
+    # 同时输出 JSON 格式供程序化使用
     if os.environ.get("MIGRATION_JSON_OUTPUT"):
         print(json.dumps(report, indent=2, ensure_ascii=False))
 

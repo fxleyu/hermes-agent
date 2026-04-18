@@ -1,14 +1,14 @@
-"""Honcho client initialization and configuration.
+"""Honcho 客户端初始化和配置。
 
-Resolution order for config file:
-  1. $HERMES_HOME/honcho.json  (instance-local, enables isolated Hermes instances)
-  2. ~/.honcho/config.json     (global, shared across all Honcho-enabled apps)
-  3. Environment variables     (HONCHO_API_KEY, HONCHO_ENVIRONMENT)
+配置文件解析顺序：
+  1. $HERMES_HOME/honcho.json（实例本地，支持隔离的 Hermes 实例）
+  2. ~/.honcho/config.json（全局，所有启用 Honcho 的应用共享）
+  3. 环境变量（HONCHO_API_KEY、HONCHO_ENVIRONMENT）
 
-Resolution order for host-specific settings:
-  1. Explicit host block fields (always win)
-  2. Flat/global fields from config root
-  3. Defaults (host name as workspace/peer)
+主机特定设置解析顺序：
+  1. 显式主机块字段（始终优先）
+  2. 配置根节点的扁平/全局字段
+  3. 默认值（主机名作为 workspace/peer）
 """
 
 from __future__ import annotations
@@ -32,12 +32,12 @@ HOST = "hermes"
 
 
 def resolve_active_host() -> str:
-    """Derive the Honcho host key from the active Hermes profile.
+    """从活跃的 Hermes 配置文件派生 Honcho 主机键。
 
-    Resolution order:
-      1. HERMES_HONCHO_HOST env var (explicit override)
-      2. Active profile name via profiles system -> ``hermes.<profile>``
-      3. Fallback: ``"hermes"`` (default profile)
+    解析顺序：
+      1. HERMES_HONCHO_HOST 环境变量（显式覆盖）
+      2. 通过配置文件系统获取活跃配置文件名 -> ``hermes.<profile>``
+      3. 回退：``"hermes"``（默认配置文件）
     """
     explicit = os.environ.get("HERMES_HONCHO_HOST", "").strip()
     if explicit:
@@ -54,20 +54,20 @@ def resolve_active_host() -> str:
 
 
 def resolve_config_path() -> Path:
-    """Return the active Honcho config path.
+    """返回活跃的 Honcho 配置文件路径。
 
-    Resolution order:
-      1. $HERMES_HOME/honcho.json      (profile-local, if it exists)
-      2. ~/.hermes/honcho.json          (default profile — shared host blocks live here)
-      3. ~/.honcho/config.json          (global, cross-app interop)
+    解析顺序：
+      1. $HERMES_HOME/honcho.json      （配置文件本地，如存在）
+      2. ~/.hermes/honcho.json          （默认配置文件 — 共享主机块位于此处）
+      3. ~/.honcho/config.json          （全局，跨应用互操作）
 
-    Returns the global path if none exist (for first-time setup writes).
+    如果都不存在则返回全局路径（用于首次设置写入）。
     """
     local_path = get_hermes_home() / "honcho.json"
     if local_path.exists():
         return local_path
 
-    # Default profile's config — host blocks accumulate here via setup/clone
+    # 默认配置文件的配置 — 主机块通过 setup/clone 在此累积
     default_path = Path.home() / ".hermes" / "honcho.json"
     if default_path != local_path and default_path.exists():
         return default_path
@@ -80,13 +80,13 @@ _VALID_RECALL_MODES = {"hybrid", "context", "tools"}
 
 
 def _normalize_recall_mode(val: str) -> str:
-    """Normalize legacy recall mode values (e.g. 'auto' → 'hybrid')."""
+    """规范化旧版的 recall mode 值（例如 'auto' -> 'hybrid'）。"""
     val = _RECALL_MODE_ALIASES.get(val, val)
     return val if val in _VALID_RECALL_MODES else "hybrid"
 
 
 def _resolve_bool(host_val, root_val, *, default: bool) -> bool:
-    """Resolve a bool config field: host wins, then root, then default."""
+    """解析布尔配置字段：主机块优先，然后根节点，最后默认值。"""
     if host_val is not None:
         return bool(host_val)
     if root_val is not None:
@@ -95,7 +95,7 @@ def _resolve_bool(host_val, root_val, *, default: bool) -> bool:
 
 
 def _parse_context_tokens(host_val, root_val) -> int | None:
-    """Parse contextTokens: host wins, then root, then None (uncapped)."""
+    """解析 contextTokens：主机块优先，然后根节点，最后 None（无上限）。"""
     for val in (host_val, root_val):
         if val is not None:
             try:
@@ -106,7 +106,7 @@ def _parse_context_tokens(host_val, root_val) -> int | None:
 
 
 def _parse_dialectic_depth(host_val, root_val) -> int:
-    """Parse dialecticDepth: host wins, then root, then 1. Clamped to 1-3."""
+    """解析 dialecticDepth：主机块优先，然后根节点，最后 1。限制在 1-3。"""
     for val in (host_val, root_val):
         if val is not None:
             try:
@@ -120,10 +120,10 @@ _VALID_REASONING_LEVELS = ("minimal", "low", "medium", "high", "max")
 
 
 def _parse_dialectic_depth_levels(host_val, root_val, depth: int) -> list[str] | None:
-    """Parse dialecticDepthLevels: optional array of reasoning levels per pass.
+    """解析 dialecticDepthLevels：每轮推理级别的可选数组。
 
-    Returns None when not configured (use proportional defaults).
-    When configured, validates each level and truncates/pads to match depth.
+    未配置时返回 None（使用比例默认值）。
+    配置时验证每个级别并截断/填充以匹配深度。
     """
     for val in (host_val, root_val):
         if val is not None and isinstance(val, list):
@@ -131,7 +131,7 @@ def _parse_dialectic_depth_levels(host_val, root_val, depth: int) -> list[str] |
                 lvl if lvl in _VALID_REASONING_LEVELS else "low"
                 for lvl in val[:depth]
             ]
-            # Pad with "low" if array is shorter than depth
+            # 如果数组比深度短则用 "low" 填充
             while len(levels) < depth:
                 levels.append("low")
             return levels
@@ -139,7 +139,7 @@ def _parse_dialectic_depth_levels(host_val, root_val, depth: int) -> list[str] |
 
 
 def _resolve_optional_float(*values: Any) -> float | None:
-    """Return the first non-empty value coerced to a positive float."""
+    """返回第一个非空值，强制转换为正浮点数。"""
     for value in values:
         if value is None:
             continue
@@ -161,13 +161,13 @@ _OBSERVATION_MODE_ALIASES = {"shared": "unified", "separate": "directional", "cr
 
 
 def _normalize_observation_mode(val: str) -> str:
-    """Normalize observation mode values."""
+    """规范化观察模式值。"""
     val = _OBSERVATION_MODE_ALIASES.get(val, val)
     return val if val in _VALID_OBSERVATION_MODES else "directional"
 
 
-# Observation presets — granular booleans derived from legacy string mode.
-# Explicit per-peer config always wins over presets.
+# 观察预设 — 从旧版字符串模式派生的细粒度布尔值。
+# 显式的每对等方配置始终优先于预设。
 _OBSERVATION_PRESETS = {
     "directional": {
         "user_observe_me": True, "user_observe_others": True,
@@ -184,14 +184,14 @@ def _resolve_observation(
     mode: str,
     observation_obj: dict | None,
 ) -> dict:
-    """Resolve per-peer observation booleans.
+    """解析每对等方的观察布尔值。
 
-    Config forms:
-      String shorthand:  ``"observationMode": "directional"``
-      Granular object:   ``"observation": {"user": {"observeMe": true, "observeOthers": true},
-                                           "ai": {"observeMe": true, "observeOthers": false}}``
+    配置形式：
+      字符串简写：  ``"observationMode": "directional"``
+      细粒度对象：  ``"observation": {"user": {"observeMe": true, "observeOthers": true},
+                                     "ai": {"observeMe": true, "observeOthers": false}}``
 
-    Granular fields override preset defaults.
+    细粒度字段覆盖预设默认值。
     """
     preset = _OBSERVATION_PRESETS.get(mode, _OBSERVATION_PRESETS["directional"])
     if not observation_obj or not isinstance(observation_obj, dict):
@@ -213,75 +213,75 @@ def _resolve_observation(
 
 @dataclass
 class HonchoClientConfig:
-    """Configuration for Honcho client, resolved for a specific host."""
+    """Honcho 客户端配置，针对特定主机解析。"""
 
     host: str = HOST
     workspace_id: str = "hermes"
     api_key: str | None = None
     environment: str = "production"
-    # Optional base URL for self-hosted Honcho (overrides environment mapping)
+    # 可选的基础 URL，用于自托管 Honcho（覆盖环境映射）
     base_url: str | None = None
-    # Optional request timeout in seconds for Honcho SDK HTTP calls
+    # 可选的请求超时（秒），用于 Honcho SDK HTTP 调用
     timeout: float | None = None
-    # Identity
+    # 身份标识
     peer_name: str | None = None
     ai_peer: str = "hermes"
-    # Toggles
+    # 开关
     enabled: bool = False
     save_messages: bool = True
-    # Write frequency: "async" (background thread), "turn" (sync per turn),
-    # "session" (flush on session end), or int (every N turns)
+    # 写入频率："async"（后台线程）、"turn"（每轮同步）、
+    # "session"（仅会话结束时刷新）、或 int（每 N 轮）
     write_frequency: str | int = "async"
-    # Prefetch budget (None = no cap; set to an integer to bound auto-injected context)
+    # 预取预算（None = 无上限；设为整数以限制自动注入的上下文）
     context_tokens: int | None = None
-    # Dialectic (peer.chat) settings
+    # 辩证（peer.chat）设置
     # reasoning_level: "minimal" | "low" | "medium" | "high" | "max"
     dialectic_reasoning_level: str = "low"
-    # When true, the model can override reasoning_level per-call via the
-    # honcho_reasoning tool param (agentic). When false, always uses
-    # dialecticReasoningLevel and ignores model-provided overrides.
+    # 为 true 时，模型可通过 honcho_reasoning 工具参数按调用覆盖
+    # reasoning_level（智能体式）。为 false 时始终使用
+    # dialecticReasoningLevel，忽略模型提供的覆盖。
     dialectic_dynamic: bool = True
-    # Max chars of dialectic result to inject into Hermes system prompt
+    # 注入到 Hermes 系统提示中的辩证结果最大字符数
     dialectic_max_chars: int = 600
-    # Dialectic depth: how many .chat() calls per dialectic cycle (1-3).
-    # Depth 1: single call. Depth 2: self-audit + targeted synthesis.
-    # Depth 3: self-audit + synthesis + reconciliation.
+    # 辩证深度：每个辩证周期的 .chat() 调用次数（1-3）。
+    # 深度 1：单次调用。深度 2：自审计 + 定向综合。
+    # 深度 3：自审计 + 综合 + 调和。
     dialectic_depth: int = 1
-    # Optional per-pass reasoning level override. Array of reasoning levels
-    # matching dialectic_depth length. When None, uses proportional defaults
-    # derived from dialectic_reasoning_level.
+    # 可选的每轮推理级别覆盖。推理级别数组
+    # 匹配 dialectic_depth 长度。为 None 时使用从
+    # dialectic_reasoning_level 派生的比例默认值。
     dialectic_depth_levels: list[str] | None = None
-    # Honcho API limits — configurable for self-hosted instances
-    # Max chars per message sent via add_messages() (Honcho cloud: 25000)
+    # Honcho API 限制 — 可为自托管实例配置
+    # 通过 add_messages() 发送的每条消息最大字符数（Honcho 云：25000）
     message_max_chars: int = 25000
-    # Max chars for dialectic query input to peer.chat() (Honcho cloud: 10000)
+    # 辩证查询输入到 peer.chat() 的最大字符数（Honcho 云：10000）
     dialectic_max_input_chars: int = 10000
-    # Recall mode: how memory retrieval works when Honcho is active.
-    # "hybrid"  — auto-injected context + Honcho tools available (model decides)
-    # "context" — auto-injected context only, Honcho tools removed
-    # "tools"   — Honcho tools only, no auto-injected context
+    # 召回模式：Honcho 激活时记忆检索的工作方式。
+    # "hybrid"  — 自动注入上下文 + Honcho 工具可用（模型决定）
+    # "context" — 仅自动注入上下文，Honcho 工具移除
+    # "tools"   — 仅 Honcho 工具，不自动注入上下文
     recall_mode: str = "hybrid"
-    # Eager init in tools mode — when true, initializes session during
-    # initialize() instead of deferring to first tool call
+    # tools 模式下的立即初始化 — 为 true 时在 initialize() 期间
+    # 初始化会话而非延迟到首次工具调用
     init_on_session_start: bool = False
-    # Observation mode: legacy string shorthand ("directional" or "unified").
-    # Kept for backward compat; granular per-peer booleans below are preferred.
+    # 观察模式：旧版字符串简写（"directional" 或 "unified"）。
+    # 保留用于向后兼容；下面的细粒度每对等方布尔值是首选。
     observation_mode: str = "directional"
-    # Per-peer observation booleans — maps 1:1 to Honcho's SessionPeerConfig.
-    # Resolved from "observation" object in config, falling back to observation_mode preset.
+    # 每对等方观察布尔值 — 与 Honcho 的 SessionPeerConfig 一一映射。
+    # 从配置中的 "observation" 对象解析，回退到 observation_mode 预设。
     user_observe_me: bool = True
     user_observe_others: bool = True
     ai_observe_me: bool = True
     ai_observe_others: bool = True
-    # Session resolution
+    # 会话解析
     session_strategy: str = "per-directory"
     session_peer_prefix: bool = False
     sessions: dict[str, str] = field(default_factory=dict)
-    # Raw global config for anything else consumers need
+    # 原始全局配置，供消费者需要的其他内容使用
     raw: dict[str, Any] = field(default_factory=dict)
-    # True when Honcho was explicitly configured for this host (hosts.hermes
-    # block exists or enabled was set explicitly), vs auto-enabled from a
-    # stray HONCHO_API_KEY env var.
+    # 当 Honcho 为此主机被显式配置时为 True（hosts.hermes
+    # 块存在或 enabled 被显式设置），与从零散的
+    # HONCHO_API_KEY 环境变量自动启用相区分。
     explicitly_configured: bool = False
 
     @classmethod
@@ -290,7 +290,7 @@ class HonchoClientConfig:
         workspace_id: str = "hermes",
         host: str | None = None,
     ) -> HonchoClientConfig:
-        """Create config from environment variables (fallback)."""
+        """从环境变量创建配置（回退方式）。"""
         resolved_host = host or resolve_active_host()
         api_key = os.environ.get("HONCHO_API_KEY")
         base_url = os.environ.get("HONCHO_BASE_URL", "").strip() or None
@@ -312,10 +312,10 @@ class HonchoClientConfig:
         host: str | None = None,
         config_path: Path | None = None,
     ) -> HonchoClientConfig:
-        """Create config from the resolved Honcho config path.
+        """从解析的 Honcho 配置路径创建配置。
 
-        Resolution: $HERMES_HOME/honcho.json -> ~/.honcho/config.json -> env vars.
-        When host is None, derives it from the active Hermes profile.
+        解析顺序：$HERMES_HOME/honcho.json -> ~/.honcho/config.json -> 环境变量。
+        当 host 为 None 时，从活跃的 Hermes 配置文件派生。
         """
         resolved_host = host or resolve_active_host()
         path = config_path or resolve_config_path()
@@ -330,11 +330,11 @@ class HonchoClientConfig:
             return cls.from_env(host=resolved_host)
 
         host_block = (raw.get("hosts") or {}).get(resolved_host, {})
-        # A hosts.hermes block or explicit enabled flag means the user
-        # intentionally configured Honcho for this host.
+        # hosts.hermes 块或显式 enabled 标志意味着用户
+        # 有意为此主机配置了 Honcho。
         _explicitly_configured = bool(host_block) or raw.get("enabled") is True
 
-        # Explicit host block fields win, then flat/global, then defaults
+        # 显式主机块字段优先，然后扁平/全局，最后默认值
         workspace = (
             host_block.get("workspace")
             or raw.get("workspace")
@@ -368,8 +368,8 @@ class HonchoClientConfig:
             os.environ.get("HONCHO_TIMEOUT"),
         )
 
-        # Auto-enable when API key or base_url is present (unless explicitly disabled)
-        # Host-level enabled wins, then root-level, then auto-enable if key/url exists.
+        # 当 API 密钥或 base_url 存在时自动启用（除非显式禁用）
+        # 主机级 enabled 优先，然后根级，最后在有密钥/URL 时自动启用。
         host_enabled = host_block.get("enabled")
         root_enabled = raw.get("enabled")
         if host_enabled is not None:
@@ -377,10 +377,10 @@ class HonchoClientConfig:
         elif root_enabled is not None:
             enabled = root_enabled
         else:
-            # Not explicitly set anywhere -> auto-enable if API key or base_url exists
+            # 未在任何地方显式设置 -> 有 API 密钥或 base_url 时自动启用
             enabled = bool(api_key or base_url)
 
-        # write_frequency: accept int or string
+        # write_frequency: 接受 int 或 string
         raw_wf = (
             host_block.get("writeFrequency")
             or raw.get("writeFrequency")
@@ -391,11 +391,11 @@ class HonchoClientConfig:
         except (TypeError, ValueError):
             write_frequency = str(raw_wf)
 
-        # saveMessages: host wins (None-aware since False is valid)
+        # saveMessages: 主机块优先（注意 None 与 False 的区别）
         host_save = host_block.get("saveMessages")
         save_messages = host_save if host_save is not None else raw.get("saveMessages", True)
 
-        # sessionStrategy / sessionPeerPrefix: host first, root fallback
+        # sessionStrategy / sessionPeerPrefix: 主机块优先，根节点回退
         session_strategy = (
             host_block.get("sessionStrategy")
             or raw.get("sessionStrategy", "per-directory")
@@ -466,11 +466,10 @@ class HonchoClientConfig:
                 raw.get("initOnSessionStart"),
                 default=False,
             ),
-            # Migration guard: existing configs without an explicit
-            # observationMode keep the old "unified" default so users
-            # aren't silently switched to full bidirectional observation.
-            # New installations (no host block, no credentials) get
-            # "directional" (all observations on) as the new default.
+            # 迁移保护：没有显式 observationMode 的现有配置
+            # 保留旧的 "unified" 默认值，以免用户被静默切换到
+            # 全双向观察。新安装（无主机块、无凭据）获得
+            # "directional"（所有观察开启）作为新默认值。
             observation_mode=_normalize_observation_mode(
                 host_block.get("observationMode")
                 or raw.get("observationMode")
@@ -493,7 +492,7 @@ class HonchoClientConfig:
 
     @staticmethod
     def _git_repo_name(cwd: str) -> str | None:
-        """Return the git repo root directory name, or None if not in a repo."""
+        """返回 git 仓库根目录名称，如果不在仓库中则返回 None。"""
         import subprocess
 
         try:
@@ -514,28 +513,28 @@ class HonchoClientConfig:
         session_id: str | None = None,
         gateway_session_key: str | None = None,
     ) -> str | None:
-        """Resolve Honcho session name.
+        """解析 Honcho 会话名称。
 
-        Resolution order:
-          1. Manual directory override from sessions map
-          2. Hermes session title (from /title command)
-          3. Gateway session key (stable per-chat identifier from gateway platforms)
-          4. per-session strategy — Hermes session_id ({timestamp}_{hex})
-          5. per-repo strategy — git repo root directory name
-          6. per-directory strategy — directory basename
-          7. global strategy — workspace name
+        解析顺序：
+          1. 会话映射中的手动目录覆盖
+          2. Hermes 会话标题（来自 /title 命令）
+          3. 网关会话键（来自网关平台的每聊天稳定标识符）
+          4. per-session 策略 — Hermes session_id ({timestamp}_{hex})
+          5. per-repo 策略 — git 仓库根目录名
+          6. per-directory 策略 — 目录基本名
+          7. global 策略 — workspace 名称
         """
         import re
 
         if not cwd:
             cwd = os.getcwd()
 
-        # Manual override always wins
+        # 手动覆盖始终优先
         manual = self.sessions.get(cwd)
         if manual:
             return manual
 
-        # /title mid-session remap
+        # /title 会话中途重映射
         if session_title:
             sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', session_title).strip('-')
             if sanitized:
@@ -543,37 +542,36 @@ class HonchoClientConfig:
                     return f"{self.peer_name}-{sanitized}"
                 return sanitized
 
-        # Gateway session key: stable per-chat identifier passed by the gateway
-        # (e.g. "agent:main:telegram:dm:8439114563"). Sanitize colons to hyphens
-        # for Honcho session ID compatibility. This takes priority over strategy-
-        # based resolution because gateway platforms need per-chat isolation that
-        # cwd-based strategies cannot provide.
+        # 网关会话键：由网关传递的每聊天稳定标识符
+        # （例如 "agent:main:telegram:dm:8439114563"）。将冒号替换为连字符
+        # 以兼容 Honcho 会话 ID。此项优先于基于策略的
+        # 解析，因为网关平台需要 cwd 策略无法提供的每聊天隔离。
         if gateway_session_key:
             sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', gateway_session_key).strip('-')
             if sanitized:
                 return sanitized
 
-        # per-session: inherit Hermes session_id (new Honcho session each run)
+        # per-session: 继承 Hermes session_id（每次运行创建新 Honcho 会话）
         if self.session_strategy == "per-session" and session_id:
             if self.session_peer_prefix and self.peer_name:
                 return f"{self.peer_name}-{session_id}"
             return session_id
 
-        # per-repo: one Honcho session per git repository
+        # per-repo: 每个 git 仓库一个 Honcho 会话
         if self.session_strategy == "per-repo":
             base = self._git_repo_name(cwd) or Path(cwd).name
             if self.session_peer_prefix and self.peer_name:
                 return f"{self.peer_name}-{base}"
             return base
 
-        # per-directory: one Honcho session per working directory (default)
+        # per-directory: 每个工作目录一个 Honcho 会话（默认）
         if self.session_strategy in ("per-directory", "per-session"):
             base = Path(cwd).name
             if self.session_peer_prefix and self.peer_name:
                 return f"{self.peer_name}-{base}"
             return base
 
-        # global: single session across all directories
+        # global: 跨所有目录的单一会话
         return self.workspace_id
 
 
@@ -581,10 +579,10 @@ _honcho_client: Honcho | None = None
 
 
 def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
-    """Get or create the Honcho client singleton.
+    """获取或创建 Honcho 客户端单例。
 
-    When no config is provided, attempts to load ~/.honcho/config.json
-    first, falling back to environment variables.
+    未提供配置时，先尝试加载 ~/.honcho/config.json，
+    然后回退到环境变量。
     """
     global _honcho_client
 
@@ -610,9 +608,8 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
             "Install it with: pip install honcho-ai"
         )
 
-    # Allow config.yaml honcho.base_url to override the SDK's environment
-    # mapping, enabling remote self-hosted Honcho deployments without
-    # requiring the server to live on localhost.
+    # 允许 config.yaml 的 honcho.base_url 覆盖 SDK 的环境映射，
+    # 使远程自托管 Honcho 部署无需服务器在 localhost 上运行。
     resolved_base_url = config.base_url
     resolved_timeout = config.timeout
     if not resolved_base_url or resolved_timeout is None:
@@ -636,18 +633,18 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     else:
         logger.info("Initializing Honcho client (host: %s, workspace: %s)", config.host, config.workspace_id)
 
-    # Local Honcho instances don't require an API key, but the SDK
-    # expects a non-empty string.  Use a placeholder for local URLs.
-    # For local: only use config.api_key if the host block explicitly
-    # sets apiKey (meaning the user wants local auth). Otherwise skip
-    # the stored key -- it's likely a cloud key that would break local.
+    # 本地 Honcho 实例不需要 API 密钥，但 SDK 需要非空字符串。
+    # 对本地 URL 使用占位符。
+    # 对于本地：仅在主机块显式设置 apiKey 时使用 config.api_key
+    # （意味着用户需要本地认证）。否则跳过存储的密钥 —
+    # 它可能是会破坏本地连接的云密钥。
     _is_local = resolved_base_url and (
         "localhost" in resolved_base_url
         or "127.0.0.1" in resolved_base_url
         or "::1" in resolved_base_url
     )
     if _is_local:
-        # Check if the host block has its own apiKey (explicit local auth)
+        # 检查主机块是否有自己的 apiKey（显式本地认证）
         _raw = config.raw or {}
         _host_block = (_raw.get("hosts") or {}).get(config.host, {})
         _host_has_key = bool(_host_block.get("apiKey"))
@@ -671,6 +668,6 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
 
 
 def reset_honcho_client() -> None:
-    """Reset the Honcho client singleton (useful for testing)."""
+    """重置 Honcho 客户端单例（用于测试）。"""
     global _honcho_client
     _honcho_client = None

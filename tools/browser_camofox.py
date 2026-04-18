@@ -1,23 +1,23 @@
-"""Camofox browser backend — local anti-detection browser via REST API.
+"""Camofox 浏览器后端 — 通过 REST API 控制本地反检测浏览器。
 
-Camofox-browser is a self-hosted Node.js server wrapping Camoufox (Firefox
-fork with C++ fingerprint spoofing).  It exposes a REST API that maps 1:1
-to our browser tool interface: accessibility snapshots with element refs,
-click/type/scroll by ref, screenshots, etc.
+Camofox-browser 是一个自托管的 Node.js 服务器，封装了 Camoufox
+（带有 C++ 指纹欺骗的 Firefox 分支）。它暴露了一个 REST API，
+与我们的浏览器工具接口一一映射：无障碍快照配合元素引用、
+按引用点击/输入/滚动、截图等。
 
-When ``CAMOFOX_URL`` is set (e.g. ``http://localhost:9377``), the browser
-tools route through this module instead of the ``agent-browser`` CLI.
+当设置了 ``CAMOFOX_URL``（如 ``http://localhost:9377``）时，
+浏览器工具将通过此模块路由，而不是 ``agent-browser`` CLI。
 
-Setup::
+安装::
 
-    # Option 1: npm
+    # 方式 1: npm
     git clone https://github.com/jo-inc/camofox-browser && cd camofox-browser
-    npm install && npm start   # downloads Camoufox (~300MB) on first run
+    npm install && npm start   # 首次运行时下载 Camoufox (~300MB)
 
-    # Option 2: Docker
+    # 方式 2: Docker
     docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser
 
-Then set ``CAMOFOX_URL=http://localhost:9377`` in ``~/.hermes/.env``.
+然后在 ``~/.hermes/.env`` 中设置 ``CAMOFOX_URL=http://localhost:9377``。
 """
 
 from __future__ import annotations
@@ -39,27 +39,26 @@ from tools.registry import tool_error
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Configuration
+# 配置
 # ---------------------------------------------------------------------------
 
-_DEFAULT_TIMEOUT = 30  # seconds per HTTP request
-_SNAPSHOT_MAX_CHARS = 80_000  # camofox paginates at this limit
-_vnc_url: Optional[str] = None  # cached from /health response
-_vnc_url_checked = False  # only probe once per process
+_DEFAULT_TIMEOUT = 30  # 每个 HTTP 请求的超时秒数
+_SNAPSHOT_MAX_CHARS = 80_000  # camofox 在此限制处分页
+_vnc_url: Optional[str] = None  # 从 /health 响应中缓存
+_vnc_url_checked = False  # 每个进程仅探测一次
 
 
 def get_camofox_url() -> str:
-    """Return the configured Camofox server URL, or empty string."""
+    """返回配置的 Camofox 服务器 URL，或空字符串。"""
     return os.getenv("CAMOFOX_URL", "").rstrip("/")
 
 
 def is_camofox_mode() -> bool:
-    """True when Camofox backend is configured and no CDP override is active.
+    """当 Camofox 后端已配置且无 CDP 覆盖时返回 True。
 
-    When the user has explicitly connected to a live Chrome instance via
-    ``/browser connect`` (which sets ``BROWSER_CDP_URL``), the CDP connection
-    takes priority over Camofox so the browser tools operate on the real
-    browser instead of being silently routed to the Camofox backend.
+    当用户通过 ``/browser connect``（设置 ``BROWSER_CDP_URL``）显式
+    连接到实时 Chrome 实例时，CDP 连接优先于 Camofox，
+    这样浏览器工具操作的是真实浏览器，而不是被静默路由到 Camofox 后端。
     """
     if os.getenv("BROWSER_CDP_URL", "").strip():
         return False
@@ -67,7 +66,7 @@ def is_camofox_mode() -> bool:
 
 
 def check_camofox_available() -> bool:
-    """Verify the Camofox server is reachable."""
+    """验证 Camofox 服务器是否可达。"""
     global _vnc_url, _vnc_url_checked
     url = get_camofox_url()
     if not url:
@@ -92,20 +91,20 @@ def check_camofox_available() -> bool:
 
 
 def get_vnc_url() -> Optional[str]:
-    """Return the VNC URL if the Camofox server exposes one, or None."""
+    """如果 Camofox 服务器暴露了 VNC，则返回其 URL，否则返回 None。"""
     if not _vnc_url_checked:
         check_camofox_available()
     return _vnc_url
 
 
 def _managed_persistence_enabled() -> bool:
-    """Return whether Hermes-managed persistence is enabled for Camofox.
+    """返回 Camofox 是否启用了 Hermes 管理的持久化。
 
-    When enabled, sessions use a stable profile-scoped userId so the
-    Camofox server can map it to a persistent browser profile directory.
-    When disabled (default), each session gets a random userId (ephemeral).
+    启用时，会话使用稳定的配置文件作用域 userId，这样 Camofox
+    服务器可以将其映射到持久化的浏览器配置文件目录。
+    禁用时（默认），每个会话获得随机 userId（临时的）。
 
-    Controlled by ``browser.camofox.managed_persistence`` in config.yaml.
+    通过 config.yaml 中的 ``browser.camofox.managed_persistence`` 控制。
     """
     try:
         camofox_cfg = load_config().get("browser", {}).get("camofox", {})
@@ -116,19 +115,18 @@ def _managed_persistence_enabled() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Session management
+# 会话管理
 # ---------------------------------------------------------------------------
-# Maps task_id -> {"user_id": str, "tab_id": str|None}
+# 映射 task_id -> {"user_id": str, "tab_id": str|None}
 _sessions: Dict[str, Dict[str, Any]] = {}
 _sessions_lock = threading.Lock()
 
 
 def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
-    """Get or create a camofox session for the given task.
+    """获取或创建给定任务的 camofox 会话。
 
-    When managed persistence is enabled, uses a deterministic userId
-    derived from the Hermes profile so the Camofox server can map it
-    to the same persistent browser profile across restarts.
+    当启用托管持久化时，使用从 Hermes 配置文件派生的确定性 userId，
+    这样 Camofox 服务器可以在重启后将其映射到相同的持久化浏览器配置文件。
     """
     task_id = task_id or "default"
     with _sessions_lock:
@@ -154,7 +152,7 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
 
 
 def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, Any]:
-    """Ensure a tab exists for the session, creating one if needed."""
+    """确保会话中存在标签页，如果不存在则创建一个。"""
     session = _get_session(task_id)
     if session["tab_id"]:
         return session
@@ -175,20 +173,20 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
 
 
 def _drop_session(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Remove and return session info."""
+    """移除并返回会话信息。"""
     task_id = task_id or "default"
     with _sessions_lock:
         return _sessions.pop(task_id, None)
 
 
 def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
-    """Release the in-memory session without destroying the server-side context.
+    """释放内存中的会话，但不销毁服务器端上下文。
 
-    When managed persistence is enabled the browser profile (and its cookies)
-    must survive across agent tasks.  This helper drops only the local tracking
-    entry and returns ``True``.  When managed persistence is *not* enabled it
-    does nothing and returns ``False`` so the caller can fall back to
-    :func:`camofox_close`.
+    当启用托管持久化时，浏览器配置文件（及其 cookie）
+    必须在代理任务之间存活。此辅助函数仅丢弃本地跟踪
+    条目并返回 ``True``。当托管持久化*未*启用时，
+    什么也不做并返回 ``False``，调用方可以回退到
+    :func:`camofox_close`。
     """
     if _managed_persistence_enabled():
         _drop_session(task_id)
@@ -198,11 +196,11 @@ def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# HTTP helpers
+# HTTP 辅助方法
 # ---------------------------------------------------------------------------
 
 def _post(path: str, body: dict, timeout: int = _DEFAULT_TIMEOUT) -> dict:
-    """POST JSON to camofox and return parsed response."""
+    """向 camofox 发送 POST JSON 请求并返回解析后的响应。"""
     url = f"{get_camofox_url()}{path}"
     resp = requests.post(url, json=body, timeout=timeout)
     resp.raise_for_status()
@@ -210,7 +208,7 @@ def _post(path: str, body: dict, timeout: int = _DEFAULT_TIMEOUT) -> dict:
 
 
 def _get(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dict:
-    """GET from camofox and return parsed response."""
+    """从 camofox 发送 GET 请求并返回解析后的响应。"""
     url = f"{get_camofox_url()}{path}"
     resp = requests.get(url, params=params, timeout=timeout)
     resp.raise_for_status()
@@ -218,7 +216,7 @@ def _get(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dic
 
 
 def _get_raw(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> requests.Response:
-    """GET from camofox and return raw response (for binary data)."""
+    """从 camofox 发送 GET 请求并返回原始响应（用于二进制数据）。"""
     url = f"{get_camofox_url()}{path}"
     resp = requests.get(url, params=params, timeout=timeout)
     resp.raise_for_status()
@@ -226,7 +224,7 @@ def _get_raw(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) ->
 
 
 def _delete(path: str, body: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dict:
-    """DELETE to camofox and return parsed response."""
+    """向 camofox 发送 DELETE 请求并返回解析后的响应。"""
     url = f"{get_camofox_url()}{path}"
     resp = requests.delete(url, json=body, timeout=timeout)
     resp.raise_for_status()
@@ -234,19 +232,19 @@ def _delete(path: str, body: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> di
 
 
 # ---------------------------------------------------------------------------
-# Tool implementations
+# 工具实现
 # ---------------------------------------------------------------------------
 
 def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
-    """Navigate to a URL via Camofox."""
+    """通过 Camofox 导航到指定 URL。"""
     try:
         session = _get_session(task_id)
         if not session["tab_id"]:
-            # Create tab with the target URL directly
+            # 直接使用目标 URL 创建标签页
             session = _ensure_tab(task_id, url)
             data = {"ok": True, "url": url}
         else:
-            # Navigate existing tab
+            # 导航现有标签页
             data = _post(
                 f"/tabs/{session['tab_id']}/navigate",
                 {"userId": session["user_id"], "url": url},
@@ -265,7 +263,7 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
                 "Share this link with the user so they can watch the browser live."
             )
 
-        # Auto-take a compact snapshot so the model can act immediately
+        # 自动获取紧凑快照以便模型可以立即操作
         try:
             snap_data = _get(
                 f"/tabs/{session['tab_id']}/snapshot",
@@ -281,7 +279,7 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
             result["snapshot"] = snapshot_text
             result["element_count"] = snap_data.get("refsCount", 0)
         except Exception:
-            pass  # Navigation succeeded; snapshot is a bonus
+            pass  # 导航成功；快照是额外的奖励
 
         return json.dumps(result)
     except requests.HTTPError as e:
@@ -299,7 +297,7 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
 
 def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
                      user_task: Optional[str] = None) -> str:
-    """Get accessibility tree snapshot from Camofox."""
+    """从 Camofox 获取无障碍树快照。"""
     try:
         session = _get_session(task_id)
         if not session["tab_id"]:
@@ -313,7 +311,7 @@ def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
         snapshot = data.get("snapshot", "")
         refs_count = data.get("refsCount", 0)
 
-        # Apply same summarization logic as the main browser tool
+        # 应用与主浏览器工具相同的摘要逻辑
         from tools.browser_tool import (
             SNAPSHOT_SUMMARIZE_THRESHOLD,
             _extract_relevant_content,
@@ -336,13 +334,13 @@ def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
 
 
 def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
-    """Click an element by ref via Camofox."""
+    """通过 Camofox 按引用点击元素。"""
     try:
         session = _get_session(task_id)
         if not session["tab_id"]:
             return tool_error("No browser session. Call browser_navigate first.", success=False)
 
-        # Strip @ prefix if present (our tool convention)
+        # 去除 @ 前缀（我们的工具约定）
         clean_ref = ref.lstrip("@")
 
         data = _post(
@@ -359,7 +357,7 @@ def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
 
 
 def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
-    """Type text into an element by ref via Camofox."""
+    """通过 Camofox 在指定引用的元素中输入文本。"""
     try:
         session = _get_session(task_id)
         if not session["tab_id"]:
@@ -381,7 +379,7 @@ def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
 
 
 def camofox_scroll(direction: str, task_id: Optional[str] = None) -> str:
-    """Scroll the page via Camofox."""
+    """通过 Camofox 滚动页面。"""
     try:
         session = _get_session(task_id)
         if not session["tab_id"]:
@@ -397,7 +395,7 @@ def camofox_scroll(direction: str, task_id: Optional[str] = None) -> str:
 
 
 def camofox_back(task_id: Optional[str] = None) -> str:
-    """Navigate back via Camofox."""
+    """通过 Camofox 后退导航。"""
     try:
         session = _get_session(task_id)
         if not session["tab_id"]:
@@ -413,7 +411,7 @@ def camofox_back(task_id: Optional[str] = None) -> str:
 
 
 def camofox_press(key: str, task_id: Optional[str] = None) -> str:
-    """Press a keyboard key via Camofox."""
+    """通过 Camofox 按下键盘按键。"""
     try:
         session = _get_session(task_id)
         if not session["tab_id"]:
@@ -429,7 +427,7 @@ def camofox_press(key: str, task_id: Optional[str] = None) -> str:
 
 
 def camofox_close(task_id: Optional[str] = None) -> str:
-    """Close the browser session via Camofox."""
+    """通过 Camofox 关闭浏览器会话。"""
     try:
         session = _drop_session(task_id)
         if not session:
@@ -444,10 +442,10 @@ def camofox_close(task_id: Optional[str] = None) -> str:
 
 
 def camofox_get_images(task_id: Optional[str] = None) -> str:
-    """Get images on the current page via Camofox.
+    """通过 Camofox 获取当前页面的图片。
 
-    Extracts image information from the accessibility tree snapshot,
-    since Camofox does not expose a dedicated /images endpoint.
+    从无障碍树快照中提取图片信息，
+    因为 Camofox 没有暴露专用的 /images 端点。
     """
     try:
         session = _get_session(task_id)
@@ -462,9 +460,9 @@ def camofox_get_images(task_id: Optional[str] = None) -> str:
         )
         snapshot = data.get("snapshot", "")
 
-        # Parse img elements from the accessibility tree.
-        # Format: img "alt text" or img "alt text" [eN]
-        # URLs appear on /url: lines following img entries
+        # 从无障碍树中解析 img 元素。
+        # 格式: img "alt text" 或 img "alt text" [eN]
+        # URL 出现在 img 条目后的 /url: 行上
         images = []
         lines = snapshot.split("\n")
         for i, line in enumerate(lines):
@@ -472,7 +470,7 @@ def camofox_get_images(task_id: Optional[str] = None) -> str:
             if stripped.startswith(("- img ", "img ")):
                 alt_match = re.search(r'img\s+"([^"]*)"', stripped)
                 alt = alt_match.group(1) if alt_match else ""
-                # Look for URL on the next line
+                # 在下一行查找 URL
                 src = ""
                 if i + 1 < len(lines):
                     url_match = re.search(r'/url:\s*(\S+)', lines[i + 1].strip())
@@ -492,19 +490,19 @@ def camofox_get_images(task_id: Optional[str] = None) -> str:
 
 def camofox_vision(question: str, annotate: bool = False,
                    task_id: Optional[str] = None) -> str:
-    """Take a screenshot and analyze it with vision AI via Camofox."""
+    """截取屏幕截图并通过视觉 AI 进行分析。"""
     try:
         session = _get_session(task_id)
         if not session["tab_id"]:
             return tool_error("No browser session. Call browser_navigate first.", success=False)
 
-        # Get screenshot as binary PNG
+        # 获取 PNG 格式的截图二进制数据
         resp = _get_raw(
             f"/tabs/{session['tab_id']}/screenshot",
             params={"userId": session["user_id"]},
         )
 
-        # Save screenshot to cache
+        # 保存截图到缓存
         from hermes_constants import get_hermes_home
         screenshots_dir = get_hermes_home() / "browser_screenshots"
         screenshots_dir.mkdir(parents=True, exist_ok=True)
@@ -513,10 +511,10 @@ def camofox_vision(question: str, annotate: bool = False,
         with open(screenshot_path, "wb") as f:
             f.write(resp.content)
 
-        # Encode for vision LLM
+        # 编码为 base64 供视觉 LLM 使用
         img_b64 = base64.b64encode(resp.content).decode("utf-8")
 
-        # Also get annotated snapshot if requested
+        # 如果需要，同时获取带注释的快照
         annotation_context = ""
         if annotate:
             try:
@@ -528,13 +526,13 @@ def camofox_vision(question: str, annotate: bool = False,
             except Exception:
                 pass
 
-        # Redact secrets from annotation context before sending to vision LLM.
-        # The screenshot image itself cannot be redacted, but at least the
-        # text-based accessibility tree snippet won't leak secret values.
+        # 在发送给视觉 LLM 之前，从注释上下文中脱敏密钥。
+        # 截图图像本身无法脱敏，但至少基于文本的
+        # 无障碍树片段不会泄露密钥值。
         from agent.redact import redact_sensitive_text
         annotation_context = redact_sensitive_text(annotation_context)
 
-        # Send to vision LLM
+        # 发送给视觉 LLM
         from agent.auxiliary_client import call_llm
 
         vision_prompt = (
@@ -567,7 +565,7 @@ def camofox_vision(question: str, annotate: bool = False,
         )
         analysis = (response.choices[0].message.content or "").strip() if response.choices else ""
 
-        # Redact secrets the vision LLM may have read from the screenshot.
+        # 脱敏视觉 LLM 可能从截图中读取到的密钥。
         from agent.redact import redact_sensitive_text
         analysis = redact_sensitive_text(analysis)
 
@@ -581,10 +579,10 @@ def camofox_vision(question: str, annotate: bool = False,
 
 
 def camofox_console(clear: bool = False, task_id: Optional[str] = None) -> str:
-    """Get console output — limited support in Camofox.
+    """获取控制台输出 — 在 Camofox 中支持有限。
 
-    Camofox does not expose browser console logs via its REST API.
-    Returns an empty result with a note.
+    Camofox 不通过其 REST API 暴露浏览器控制台日志。
+    返回空结果并附带说明。
     """
     return json.dumps({
         "success": True,

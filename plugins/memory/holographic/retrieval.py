@@ -1,7 +1,7 @@
-"""Hybrid keyword/BM25 retrieval for the memory store.
+"""记忆存储的混合关键词/BM25 检索。
 
-Ported from KIK memory_agent.py — combines FTS5 full-text search with
-Jaccard similarity reranking and trust-weighted scoring.
+移植自 KIK memory_agent.py——结合 FTS5 全文搜索与
+Jaccard 相似度重排序和信任加权评分。
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ except ImportError:
 
 
 class FactRetriever:
-    """Multi-strategy fact retrieval with trust-weighted scoring."""
+    """基于信任加权评分的多策略事实检索。"""
 
     def __init__(
         self,
@@ -35,7 +35,7 @@ class FactRetriever:
         self.half_life = temporal_decay_half_life
         self.hrr_dim = hrr_dim
 
-        # Auto-redistribute weights if numpy unavailable
+        # 如果 numpy 不可用，自动重新分配权重
         if hrr_weight > 0 and not hrr._HAS_NUMPY:
             fts_weight = 0.6
             jaccard_weight = 0.4
@@ -52,23 +52,23 @@ class FactRetriever:
         min_trust: float = 0.3,
         limit: int = 10,
     ) -> list[dict]:
-        """Hybrid search: FTS5 candidates → Jaccard rerank → trust weighting.
+        """混合搜索：FTS5 候选 → Jaccard 重排序 → 信任加权。
 
-        Pipeline:
-        1. FTS5 search: Get limit*3 candidates from SQLite full-text search
-        2. Jaccard boost: Token overlap between query and fact content
-        3. Trust weighting: final_score = relevance * trust_score
-        4. Temporal decay (optional): decay = 0.5^(age_days / half_life)
+        流水线：
+        1. FTS5 搜索：从 SQLite 全文搜索获取 limit*3 个候选
+        2. Jaccard 提升：查询与事实内容之间的 token 重叠度
+        3. 信任加权：final_score = 相关度 * trust_score
+        4. 时间衰减（可选）：decay = 0.5^(age_days / half_life)
 
-        Returns list of dicts with fact data + 'score' field, sorted by score desc.
+        返回包含事实数据和 'score' 字段的字典列表，按分数降序排列。
         """
-        # Stage 1: Get FTS5 candidates (more than limit for reranking headroom)
+        # 阶段 1：获取 FTS5 候选（多于 limit 以提供重排序空间）
         candidates = self._fts_candidates(query, category, min_trust, limit * 3)
 
         if not candidates:
             return []
 
-        # Stage 2: Rerank with Jaccard + trust + optional decay
+        # 阶段 2：使用 Jaccard + 信任 + 可选衰减重排序
         query_tokens = self._tokenize(query)
         scored = []
 
@@ -103,10 +103,10 @@ class FactRetriever:
             fact["score"] = score
             scored.append(fact)
 
-        # Sort by score descending, return top limit
+        # 按分数降序排列，返回前 limit 个
         scored.sort(key=lambda x: x["score"], reverse=True)
         results = scored[:limit]
-        # Strip raw HRR bytes — callers expect JSON-serializable dicts
+        # 剥离原始 HRR 字节——调用者期望 JSON 可序列化的字典
         for fact in results:
             fact.pop("hrr_vector", None)
         return results
@@ -117,26 +117,26 @@ class FactRetriever:
         category: str | None = None,
         limit: int = 10,
     ) -> list[dict]:
-        """Compositional entity query using HRR algebra.
+        """使用 HRR 代数的组合实体查询。
 
-        Unbinds entity from memory bank to extract associated content.
-        This is NOT keyword search — it uses algebraic structure to find facts
-        where the entity plays a structural role.
+        从记忆库中解绑实体以提取关联内容。
+        这不是关键词搜索——而是使用代数结构查找
+        实体在其中起结构性角色的事实。
 
-        Falls back to FTS5 search if numpy unavailable.
+        如果 numpy 不可用则回退到 FTS5 搜索。
         """
         if not hrr._HAS_NUMPY:
-            # Fallback to keyword search on entity name
+            # 回退到对实体名称的关键词搜索
             return self.search(entity, category=category, limit=limit)
 
         conn = self.store._conn
 
-        # Encode entity as role-bound vector
+        # 将实体编码为角色绑定向量
         role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
         entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
         probe_key = hrr.bind(entity_vec, role_entity)
 
-        # Try category-specific bank first, then all facts
+        # 先尝试特定类别的记忆库，然后所有事实
         if category:
             bank_name = f"cat:{category}"
             bank_row = conn.execute(
@@ -146,12 +146,12 @@ class FactRetriever:
             if bank_row:
                 bank_vec = hrr.bytes_to_phases(bank_row["vector"])
                 extracted = hrr.unbind(bank_vec, probe_key)
-                # Use extracted signal to score individual facts
+                # 使用提取的信号对各个事实评分
                 return self._score_facts_by_vector(
                     extracted, category=category, limit=limit
                 )
 
-        # Score against individual fact vectors directly
+        # 直接对各个事实向量评分
         where = "WHERE hrr_vector IS NOT NULL"
         params: list = []
         if category:
@@ -170,16 +170,16 @@ class FactRetriever:
         ).fetchall()
 
         if not rows:
-            # Final fallback: keyword search
+            # 最终回退：关键词搜索
             return self.search(entity, category=category, limit=limit)
 
         scored = []
         for row in rows:
             fact = dict(row)
             fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
-            # Unbind probe key from fact to see if entity is structurally present
+            # 从事实中解绑探测键，查看实体是否在结构上存在
             residual = hrr.unbind(fact_vec, probe_key)
-            # Compare residual against content signal
+            # 将残差与内容信号比较
             role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
             content_vec = hrr.bind(hrr.encode_text(fact["content"], self.hrr_dim), role_content)
             sim = hrr.similarity(residual, content_vec)
@@ -195,23 +195,23 @@ class FactRetriever:
         category: str | None = None,
         limit: int = 10,
     ) -> list[dict]:
-        """Discover facts that share structural connections with an entity.
+        """发现与某实体有结构连接的事实。
 
-        Unlike probe (which finds facts *about* an entity), related finds
-        facts that are connected through shared context — e.g., other entities
-        mentioned alongside this one, or content that overlaps structurally.
+        与 probe（查找*关于*实体的事实）不同，related 查找
+        通过共享上下文连接的事实——例如与该实体一起提到的
+        其他实体，或在结构上重叠的内容。
 
-        Falls back to FTS5 search if numpy unavailable.
+        如果 numpy 不可用则回退到 FTS5 搜索。
         """
         if not hrr._HAS_NUMPY:
             return self.search(entity, category=category, limit=limit)
 
         conn = self.store._conn
 
-        # Encode entity as a bare atom (not role-bound — we want ANY structural match)
+        # 将实体编码为裸原子（非角色绑定——我们需要任何结构匹配）
         entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
 
-        # Get all facts with vectors
+        # 获取所有带向量的事实
         where = "WHERE hrr_vector IS NOT NULL"
         params: list = []
         if category:
@@ -232,23 +232,23 @@ class FactRetriever:
         if not rows:
             return self.search(entity, category=category, limit=limit)
 
-        # Score each fact by how much the entity's atom appears in its vector
-        # This catches both role-bound entity matches AND content word matches
+        # 通过实体原子在事实向量中出现的程度对每个事实评分
+        # 这同时捕获角色绑定的实体匹配和内容词匹配
         scored = []
         for row in rows:
             fact = dict(row)
             fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
 
-            # Check structural similarity: unbind entity from fact
+            # 检查结构相似性：从事实中解绑实体
             residual = hrr.unbind(fact_vec, entity_vec)
-            # A high-similarity residual to ANY known role vector means this entity
-            # plays a structural role in the fact
+            # 与已知角色向量的高相似度残差意味着该实体
+            # 在事实中起结构性角色
             role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
             role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
 
             entity_role_sim = hrr.similarity(residual, role_entity)
             content_role_sim = hrr.similarity(residual, role_content)
-            # Take the max — entity could appear in either role
+            # 取最大值——实体可能出现在任一角色中
             best_sim = max(entity_role_sim, content_role_sim)
 
             fact["score"] = (best_sim + 1.0) / 2.0 * fact["trust_score"]
@@ -263,34 +263,34 @@ class FactRetriever:
         category: str | None = None,
         limit: int = 10,
     ) -> list[dict]:
-        """Multi-entity compositional query — vector-space JOIN.
+        """多实体组合查询——向量空间 JOIN。
 
-        Given multiple entities, algebraically intersects their structural
-        connections to find facts related to ALL of them simultaneously.
-        This is compositional reasoning that no embedding DB can do.
+        给定多个实体，通过代数交集它们的结构连接，
+        找到同时与所有实体相关的事实。
+        这是任何嵌入数据库都无法做到的组合推理。
 
-        Example: reason(["peppi", "backend"]) finds facts where peppi AND
-        backend both play structural roles — without keyword matching.
+        示例：reason(["peppi", "backend"]) 查找 peppi 和
+        backend 都起结构性角色的事实——不使用关键词匹配。
 
-        Falls back to FTS5 search if numpy unavailable.
+        如果 numpy 不可用则回退到 FTS5 搜索。
         """
         if not hrr._HAS_NUMPY or not entities:
-            # Fallback: search with all entities as keywords
+            # 回退：将所有实体作为关键词搜索
             query = " ".join(entities)
             return self.search(query, category=category, limit=limit)
 
         conn = self.store._conn
         role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
 
-        # For each entity, compute what the bank "remembers" about it
-        # by unbinding entity+role from each fact vector
+        # 对于每个实体，通过从每个事实向量中解绑 entity+role
+        # 来计算记忆库对它的"记忆"
         entity_residuals = []
         for entity in entities:
             entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
             probe_key = hrr.bind(entity_vec, role_entity)
             entity_residuals.append(probe_key)
 
-        # Get all facts with vectors
+        # 获取所有带向量的事实
         where = "WHERE hrr_vector IS NOT NULL"
         params: list = []
         if category:
@@ -312,9 +312,9 @@ class FactRetriever:
             query = " ".join(entities)
             return self.search(query, category=category, limit=limit)
 
-        # Score each fact by how much EACH entity is structurally present.
-        # A fact scores high only if ALL entities have structural presence
-        # (AND semantics via min, vs OR which would use mean/max).
+        # 通过每个实体的结构存在程度对每个事实评分。
+        # 仅当所有实体都有结构存在时事实才得高分
+        # （通过 min 实现 AND 语义，而非 OR 使用 mean/max）。
         role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
 
         scored = []
@@ -341,21 +341,20 @@ class FactRetriever:
         threshold: float = 0.3,
         limit: int = 10,
     ) -> list[dict]:
-        """Find potentially contradictory facts via entity overlap + content divergence.
+        """通过实体重叠 + 内容差异查找潜在矛盾的事实。
 
-        Two facts contradict when they share entities (same subject) but have
-        low content-vector similarity (different claims). This is automated
-        memory hygiene — no other memory system does this.
+        两个事实在共享实体（相同主题）但内容向量相似度低（不同主张）
+        时存在矛盾。这是自动化的记忆卫生——没有其他记忆系统能做到。
 
-        Returns pairs of facts with a contradiction score.
-        Falls back to empty list if numpy unavailable.
+        返回带有矛盾分数的事实对。
+        如果 numpy 不可用则返回空列表。
         """
         if not hrr._HAS_NUMPY:
             return []
 
         conn = self.store._conn
 
-        # Get all facts with vectors and their linked entities
+        # 获取所有带向量的事实 and their linked entities
         where = "WHERE f.hrr_vector IS NOT NULL"
         params: list = []
         if category:
@@ -375,15 +374,15 @@ class FactRetriever:
         if len(rows) < 2:
             return []
 
-        # Guard against O(n²) explosion on large fact stores.
-        # At 500 facts, that's ~125K comparisons — acceptable.
-        # Above that, only check the most recently updated facts.
+        # 防止在大型事实存储上的 O(n²) 爆炸。
+        # 500 个事实约 ~125K 次比较——可以接受。
+        # 超过此数量则只检查最近更新的事实。
         _MAX_CONTRADICT_FACTS = 500
         if len(rows) > _MAX_CONTRADICT_FACTS:
             rows = sorted(rows, key=lambda r: r["updated_at"] or r["created_at"], reverse=True)
             rows = rows[:_MAX_CONTRADICT_FACTS]
 
-        # Build entity sets per fact
+        # 为每个事实构建实体集
         fact_entities: dict[int, set[str]] = {}
         for row in rows:
             fid = row["fact_id"]
@@ -397,7 +396,7 @@ class FactRetriever:
             ).fetchall()
             fact_entities[fid] = {r["name"].lower() for r in entity_rows}
 
-        # Compare all pairs: high entity overlap + low content similarity = contradiction
+        # 比较所有对：高实体重叠 + 低内容相似度 = 矛盾
         facts = [dict(r) for r in rows]
         contradictions = []
 
@@ -410,23 +409,23 @@ class FactRetriever:
                 if not ents1 or not ents2:
                     continue
 
-                # Entity overlap (Jaccard)
+                # 实体重叠（Jaccard）
                 entity_overlap = len(ents1 & ents2) / len(ents1 | ents2) if (ents1 | ents2) else 0.0
 
                 if entity_overlap < 0.3:
-                    continue  # Not enough entity overlap to be contradictory
+                    continue  # 实体重叠不足以构成矛盾
 
-                # Content similarity via HRR vectors
+                # 通过 HRR 向量计算内容相似度
                 v1 = hrr.bytes_to_phases(f1["hrr_vector"])
                 v2 = hrr.bytes_to_phases(f2["hrr_vector"])
                 content_sim = hrr.similarity(v1, v2)
 
-                # High entity overlap + low content similarity = potential contradiction
-                # contradiction_score: higher = more contradictory
+                # 高实体重叠 + 低内容相似度 = 潜在矛盾
+                # contradiction_score：越高 = 越矛盾
                 contradiction_score = entity_overlap * (1.0 - (content_sim + 1.0) / 2.0)
 
                 if contradiction_score >= threshold:
-                    # Strip hrr_vector from output (not JSON serializable)
+                    # 从输出中剥离 hrr_vector（不可 JSON 序列化）
                     f1_clean = {k: v for k, v in f1.items() if k != "hrr_vector"}
                     f2_clean = {k: v for k, v in f2.items() if k != "hrr_vector"}
                     contradictions.append({
@@ -447,7 +446,7 @@ class FactRetriever:
         category: str | None = None,
         limit: int = 10,
     ) -> list[dict]:
-        """Score facts by similarity to a target vector."""
+        """按与目标向量的相似度对事实评分。"""
         conn = self.store._conn
 
         where = "WHERE hrr_vector IS NOT NULL"
@@ -485,15 +484,15 @@ class FactRetriever:
         min_trust: float,
         limit: int,
     ) -> list[dict]:
-        """Get raw FTS5 candidates from the store.
+        """从存储中获取原始 FTS5 候选。
 
-        Uses the store's database connection directly for FTS5 MATCH
-        with rank scoring. Normalizes FTS5 rank to [0, 1] range.
+        直接使用存储的数据库连接进行 FTS5 MATCH
+        和排名评分。将 FTS5 排名标准化到 [0, 1] 范围。
         """
         conn = self.store._conn
 
-        # Build query - FTS5 rank is negative (lower = better match)
-        # We need to join facts_fts with facts to get all columns
+        # 构建查询——FTS5 rank 为负数（越低 = 匹配越好）
+        # 需要将 facts_fts 与 facts 连接以获取所有列
         params: list = []
         where_clauses = ["facts_fts MATCH ?"]
         params.append(query)
@@ -520,14 +519,14 @@ class FactRetriever:
         try:
             rows = conn.execute(sql, params).fetchall()
         except Exception:
-            # FTS5 MATCH can fail on malformed queries — fall back to empty
+            # FTS5 MATCH 在格式错误的查询上可能失败——回退到空结果
             return []
 
         if not rows:
             return []
 
-        # Normalize FTS5 rank: rank is negative, lower = better
-        # Convert to positive score in [0, 1] range
+        # 标准化 FTS5 排名：rank 为负数，越低 = 越好
+        # 转换为 [0, 1] 范围内的正分数
         raw_ranks = [abs(row["fts_rank_raw"]) for row in rows]
         max_rank = max(raw_ranks) if raw_ranks else 1.0
         max_rank = max(max_rank, 1e-6)  # avoid div by zero
@@ -543,13 +542,13 @@ class FactRetriever:
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:
-        """Simple whitespace tokenization with lowercasing.
+        """简单的空格分词加小写化。
 
-        Strips common punctuation. No stemming/lemmatization (Phase 1).
+        去除常见标点。不进行词干提取/词形还原（第一阶段）。
         """
         if not text:
             return set()
-        # Split on whitespace, lowercase, strip punctuation
+        # 按空格分割、小写化、去除标点
         tokens = set()
         for word in text.lower().split():
             cleaned = word.strip(".,;:!?\"'()[]{}#@<>")
@@ -559,7 +558,7 @@ class FactRetriever:
 
     @staticmethod
     def _jaccard_similarity(set_a: set, set_b: set) -> float:
-        """Jaccard similarity coefficient: |A ∩ B| / |A ∪ B|."""
+        """Jaccard 相似系数：|A ∩ B| / |A ∪ B|。"""
         if not set_a or not set_b:
             return 0.0
         intersection = len(set_a & set_b)
@@ -567,16 +566,16 @@ class FactRetriever:
         return intersection / union if union > 0 else 0.0
 
     def _temporal_decay(self, timestamp_str: str | None) -> float:
-        """Exponential decay: 0.5^(age_days / half_life_days).
+        """指数衰减：0.5^(age_days / half_life_days)。
 
-        Returns 1.0 if decay is disabled or timestamp is missing.
+        如果衰减被禁用或时间戳缺失则返回 1.0。
         """
         if not self.half_life or not timestamp_str:
             return 1.0
 
         try:
             if isinstance(timestamp_str, str):
-                # Parse ISO format timestamp from SQLite
+                # 从 SQLite 解析 ISO 格式时间戳
                 ts = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
             else:
                 ts = timestamp_str

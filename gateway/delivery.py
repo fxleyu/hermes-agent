@@ -1,11 +1,11 @@
 """
-Delivery routing for cron job outputs and agent responses.
+定时任务输出和代理响应的投递路由。
 
-Routes messages to the appropriate destination based on:
-- Explicit targets (e.g., "telegram:123456789")
-- Platform home channels (e.g., "telegram" → home channel)
-- Origin (back to where the job was created)
-- Local (always saved to files)
+根据以下条件将消息路由到适当的目标：
+- 显式目标（例如 "telegram:123456789"）
+- 平台主频道（例如 "telegram" → 主频道）
+- 来源（返回到任务创建的位置）
+- 本地（始终保存到文件）
 """
 
 import logging
@@ -28,30 +28,30 @@ from .session import SessionSource
 @dataclass
 class DeliveryTarget:
     """
-    A single delivery target.
-    
-    Represents where a message should be sent:
-    - "origin" → back to source
-    - "local" → save to local files
-    - "telegram" → Telegram home channel
-    - "telegram:123456" → specific Telegram chat
+    单个投递目标。
+
+    表示消息应发送到哪里：
+    - "origin" → 返回来源
+    - "local" → 保存到本地文件
+    - "telegram" → Telegram 主频道
+    - "telegram:123456" → 指定的 Telegram 聊天
     """
     platform: Platform
-    chat_id: Optional[str] = None  # None means use home channel
+    chat_id: Optional[str] = None  # None 表示使用主频道
     thread_id: Optional[str] = None
     is_origin: bool = False
-    is_explicit: bool = False  # True if chat_id was explicitly specified
+    is_explicit: bool = False  # 为 True 表示 chat_id 是显式指定的
     
     @classmethod
     def parse(cls, target: str, origin: Optional[SessionSource] = None) -> "DeliveryTarget":
         """
-        Parse a delivery target string.
-        
-        Formats:
-        - "origin" → back to source
-        - "local" → local files only
-        - "telegram" → Telegram home channel
-        - "telegram:123456" → specific Telegram chat
+        解析投递目标字符串。
+
+        支持格式：
+        - "origin" → 返回来源
+        - "local" → 仅本地文件
+        - "telegram" → Telegram 主频道
+        - "telegram:123456" → 指定的 Telegram 聊天
         """
         target = target.strip().lower()
         
@@ -64,13 +64,13 @@ class DeliveryTarget:
                     is_origin=True,
                 )
             else:
-                # Fallback to local if no origin
+                # 没有来源时兜底到本地
                 return cls(platform=Platform.LOCAL, is_origin=True)
         
         if target == "local":
             return cls(platform=Platform.LOCAL)
         
-        # Check for platform:chat_id or platform:chat_id:thread_id format
+        # 检查 platform:chat_id 或 platform:chat_id:thread_id 格式
         if ":" in target:
             parts = target.split(":", 2)
             platform_str = parts[0]
@@ -80,10 +80,10 @@ class DeliveryTarget:
                 platform = Platform(platform_str)
                 return cls(platform=platform, chat_id=chat_id, thread_id=thread_id, is_explicit=True)
             except ValueError:
-                # Unknown platform, treat as local
+                # 未知平台，当作本地处理
                 return cls(platform=Platform.LOCAL)
         
-        # Just a platform name (use home channel)
+        # 仅平台名称（使用主频道）
         try:
             platform = Platform(target)
             return cls(platform=platform)
@@ -92,7 +92,7 @@ class DeliveryTarget:
             return cls(platform=Platform.LOCAL)
     
     def to_string(self) -> str:
-        """Convert back to string format."""
+        """转换回字符串格式。"""
         if self.is_origin:
             return "origin"
         if self.platform == Platform.LOCAL:
@@ -106,19 +106,18 @@ class DeliveryTarget:
 
 class DeliveryRouter:
     """
-    Routes messages to appropriate destinations.
-    
-    Handles the logic of resolving delivery targets and dispatching
-    messages to the right platform adapters.
+    将消息路由到适当目标。
+
+    处理投递目标的解析和消息分发到正确的平台适配器的逻辑。
     """
-    
+
     def __init__(self, config: GatewayConfig, adapters: Dict[Platform, Any] = None):
         """
-        Initialize the delivery router.
-        
-        Args:
-            config: Gateway configuration
-            adapters: Dict mapping platforms to their adapter instances
+        初始化投递路由器。
+
+        参数：
+            config: 网关配置
+            adapters: 平台到其适配器实例的映射字典
         """
         self.config = config
         self.adapters = adapters or {}
@@ -133,17 +132,17 @@ class DeliveryRouter:
         metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        Deliver content to all specified targets.
-        
-        Args:
-            content: The message/output to deliver
-            targets: List of delivery targets
-            job_id: Optional job ID (for cron jobs)
-            job_name: Optional job name
-            metadata: Additional metadata to include
-        
-        Returns:
-            Dict with delivery results per target
+        向所有指定目标投递内容。
+
+        参数：
+            content: 要投递的消息/输出
+            targets: 投递目标列表
+            job_id: 可选的任务 ID（用于定时任务）
+            job_name: 可选的任务名称
+            metadata: 附加的元数据
+
+        返回：
+            每个目标的投递结果字典
         """
         results = {}
         
@@ -173,7 +172,7 @@ class DeliveryRouter:
         job_name: Optional[str],
         metadata: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        """Save content to local files."""
+        """将内容保存到本地文件。"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         if job_id:
@@ -183,7 +182,7 @@ class DeliveryRouter:
         
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Build the output document
+        # 构建输出文档
         lines = []
         if job_name:
             lines.append(f"# {job_name}")
@@ -213,7 +212,7 @@ class DeliveryRouter:
         }
     
     def _save_full_output(self, content: str, job_id: str) -> Path:
-        """Save full cron output to disk and return the file path."""
+        """将完整的定时任务输出保存到磁盘并返回文件路径。"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_dir = get_hermes_home() / "cron" / "output"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -227,7 +226,7 @@ class DeliveryRouter:
         content: str,
         metadata: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        """Deliver content to a messaging platform."""
+        """将内容投递到消息平台。"""
         adapter = self.adapters.get(target.platform)
         
         if not adapter:
@@ -236,7 +235,7 @@ class DeliveryRouter:
         if not target.chat_id:
             raise ValueError(f"No chat ID for {target.platform.value} delivery")
         
-        # Guard: truncate oversized cron output to stay within platform limits
+        # 安全措施：截断过大的定时任务输出以保持在平台限制内
         if len(content) > MAX_PLATFORM_OUTPUT:
             job_id = (metadata or {}).get("job_id", "unknown")
             saved_path = self._save_full_output(content, job_id)

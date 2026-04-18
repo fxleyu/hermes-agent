@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Build the Hermes Skills Index — a centralized JSON catalog of all skills.
+"""构建 Hermes 技能索引 — 所有技能的集中式 JSON 目录。
 
-This script crawls every skill source (skills.sh, GitHub taps, official,
-clawhub, lobehub, claude-marketplace) and writes a JSON index with resolved
-GitHub paths. The index is served as a static file on the docs site so that
-`hermes skills search/install` can use it without hitting the GitHub API.
+此脚本爬取每个技能来源（skills.sh、GitHub taps、official、
+clawhub、lobehub、claude-marketplace），并生成一个带有解析后
+GitHub 路径的 JSON 索引。该索引作为静态文件发布在文档站点上，
+使 `hermes skills search/install` 可以在不调用 GitHub API 的情况下使用。
 
-Usage:
-    # Local (uses gh CLI or GITHUB_TOKEN for auth)
+用法:
+    # 本地（使用 gh CLI 或 GITHUB_TOKEN 进行认证）
     python scripts/build_skills_index.py
 
-    # CI (set GITHUB_TOKEN as secret)
+    # CI（将 GITHUB_TOKEN 设为 secret）
     GITHUB_TOKEN=ghp_... python scripts/build_skills_index.py
 
-Output: website/static/api/skills-index.json
+输出: website/static/api/skills-index.json
 """
 
 import json
@@ -24,11 +24,11 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
-# Allow importing from repo root
+# 允许从仓库根目录导入
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 
-# Ensure HERMES_HOME is set (needed by tools/skills_hub.py imports)
+# 确保 HERMES_HOME 已设置（tools/skills_hub.py 的导入需要）
 os.environ.setdefault("HERMES_HOME", os.path.join(os.path.expanduser("~"), ".hermes"))
 
 from tools.skills_hub import (
@@ -49,7 +49,7 @@ INDEX_VERSION = 1
 
 
 def _meta_to_dict(meta: SkillMeta) -> dict:
-    """Convert a SkillMeta to a serializable dict."""
+    """将 SkillMeta 转换为可序列化的字典。"""
     return {
         "name": meta.name,
         "description": meta.description,
@@ -64,7 +64,7 @@ def _meta_to_dict(meta: SkillMeta) -> dict:
 
 
 def crawl_source(source, source_name: str, limit: int) -> list:
-    """Crawl a single source and return skill dicts."""
+    """爬取单个来源并返回技能字典列表。"""
     print(f"  Crawling {source_name}...", flush=True)
     start = time.time()
     try:
@@ -79,7 +79,7 @@ def crawl_source(source, source_name: str, limit: int) -> list:
 
 
 def crawl_skills_sh(source: SkillsShSource) -> list:
-    """Crawl skills.sh using popular queries for broad coverage."""
+    """使用热门查询词爬取 skills.sh，以获得广泛覆盖。"""
     print("  Crawling skills.sh (popular queries)...", flush=True)
     start = time.time()
 
@@ -111,7 +111,7 @@ def crawl_skills_sh(source: SkillsShSource) -> list:
 
 
 def _fetch_repo_tree(repo: str, auth: GitHubAuth) -> list:
-    """Fetch the recursive tree for a repo. Returns list of tree entries."""
+    """获取仓库的递归文件树。返回文件树条目列表。"""
     headers = auth.get_headers()
     try:
         resp = httpx.get(
@@ -138,15 +138,15 @@ def _fetch_repo_tree(repo: str, auth: GitHubAuth) -> list:
 
 
 def batch_resolve_paths(skills: list, auth: GitHubAuth) -> list:
-    """Resolve GitHub paths for skills.sh entries using batch tree lookups.
+    """使用批量文件树查找为 skills.sh 条目解析 GitHub 路径。
 
-    Instead of resolving each skill individually (N×M API calls), we:
-    1. Group skills by repo
-    2. Fetch one tree per repo (2 API calls per repo)
-    3. Find all SKILL.md files in the tree
-    4. Match skills to their resolved paths
+    不再逐个解析每个技能（N×M 次 API 调用），而是：
+    1. 按仓库分组技能
+    2. 每个仓库只获取一次文件树（每仓库 2 次 API 调用）
+    3. 在文件树中查找所有 SKILL.md 文件
+    4. 将技能与其解析后的路径进行匹配
     """
-    # Filter to skills.sh entries that need resolution
+    # 筛选需要路径解析的 skills.sh 条目
     skills_sh = [s for s in skills if s["source"] in ("skills.sh", "skills-sh")]
     if not skills_sh:
         return skills
@@ -155,7 +155,7 @@ def batch_resolve_paths(skills: list, auth: GitHubAuth) -> list:
           flush=True)
     start = time.time()
 
-    # Group by repo
+    # 按仓库分组
     by_repo: dict[str, list] = defaultdict(list)
     for s in skills_sh:
         repo = s.get("repo", "")
@@ -166,14 +166,14 @@ def batch_resolve_paths(skills: list, auth: GitHubAuth) -> list:
 
     resolved_count = 0
 
-    # Fetch trees in parallel (up to 6 concurrent)
+    # 并行获取文件树（最多 6 个并发）
     def _resolve_repo(repo: str, entries: list):
         tree = _fetch_repo_tree(repo, auth)
         if not tree:
             return 0
 
-        # Find all SKILL.md paths in this repo
-        skill_paths = {}  # skill_dir_name -> full_path
+        # 查找此仓库中所有 SKILL.md 路径
+        skill_paths = {}  # 技能目录名 -> 完整路径
         for item in tree:
             if item.get("type") != "blob":
                 continue
@@ -183,25 +183,25 @@ def batch_resolve_paths(skills: list, auth: GitHubAuth) -> list:
                 dir_name = skill_dir.split("/")[-1]
                 skill_paths[dir_name.lower()] = f"{repo}/{skill_dir}"
 
-                # Also check SKILL.md frontmatter name if we can match by path
-                # For now, just index by directory name
+                # 如果可以通过路径匹配，也可检查 SKILL.md 的 frontmatter name
+                # 目前仅按目录名索引
             elif path == "SKILL.md":
-                # Root-level SKILL.md
+                # 根目录下的 SKILL.md
                 skill_paths["_root_"] = f"{repo}"
 
         count = 0
         for entry in entries:
-            # Try to match the skill's name/path to a tree entry
+            # 尝试将技能的名称/路径匹配到文件树条目
             skill_name = entry.get("name", "").lower()
             skill_path = entry.get("path", "").lower()
             identifier = entry.get("identifier", "")
 
-            # Extract the skill token from the identifier
-            # e.g. "skills-sh/d4vinci/scrapling/scrapling-official" -> "scrapling-official"
+            # 从标识符中提取技能令牌
+            # 例如 "skills-sh/d4vinci/scrapling/scrapling-official" -> "scrapling-official"
             parts = identifier.replace("skills-sh/", "").replace("skills.sh/", "")
             skill_token = parts.split("/")[-1].lower() if "/" in parts else ""
 
-            # Try matching in order of likelihood
+            # 按匹配可能性从高到低尝试
             for candidate in [skill_token, skill_name, skill_path]:
                 if not candidate:
                     continue
@@ -211,7 +211,7 @@ def batch_resolve_paths(skills: list, auth: GitHubAuth) -> list:
                     count += 1
                     break
             else:
-                # Try fuzzy: skill_token with common transformations
+                # 尝试模糊匹配: 对 skill_token 进行常见变换
                 for tree_name, tree_path in skill_paths.items():
                     if (skill_token and (
                         tree_name.replace("-", "") == skill_token.replace("-", "")
@@ -264,10 +264,10 @@ def main():
 
     all_skills: list[dict] = []
 
-    # Crawl skills.sh
+    # 爬取 skills.sh
     all_skills.extend(crawl_skills_sh(skills_sh_source))
 
-    # Crawl other sources in parallel
+    # 并行爬取其他来源
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures = {}
         for name, source in sources.items():
@@ -278,10 +278,10 @@ def main():
             except Exception as e:
                 print(f"  Error: {e}", file=sys.stderr)
 
-    # Batch resolve GitHub paths for skills.sh entries
+    # 批量解析 skills.sh 条目的 GitHub 路径
     all_skills = batch_resolve_paths(all_skills, auth)
 
-    # Deduplicate by identifier
+    # 按标识符去重
     seen: dict[str, dict] = {}
     for skill in all_skills:
         key = skill["identifier"]
@@ -289,13 +289,13 @@ def main():
             seen[key] = skill
     deduped = list(seen.values())
 
-    # Sort
+    # 排序
     source_order = {"official": 0, "skills-sh": 1, "skills.sh": 1,
                     "github": 2, "well-known": 3, "clawhub": 4,
                     "claude-marketplace": 5, "lobehub": 6}
     deduped.sort(key=lambda s: (source_order.get(s["source"], 99), s["name"]))
 
-    # Build index
+    # 构建索引
     index = {
         "version": INDEX_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),

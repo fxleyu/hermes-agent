@@ -1,18 +1,18 @@
 """
-Feishu/Lark platform adapter.
+飞书/Lark 平台适配器。
 
-Supports:
-- WebSocket long connection and Webhook transport
-- Direct-message and group @mention-gated text receive/send
-- Inbound image/file/audio/media caching
-- Gateway allowlist integration via FEISHU_ALLOWED_USERS
-- Persistent dedup state across restarts
-- Per-chat serial message processing (matches openclaw createChatQueue)
-- Persistent ACK emoji reaction on inbound messages
-- Reaction events routed as synthetic text events (matches openclaw)
-- Interactive card button-click events routed as synthetic COMMAND events
-- Webhook anomaly tracking (matches openclaw createWebhookAnomalyTracker)
-- Verification token validation as second auth layer (matches openclaw)
+支持功能：
+- WebSocket 长连接和 Webhook 传输
+- 私聊和群组 @提及消息的接收/发送
+- 入站图片/文件/音频/媒体缓存
+- 通过 FEISHU_ALLOWED_USERS 集成网关白名单
+- 跨重启持久化去重状态
+- 按聊天串行消息处理（匹配 openclaw createChatQueue）
+- 入站消息的持久 ACK 表情反应
+- 反应事件路由为合成文本事件（匹配 openclaw）
+- 交互式卡片按钮点击事件路由为合成 COMMAND 事件
+- Webhook 异常跟踪（匹配 openclaw createWebhookAnomalyTracker）
+- 验证令牌校验作为第二认证层（匹配 openclaw）
 """
 
 from __future__ import annotations
@@ -38,8 +38,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-# aiohttp/websockets are independent optional deps — import outside lark_oapi
-# so they remain available for tests and webhook mode even if lark_oapi is missing.
+# aiohttp/websockets 是独立的可选依赖 —— 在 lark_oapi 之外导入，
+# 使它们在测试和 webhook 模式下即使 lark_oapi 缺失也可用。
 try:
     import aiohttp
     from aiohttp import web
@@ -111,7 +111,7 @@ from hermes_constants import get_hermes_home
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Regex patterns
+# 正则表达式模式
 # ---------------------------------------------------------------------------
 
 _MARKDOWN_HINT_RE = re.compile(
@@ -123,7 +123,7 @@ _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
 # ---------------------------------------------------------------------------
-# Media type sets and upload constants
+# 媒体类型集合和上传常量
 # ---------------------------------------------------------------------------
 
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
@@ -144,7 +144,7 @@ _FEISHU_DOC_UPLOAD_TYPES = {
     ".pptx": "ppt",
 }
 # ---------------------------------------------------------------------------
-# Connection, retry and batching tuning
+# 连接、重试和批处理调优
 # ---------------------------------------------------------------------------
 
 _MAX_TEXT_INJECT_BYTES = 100 * 1024
@@ -160,7 +160,7 @@ _DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 _DEFAULT_WEBHOOK_PORT = 8765
 _DEFAULT_WEBHOOK_PATH = "/feishu/webhook"
 # ---------------------------------------------------------------------------
-# TTL, rate-limit and webhook security constants
+# TTL、速率限制和 Webhook 安全常量
 # ---------------------------------------------------------------------------
 
 _FEISHU_DEDUP_TTL_SECONDS = 24 * 60 * 60          # 24 hours — matches openclaw
@@ -190,7 +190,7 @@ _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent 
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
 _FEISHU_ACK_EMOJI = "OK"
 
-# QR onboarding constants
+# 扫码创建引导常量
 _ONBOARD_ACCOUNTS_URLS = {
     "feishu": "https://accounts.feishu.cn",
     "lark": "https://accounts.larksuite.com",
@@ -203,7 +203,7 @@ _REGISTRATION_PATH = "/oauth/v1/app/registration"
 _ONBOARD_REQUEST_TIMEOUT_S = 10
 
 # ---------------------------------------------------------------------------
-# Fallback display strings
+# 回退显示字符串
 # ---------------------------------------------------------------------------
 
 FALLBACK_POST_TEXT = "[Rich text message]"
@@ -213,7 +213,7 @@ FALLBACK_INTERACTIVE_TEXT = "[Interactive message]"
 FALLBACK_IMAGE_TEXT = "[Image]"
 FALLBACK_ATTACHMENT_TEXT = "[Attachment]"
 # ---------------------------------------------------------------------------
-# Post/card parsing helpers
+# 富文本/卡片解析辅助函数
 # ---------------------------------------------------------------------------
 
 _PREFERRED_LOCALES = ("zh_cn", "en_us")
@@ -315,7 +315,7 @@ class FeishuAdapterSettings:
 
 @dataclass
 class FeishuGroupRule:
-    """Per-group policy rule for controlling which users may interact with the bot."""
+    """控制哪些用户可以与机器人交互的按群策略规则。"""
 
     policy: str  # "open" | "allowlist" | "blacklist" | "admin_only" | "disabled"
     allowlist: set[str] = field(default_factory=set)
@@ -330,7 +330,7 @@ class FeishuBatchState:
 
 
 # ---------------------------------------------------------------------------
-# Markdown rendering helpers
+# Markdown 渲染辅助函数
 # ---------------------------------------------------------------------------
 
 
@@ -393,7 +393,7 @@ def _render_code_block_element(element: Dict[str, Any]) -> str:
 
 
 def _strip_markdown_to_plain_text(text: str) -> str:
-    """Strip markdown formatting to plain text for Feishu text fallbacks.
+    """去除 Markdown 格式为纯文本，用于飞书文本回退。
 
     Delegates common markdown stripping to the shared helper and adds
     Feishu-specific patterns (blockquotes, strikethrough, underline tags,
@@ -411,7 +411,7 @@ def _strip_markdown_to_plain_text(text: str) -> str:
 
 
 def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -> Optional[int]:
-    """Coerce value to int with optional default and minimum constraint."""
+    """将值强制转换为整数，支持可选的默认值和最小值约束。"""
     try:
         parsed = int(value)
     except (TypeError, ValueError):
@@ -425,7 +425,7 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Post payload builders and parsers
+# 富文本负载构建器和解析器
 # ---------------------------------------------------------------------------
 
 
@@ -630,7 +630,7 @@ def _render_nested_post(
 
 
 # ---------------------------------------------------------------------------
-# Message normalization
+# 消息规范化
 # ---------------------------------------------------------------------------
 
 
@@ -774,7 +774,7 @@ def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -
 
 
 # ---------------------------------------------------------------------------
-# Content extraction utilities (card / forward / text walking)
+# 内容提取工具函数（卡片 / 转发 / 文本遍历）
 # ---------------------------------------------------------------------------
 
 
@@ -947,7 +947,7 @@ def _first_non_empty_text(*values: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# General text utilities
+# 通用文本工具函数
 # ---------------------------------------------------------------------------
 
 
@@ -972,7 +972,7 @@ def _unique_lines(lines: List[str]) -> List[str]:
 
 
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
-    """Run the official Lark WS client in its own thread-local event loop."""
+    """在自己的线程本地事件循环中运行官方 Lark WS 客户端。"""
     import lark_oapi.ws.client as ws_client_module
 
     loop = asyncio.new_event_loop()
@@ -1035,21 +1035,21 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
 
 
 def check_feishu_requirements() -> bool:
-    """Check if Feishu/Lark dependencies are available."""
+    """检查飞书/Lark 依赖是否可用。"""
     return FEISHU_AVAILABLE
 
 
 class FeishuAdapter(BasePlatformAdapter):
-    """Feishu/Lark bot adapter."""
+    """飞书/Lark 机器人适配器。"""
 
     MAX_MESSAGE_LENGTH = 8000
-    # Threshold for detecting Feishu client-side message splits.
-    # When a chunk is near the ~4096-char practical limit, a continuation
-    # is almost certain.
+    # 检测飞书客户端消息分片的阈值。
+    # 当一个分片接近约 4096 字符的实际限制时，
+    # 几乎可以确定会有后续分片。
     _SPLIT_THRESHOLD = 4000
 
     # =========================================================================
-    # Lifecycle — init / settings / connect / disconnect
+    # 生命周期 — 初始化 / 设置 / 连接 / 断开
     # =========================================================================
 
     def __init__(self, config: PlatformConfig):
@@ -1065,24 +1065,24 @@ class FeishuAdapter(BasePlatformAdapter):
         self._webhook_runner: Optional[Any] = None
         self._webhook_site: Optional[Any] = None
         self._event_handler: Optional[Any] = None
-        self._seen_message_ids: Dict[str, float] = {}  # message_id → seen_at (time.time())
+        self._seen_message_ids: Dict[str, float] = {}  # message_id → 首次出现时间 (time.time())
         self._seen_message_order: List[str] = []
         self._dedup_state_path = get_hermes_home() / "feishu_seen_message_ids.json"
         self._dedup_lock = threading.Lock()
-        self._sender_name_cache: Dict[str, tuple[str, float]] = {}  # sender_id → (name, expire_at)
-        self._webhook_rate_counts: Dict[str, tuple[int, float]] = {}  # rate_key → (count, window_start)
-        self._webhook_anomaly_counts: Dict[str, tuple[int, str, float]] = {}  # ip → (count, last_status, first_seen)
-        self._card_action_tokens: Dict[str, float] = {}  # token → first_seen_time
-        # Inbound events that arrived before the adapter loop was ready
-        # (e.g. during startup/restart or network-flap reconnect). A single
-        # drainer thread replays them as soon as the loop becomes available.
+        self._sender_name_cache: Dict[str, tuple[str, float]] = {}  # sender_id → (名称, 过期时间)
+        self._webhook_rate_counts: Dict[str, tuple[int, float]] = {}  # rate_key → (计数, 窗口开始时间)
+        self._webhook_anomaly_counts: Dict[str, tuple[int, str, float]] = {}  # ip → (计数, 上次状态, 首次出现时间)
+        self._card_action_tokens: Dict[str, float] = {}  # token → 首次出现时间
+        # 在适配器循环就绪之前到达的入站事件
+        # （例如在启动/重启或网络抖动重连期间）。
+        # 单个排空线程会在循环可用后立即重放这些事件。
         self._pending_inbound_events: List[Any] = []
         self._pending_inbound_lock = threading.Lock()
         self._pending_drain_scheduled = False
-        self._pending_inbound_max_depth = 1000  # cap queue; drop oldest beyond
-        self._chat_locks: Dict[str, asyncio.Lock] = {}  # chat_id → lock (per-chat serial processing)
-        self._sent_message_ids_to_chat: Dict[str, str] = {}  # message_id → chat_id (for reaction routing)
-        self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
+        self._pending_inbound_max_depth = 1000  # 队列容量上限；超出时丢弃最旧的
+        self._chat_locks: Dict[str, asyncio.Lock] = {}  # chat_id → 锁（每个聊天串行处理）
+        self._sent_message_ids_to_chat: Dict[str, str] = {}  # message_id → chat_id（用于表情回应路由）
+        self._sent_message_id_order: List[str] = []  # _sent_message_ids_to_chat 的 LRU 顺序
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
         self._message_text_cache: Dict[str, Optional[str]] = {}
         self._app_lock_identity: Optional[str] = None
@@ -1093,14 +1093,14 @@ class FeishuAdapter(BasePlatformAdapter):
         self._media_batch_state = FeishuBatchState()
         self._pending_media_batches = self._media_batch_state.events
         self._pending_media_batch_tasks = self._media_batch_state.tasks
-        # Exec approval button state (approval_id → {session_key, message_id, chat_id})
+        # 执行审批按钮状态（approval_id → {session_key, message_id, chat_id}）
         self._approval_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
         self._load_seen_message_ids()
 
     @staticmethod
     def _load_settings(extra: Dict[str, Any]) -> FeishuAdapterSettings:
-        # Parse per-group rules from config
+        # 从配置中解析每个群组的规则
         raw_group_rules = extra.get("group_rules", {})
         group_rules: Dict[str, FeishuGroupRule] = {}
         if isinstance(raw_group_rules, dict):
@@ -1113,11 +1113,11 @@ class FeishuAdapter(BasePlatformAdapter):
                     blacklist=set(str(u).strip() for u in rule_cfg.get("blacklist", []) if str(u).strip()),
                 )
 
-        # Bot-level admins
+        # 机器人级别管理员
         raw_admins = extra.get("admins", [])
         admins = frozenset(str(u).strip() for u in raw_admins if str(u).strip())
 
-        # Default group policy (for groups not in group_rules)
+        # 默认群组策略（用于不在 group_rules 中的群组）
         default_group_policy = str(extra.get("default_group_policy", "")).strip().lower()
 
         return FeishuAdapterSettings(
@@ -1232,7 +1232,7 @@ class FeishuAdapter(BasePlatformAdapter):
         )
 
     async def connect(self) -> bool:
-        """Connect to Feishu/Lark."""
+        """连接到飞书/Lark。"""
         if not FEISHU_AVAILABLE:
             logger.error("[Feishu] lark-oapi not installed")
             return False
@@ -1277,7 +1277,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return False
 
     async def disconnect(self) -> None:
-        """Disconnect from Feishu/Lark."""
+        """从飞书/Lark 断开连接。"""
         self._running = False
         await self._cancel_pending_tasks(self._pending_text_batch_tasks)
         await self._cancel_pending_tasks(self._pending_media_batch_tasks)
@@ -1354,7 +1354,7 @@ class FeishuAdapter(BasePlatformAdapter):
             self._webhook_site = None
 
     # =========================================================================
-    # Outbound — send / edit / send_image / send_voice / …
+    # 出站 — 发送 / 编辑 / 发送图片 / 发送语音 / ...
     # =========================================================================
 
     async def send(
@@ -1364,7 +1364,7 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a Feishu message."""
+        """发送飞书消息。"""
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
@@ -1420,7 +1420,7 @@ class FeishuAdapter(BasePlatformAdapter):
         message_id: str,
         content: str,
     ) -> SendResult:
-        """Edit a previously sent Feishu text/post message."""
+        """编辑之前发送的飞书文本/富文本消息。"""
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
@@ -1451,7 +1451,7 @@ class FeishuAdapter(BasePlatformAdapter):
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send an interactive card with approval buttons.
+        """发送带审批按钮的交互式卡片。
 
         The buttons carry ``hermes_action`` in their value dict so that
         ``_handle_card_action_event`` can intercept them and call
@@ -1518,7 +1518,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
-        """Build raw card JSON for a resolved approval action."""
+        """为已解决的审批操作构建原始卡片 JSON。"""
         icon = "❌" if choice == "deny" else "✅"
         label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
         return {
@@ -1544,7 +1544,7 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """Send audio to Feishu as a file attachment plus optional caption."""
+        """以文件附件加可选说明的方式向飞书发送音频。"""
         return await self._send_uploaded_file_message(
             chat_id=chat_id,
             file_path=audio_path,
@@ -1564,7 +1564,7 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """Send a document/file attachment to Feishu."""
+        """向飞书发送文档/文件附件。"""
         return await self._send_uploaded_file_message(
             chat_id=chat_id,
             file_path=file_path,
@@ -1583,7 +1583,7 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """Send a video file to Feishu."""
+        """向飞书发送视频文件。"""
         return await self._send_uploaded_file_message(
             chat_id=chat_id,
             file_path=video_path,
@@ -1602,7 +1602,7 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """Send a local image file to Feishu."""
+        """向飞书发送本地图片文件。"""
         if not self._client:
             return SendResult(success=False, error="Not connected")
         if not os.path.exists(image_path):
@@ -1612,7 +1612,7 @@ class FeishuAdapter(BasePlatformAdapter):
             import io as _io
             with open(image_path, "rb") as f:
                 image_bytes = f.read()
-            # Wrap in BytesIO so lark SDK's MultipartEncoder can read .name and .tell()
+            # 用 BytesIO 包装，以便 lark SDK 的 MultipartEncoder 可以读取 .name 和 .tell()
             image_file = _io.BytesIO(image_bytes)
             image_file.name = os.path.basename(image_path)
             body = self._build_image_upload_body(
@@ -1655,7 +1655,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Feishu bot API does not expose a typing indicator."""
+        """飞书机器人 API 不提供打字指示器。"""
         return None
 
     async def send_image(
@@ -1666,7 +1666,7 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Download a remote image then send it through the native Feishu image flow."""
+        """下载远程图片然后通过飞书原生图片流程发送。"""
         try:
             image_path = await self._download_remote_image(image_url)
         except Exception as exc:
@@ -1694,7 +1694,7 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Feishu has no native GIF bubble; degrade to a downloadable file."""
+        """飞书没有原生 GIF 气泡；降级为可下载的文件。"""
         try:
             file_path, file_name = await self._download_remote_document(
                 animation_url,
@@ -1721,7 +1721,7 @@ class FeishuAdapter(BasePlatformAdapter):
         )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
-        """Return real chat metadata from Feishu when available."""
+        """可用时从飞书返回真实的聊天元数据。"""
         fallback = {
             "chat_id": chat_id,
             "name": chat_id,
@@ -1758,15 +1758,15 @@ class FeishuAdapter(BasePlatformAdapter):
             return fallback
 
     def format_message(self, content: str) -> str:
-        """Feishu text messages are plain text by default."""
+        """飞书文本消息默认为纯文本。"""
         return content.strip()
 
     # =========================================================================
-    # Inbound event handlers
+    # 入站事件处理程序
     # =========================================================================
 
     def _on_message_event(self, data: Any) -> None:
-        """Normalize Feishu inbound events into MessageEvent.
+        """将飞书入站事件规范化为 MessageEvent。
 
         Called by the lark_oapi SDK's event dispatcher on a background thread.
         If the adapter loop is not currently accepting callbacks (brief window
@@ -1790,7 +1790,7 @@ class FeishuAdapter(BasePlatformAdapter):
         future.add_done_callback(self._log_background_failure)
 
     def _enqueue_pending_inbound_event(self, data: Any) -> bool:
-        """Append an event to the pending-inbound queue.
+        """将事件追加到待处理入站队列。
 
         Returns True if the caller should spawn a drainer thread (no drainer
         currently scheduled), False if a drainer is already running and will
@@ -1798,9 +1798,9 @@ class FeishuAdapter(BasePlatformAdapter):
         """
         with self._pending_inbound_lock:
             if len(self._pending_inbound_events) >= self._pending_inbound_max_depth:
-                # Queue full — drop the oldest to make room. This happens only
-                # if the loop stays unavailable for an extended period AND the
-                # WS keeps firing callbacks. Still better than silent drops.
+                # 队列已满 — 丢弃最旧的事件以腾出空间。这仅在
+                # 循环长时间不可用且 WS 持续触发回调时才会发生。
+                # 但这仍然比静默丢弃好。
                 dropped = self._pending_inbound_events.pop(0)
                 try:
                     event = getattr(dropped, "event", None)
@@ -1825,7 +1825,7 @@ class FeishuAdapter(BasePlatformAdapter):
         return should_start
 
     def _drain_pending_inbound_events(self) -> None:
-        """Replay queued inbound events once the adapter loop is ready.
+        """在适配器循环就绪后重放已排队的入站事件。
 
         Runs in a dedicated daemon thread. Polls ``_running`` and
         ``_loop_accepts_callbacks`` until events can be dispatched or the
@@ -1838,8 +1838,8 @@ class FeishuAdapter(BasePlatformAdapter):
         try:
             while True:
                 if not getattr(self, "_running", True):
-                    # Adapter shutting down — drop queued events rather than
-                    # holding them against a closed loop.
+                    # 适配器正在关闭 — 丢弃排队的事件，
+                    # 而不是对着已关闭的循环持有它们。
                     with self._pending_inbound_lock:
                         dropped = len(self._pending_inbound_events)
                         self._pending_inbound_events.clear()
@@ -1855,7 +1855,7 @@ class FeishuAdapter(BasePlatformAdapter):
                         batch = self._pending_inbound_events[:]
                         self._pending_inbound_events.clear()
                     if not batch:
-                        # Queue emptied between check and grab; done.
+                        # 在检查和获取之间队列已被清空；完成。
                         with self._pending_inbound_lock:
                             if not self._pending_inbound_events:
                                 return
@@ -1871,8 +1871,8 @@ class FeishuAdapter(BasePlatformAdapter):
                             fut.add_done_callback(self._log_background_failure)
                             dispatched += 1
                         except RuntimeError:
-                            # Loop closed between check and submit — requeue
-                            # and poll again.
+                            # 在检查和提交之间循环已关闭 — 重新入队
+                            # 并再次轮询。
                             requeue.append(event)
                     if requeue:
                         with self._pending_inbound_lock:
@@ -1883,12 +1883,12 @@ class FeishuAdapter(BasePlatformAdapter):
                             dispatched,
                         )
                     if not requeue:
-                        # Successfully drained; check if more arrived while
-                        # we were dispatching and exit if not.
+                        # 成功排空；检查在分发期间是否有更多事件到达，
+                        # 如果没有则退出。
                         with self._pending_inbound_lock:
                             if not self._pending_inbound_events:
                                 return
-                    # More events queued or requeue pending — loop again.
+                    # 还有更多事件排队或有待重新入队的事件 — 继续循环。
                     continue
                 if waited >= max_wait_seconds:
                     with self._pending_inbound_lock:
@@ -1908,7 +1908,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 self._pending_drain_scheduled = False
 
     async def _handle_message_event_data(self, data: Any) -> None:
-        """Shared inbound message handling for websocket and webhook transports."""
+        """WebSocket 和 Webhook 传输共享的入站消息处理。"""
         event = getattr(data, "event", None)
         message = getattr(event, "message", None)
         sender = getattr(event, "sender", None)
@@ -1939,21 +1939,21 @@ class FeishuAdapter(BasePlatformAdapter):
         )
 
     def _on_message_read_event(self, data: P2ImMessageMessageReadV1) -> None:
-        """Ignore read-receipt events that Hermes does not act on."""
+        """忽略 Hermes 不处理的已读回执事件。"""
         event = getattr(data, "event", None)
         message = getattr(event, "message", None)
         message_id = getattr(message, "message_id", None) or ""
         logger.debug("[Feishu] Ignoring message_read event: %s", message_id)
 
     def _on_bot_added_to_chat(self, data: Any) -> None:
-        """Handle bot being added to a group chat."""
+        """处理机器人被添加到群聊。"""
         event = getattr(data, "event", None)
         chat_id = str(getattr(event, "chat_id", "") or "")
         logger.info("[Feishu] Bot added to chat: %s", chat_id)
         self._chat_info_cache.pop(chat_id, None)
 
     def _on_bot_removed_from_chat(self, data: Any) -> None:
-        """Handle bot being removed from a group chat."""
+        """处理机器人被从群聊中移除。"""
         event = getattr(data, "event", None)
         chat_id = str(getattr(event, "chat_id", "") or "")
         logger.info("[Feishu] Bot removed from chat: %s", chat_id)
@@ -1966,7 +1966,7 @@ class FeishuAdapter(BasePlatformAdapter):
         logger.debug("[Feishu] Message recalled by user")
 
     def _on_reaction_event(self, event_type: str, data: Any) -> None:
-        """Route user reactions on bot messages as synthetic text events."""
+        """将用户对机器人消息的表情反应路由为合成文本事件。"""
         event = getattr(data, "event", None)
         message_id = str(getattr(event, "message_id", "") or "")
         operator_type = str(getattr(event, "operator_type", "") or "")
@@ -1980,8 +1980,8 @@ class FeishuAdapter(BasePlatformAdapter):
             operator_type,
             emoji_type,
         )
-        # Only process reactions from real users. Ignore app/bot-generated reactions
-        # and Hermes' own ACK emoji to avoid feedback loops.
+        # 仅处理真实用户的表情回应。忽略应用/机器人生成的回应
+        # 以及 Hermes 自身的 ACK 表情，以避免反馈循环。
         loop = self._loop
         if (
             operator_type in {"bot", "app"}
@@ -1998,7 +1998,7 @@ class FeishuAdapter(BasePlatformAdapter):
         future.add_done_callback(self._log_background_failure)
 
     def _on_card_action_trigger(self, data: Any) -> Any:
-        """Handle card-action callback from the Feishu SDK (synchronous).
+        """处理来自飞书 SDK 的卡片操作回调（同步）。
 
         For approval actions: parses the event once, returns the resolved card
         inline (the only reliable way to sync all clients), and schedules a
@@ -2026,16 +2026,16 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _loop_accepts_callbacks(loop: Any) -> bool:
-        """Return True when the adapter loop can accept thread-safe submissions."""
+        """当适配器循环可以接受线程安全提交时返回 True。"""
         return loop is not None and not bool(getattr(loop, "is_closed", lambda: False)())
 
     def _submit_on_loop(self, loop: Any, coro: Any) -> None:
-        """Schedule background work on the adapter loop with shared failure logging."""
+        """在适配器循环上调度后台工作，带共享的失败日志。"""
         future = asyncio.run_coroutine_threadsafe(coro, loop)
         future.add_done_callback(self._log_background_failure)
 
     def _handle_approval_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
-        """Schedule approval resolution and build the synchronous callback response."""
+        """调度审批解决并构建同步回调响应。"""
         approval_id = action_value.get("approval_id")
         if approval_id is None:
             logger.debug("[Feishu] Card action missing approval_id, ignoring")
@@ -2059,7 +2059,7 @@ class FeishuAdapter(BasePlatformAdapter):
         return response
 
     async def _resolve_approval(self, approval_id: Any, choice: str, user_name: str) -> None:
-        """Pop approval state and unblock the waiting agent thread."""
+        """弹出审批状态并解除等待中的 agent 线程阻塞。"""
         state = self._approval_state.pop(approval_id, None)
         if not state:
             logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
@@ -2075,7 +2075,7 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
 
     async def _handle_reaction_event(self, event_type: str, data: Any) -> None:
-        """Fetch the reacted-to message; if it was sent by this bot, emit a synthetic text event."""
+        """获取被反应的消息；如果是此机器人发送的，则发出合成文本事件。"""
         if not self._client:
             return
         event = getattr(data, "event", None)
@@ -2083,7 +2083,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if not message_id:
             return
 
-        # Fetch the target message to verify it was sent by us and to obtain chat context.
+        # 获取目标消息以验证它是否由我们发送，并获取聊天上下文。
         try:
             request = self._build_get_message_request(message_id)
             response = await asyncio.to_thread(self._client.im.v1.message.get, request)
@@ -2096,7 +2096,7 @@ class FeishuAdapter(BasePlatformAdapter):
             sender = getattr(msg, "sender", None)
             sender_type = str(getattr(sender, "sender_type", "") or "").lower()
             if sender_type != "app":
-                return  # only route reactions on our own bot messages
+                return  # 仅路由我们自己机器人消息上的表情回应
             chat_id = str(getattr(msg, "chat_id", "") or "")
             chat_type_raw = str(getattr(msg, "chat_type", "p2p") or "p2p")
             if not chat_id:
@@ -2134,9 +2134,9 @@ class FeishuAdapter(BasePlatformAdapter):
         await self._handle_message_with_guards(synthetic_event)
 
     def _is_card_action_duplicate(self, token: str) -> bool:
-        """Return True if this card action token was already processed within the dedup window."""
+        """如果此卡片操作令牌在去重窗口内已被处理则返回 True。"""
         now = time.time()
-        # Prune expired tokens lazily each call.
+        # 每次调用时惰性清理过期的令牌。
         expired = [t for t, ts in self._card_action_tokens.items() if now - ts > _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS]
         for t in expired:
             del self._card_action_tokens[t]
@@ -2146,7 +2146,7 @@ class FeishuAdapter(BasePlatformAdapter):
         return False
 
     async def _handle_card_action_event(self, data: Any) -> None:
-        """Route Feishu interactive card button clicks as synthetic COMMAND events."""
+        """将飞书交互式卡片按钮点击路由为合成 COMMAND 事件。"""
         event = getattr(data, "event", None)
         token = str(getattr(event, "token", "") or "")
         if token and self._is_card_action_duplicate(token):
@@ -2196,11 +2196,11 @@ class FeishuAdapter(BasePlatformAdapter):
         await self._handle_message_with_guards(synthetic_event)
 
     # =========================================================================
-    # Per-chat serialization and typing indicator
+    # 每个聊天串行化和打字指示器
     # =========================================================================
 
     def _get_chat_lock(self, chat_id: str) -> asyncio.Lock:
-        """Return (creating if needed) the per-chat asyncio.Lock for serial message processing."""
+        """返回（需要时创建）按聊天的 asyncio.Lock 用于串行消息处理。"""
         lock = self._chat_locks.get(chat_id)
         if lock is None:
             lock = asyncio.Lock()
@@ -2208,7 +2208,7 @@ class FeishuAdapter(BasePlatformAdapter):
         return lock
 
     async def _handle_message_with_guards(self, event: MessageEvent) -> None:
-        """Dispatch a single event through the agent pipeline with per-chat serialization
+        """通过带按聊天串行化的 agent 管道分发单个事件
         and a persistent ACK emoji reaction before processing starts.
 
         - Per-chat lock: ensures messages in the same chat are processed one at a time
@@ -2225,7 +2225,7 @@ class FeishuAdapter(BasePlatformAdapter):
             await self.handle_message(event)
 
     async def _add_ack_reaction(self, message_id: str) -> Optional[str]:
-        """Add a persistent ACK emoji reaction to signal the message was received."""
+        """添加持久 ACK 表情反应以表示消息已收到。"""
         if not self._client or not message_id:
             return None
         try:
@@ -2259,11 +2259,11 @@ class FeishuAdapter(BasePlatformAdapter):
         return None
 
     # =========================================================================
-    # Webhook server and security
+    # Webhook 服务器和安全
     # =========================================================================
 
     def _record_webhook_anomaly(self, remote_ip: str, status: str) -> None:
-        """Increment the anomaly counter for remote_ip and emit a WARNING every threshold hits.
+        """为 remote_ip 递增异常计数器，每达到阈值时发出 WARNING。
 
         Mirrors openclaw's createWebhookAnomalyTracker: TTL 6 hours, log every 25 consecutive
         error responses from the same IP.
@@ -2285,15 +2285,15 @@ class FeishuAdapter(BasePlatformAdapter):
                     )
                 self._webhook_anomaly_counts[remote_ip] = (count, status, first_seen)
                 return
-        # Either first occurrence or TTL expired — start fresh.
+        # 首次出现或 TTL 已过期 — 重新开始。
         self._webhook_anomaly_counts[remote_ip] = (1, status, now)
 
     def _clear_webhook_anomaly(self, remote_ip: str) -> None:
-        """Reset the anomaly counter for remote_ip after a successful request."""
+        """在请求成功后为 remote_ip 重置异常计数器。"""
         self._webhook_anomaly_counts.pop(remote_ip, None)
 
     # =========================================================================
-    # Inbound processing pipeline
+    # 入站处理管道
     # =========================================================================
 
     async def _process_inbound_message(
@@ -2357,7 +2357,7 @@ class FeishuAdapter(BasePlatformAdapter):
         await self._dispatch_inbound_event(normalized)
 
     async def _dispatch_inbound_event(self, event: MessageEvent) -> None:
-        """Apply Feishu-specific burst protection before entering the base adapter."""
+        """在进入基础适配器之前应用飞书特定的突发保护。"""
         if event.message_type == MessageType.TEXT and not event.is_command():
             await self._enqueue_text_event(event)
             return
@@ -2367,7 +2367,7 @@ class FeishuAdapter(BasePlatformAdapter):
         await self._handle_message_with_guards(event)
 
     # =========================================================================
-    # Media batching
+    # 媒体批处理
     # =========================================================================
 
     def _should_batch_media_event(self, event: MessageEvent) -> bool:
@@ -2503,14 +2503,14 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _handle_webhook_request(self, request: Any) -> Any:
         remote_ip = (getattr(request, "remote", None) or "unknown")
 
-        # Rate limiting — composite key: app_id:path:remote_ip (matches openclaw key structure).
+        # 速率限制 — 组合键: app_id:path:remote_ip（匹配 openclaw 键结构）。
         rate_key = f"{self._app_id}:{self._webhook_path}:{remote_ip}"
         if not self._check_webhook_rate_limit(rate_key):
             logger.warning("[Feishu] Webhook rate limit exceeded for %s", remote_ip)
             self._record_webhook_anomaly(remote_ip, "429")
             return web.Response(status=429, text="Too Many Requests")
 
-        # Content-Type guard — Feishu always sends application/json.
+        # Content-Type 检查 — 飞书始终发送 application/json。
         headers = getattr(request, "headers", {}) or {}
         content_type = str(headers.get("Content-Type", "") or "").split(";")[0].strip().lower()
         if content_type and content_type != "application/json":
@@ -2518,7 +2518,7 @@ class FeishuAdapter(BasePlatformAdapter):
             self._record_webhook_anomaly(remote_ip, "415")
             return web.Response(status=415, text="Unsupported Media Type")
 
-        # Body size guard — reject early via Content-Length when present.
+        # 请求体大小检查 — 在有 Content-Length 时提前拒绝。
         content_length = getattr(request, "content_length", None)
         if content_length is not None and content_length > _FEISHU_WEBHOOK_MAX_BODY_BYTES:
             logger.warning("[Feishu] Webhook body too large (%d bytes) from %s", content_length, remote_ip)
@@ -2554,7 +2554,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if payload.get("type") == "url_verification":
             return web.json_response({"challenge": payload.get("challenge", "")})
 
-        # Verification token check — second layer of defence beyond signature (matches openclaw).
+        # 验证令牌检查 — 签名之外的第二层防御（匹配 openclaw）。
         if self._verification_token:
             header = payload.get("header") or {}
             incoming_token = str(header.get("token") or payload.get("token") or "")
@@ -2563,7 +2563,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 self._record_webhook_anomaly(remote_ip, "401-token")
                 return web.Response(status=401, text="Invalid verification token")
 
-        # Timing-safe signature verification (only enforced when encrypt_key is set).
+        # 时间安全的签名验证（仅在设置了 encrypt_key 时执行）。
         if self._encrypt_key and not self._is_webhook_signature_valid(request.headers, body_bytes):
             logger.warning("[Feishu] Webhook rejected: invalid signature from %s", remote_ip)
             self._record_webhook_anomaly(remote_ip, "401-sig")
@@ -2595,7 +2595,7 @@ class FeishuAdapter(BasePlatformAdapter):
         return web.json_response({"code": 0, "msg": "ok"})
 
     def _is_webhook_signature_valid(self, headers: Any, body_bytes: bytes) -> bool:
-        """Verify Feishu webhook signature using timing-safe comparison.
+        """使用时间安全比较验证飞书 Webhook 签名。
 
         Feishu signature algorithm:
             SHA256(timestamp + nonce + encrypt_key + body_string)
@@ -2616,7 +2616,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return False
 
     def _check_webhook_rate_limit(self, rate_key: str) -> bool:
-        """Return False when the composite rate_key has exceeded _FEISHU_WEBHOOK_RATE_LIMIT_MAX.
+        """当复合 rate_key 超过 _FEISHU_WEBHOOK_RATE_LIMIT_MAX 时返回 False。
 
         The rate_key is composed as "{app_id}:{path}:{remote_ip}" — matching openclaw's key
         structure so the limit is scoped to a specific (account, endpoint, IP) triple rather
@@ -2626,7 +2626,7 @@ class FeishuAdapter(BasePlatformAdapter):
         memory growth. Stale (expired) entries are pruned when the cap is reached.
         """
         now = time.time()
-        # Fast path: existing entry within the current window.
+        # 快速路径：当前窗口内的现有条目。
         entry = self._webhook_rate_counts.get(rate_key)
         if entry is not None:
             count, window_start = entry
@@ -2635,7 +2635,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     return False
                 self._webhook_rate_counts[rate_key] = (count + 1, window_start)
                 return True
-        # New window for an existing key, or a brand-new key — prune stale entries first.
+        # 现有键的新窗口，或全新的键 — 先清理过期条目。
         if len(self._webhook_rate_counts) >= _FEISHU_WEBHOOK_RATE_MAX_KEYS:
             stale_keys = [
                 k for k, (_, ws) in self._webhook_rate_counts.items()
@@ -2643,18 +2643,18 @@ class FeishuAdapter(BasePlatformAdapter):
             ]
             for k in stale_keys:
                 del self._webhook_rate_counts[k]
-            # If still at capacity after pruning, allow through without tracking.
+            # 清理后仍然达到容量上限，则放行但不追踪。
             if rate_key not in self._webhook_rate_counts and len(self._webhook_rate_counts) >= _FEISHU_WEBHOOK_RATE_MAX_KEYS:
                 return True
         self._webhook_rate_counts[rate_key] = (1, now)
         return True
 
     # =========================================================================
-    # Text batching
+    # 文本批处理
     # =========================================================================
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Return the session-scoped key used for Feishu text aggregation."""
+        """返回用于飞书文本聚合的会话范围键。"""
         from gateway.session import build_session_key
 
         return build_session_key(
@@ -2665,7 +2665,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _text_batch_is_compatible(existing: MessageEvent, incoming: MessageEvent) -> bool:
-        """Only merge text events when reply/thread context is identical."""
+        """仅在回复/线程上下文相同时合并文本事件。"""
         return (
             existing.reply_to_message_id == incoming.reply_to_message_id
             and existing.reply_to_text == incoming.reply_to_text
@@ -2673,7 +2673,7 @@ class FeishuAdapter(BasePlatformAdapter):
         )
 
     async def _enqueue_text_event(self, event: MessageEvent) -> None:
-        """Debounce rapid Feishu text bursts into a single MessageEvent."""
+        """将快速连续的飞书文本突发去抖为单个 MessageEvent。"""
         key = self._text_batch_key(event)
         chunk_len = len(event.text or "")
         existing = self._pending_text_batches.get(key)
@@ -2711,7 +2711,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._schedule_text_batch_flush(key)
 
     def _schedule_text_batch_flush(self, key: str) -> None:
-        """Reset the debounce timer for a pending Feishu text batch."""
+        """重置待处理飞书文本批次的去抖定时器。"""
         self._reschedule_batch_task(
             self._pending_text_batch_tasks,
             key,
@@ -2730,15 +2730,15 @@ class FeishuAdapter(BasePlatformAdapter):
         task_map[key] = asyncio.create_task(flush_fn(key))
 
     async def _flush_text_batch(self, key: str) -> None:
-        """Flush a pending text batch after the quiet period.
+        """在静默期后刷新待处理的文本批次。
 
         Uses a longer delay when the latest chunk is near Feishu's ~4096-char
         split point, since a continuation chunk is almost certain.
         """
         current_task = asyncio.current_task()
         try:
-            # Adaptive delay: if the latest chunk is near the split threshold,
-            # a continuation is almost certain — wait longer.
+            # 自适应延迟：如果最新分片接近分片阈值，
+            # 几乎可以确定会有后续 — 等待更长时间。
             pending = self._pending_text_batches.get(key)
             last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
             if last_len >= self._SPLIT_THRESHOLD:
@@ -2752,7 +2752,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 self._pending_text_batch_tasks.pop(key, None)
 
     async def _flush_text_batch_now(self, key: str) -> None:
-        """Dispatch the current text batch immediately."""
+        """立即分发当前文本批次。"""
         event = self._pending_text_batches.pop(key, None)
         self._pending_text_batch_counts.pop(key, None)
         if not event:
@@ -2765,11 +2765,11 @@ class FeishuAdapter(BasePlatformAdapter):
         await self._handle_message_with_guards(event)
 
     # =========================================================================
-    # Message content extraction and resource download
+    # 消息内容提取和资源下载
     # =========================================================================
 
     async def _extract_message_content(self, message: Any) -> tuple[str, MessageType, List[str], List[str]]:
-        """Extract text and cached media from a normalized Feishu message."""
+        """从规范化的飞书消息中提取文本和缓存的媒体。"""
         raw_content = getattr(message, "content", "") or ""
         raw_type = getattr(message, "message_type", "") or ""
         message_id = str(getattr(message, "message_id", "") or "")
@@ -2976,7 +2976,7 @@ class FeishuAdapter(BasePlatformAdapter):
         return "", ""
 
     # =========================================================================
-    # Static helpers — extension / media-type guessing
+    # 静态辅助方法 — 扩展名 / 媒体类型猜测
     # =========================================================================
 
     @staticmethod
@@ -3068,7 +3068,7 @@ class FeishuAdapter(BasePlatformAdapter):
         }
 
     def _get_cached_sender_name(self, sender_id: Optional[str]) -> Optional[str]:
-        """Return a cached sender name only while its TTL is still valid."""
+        """仅在 TTL 仍有效时返回缓存的发送者名称。"""
         if not sender_id:
             return None
         cached = self._sender_name_cache.get(sender_id)
@@ -3081,7 +3081,7 @@ class FeishuAdapter(BasePlatformAdapter):
         return None
 
     async def _resolve_sender_name_from_api(self, sender_id: Optional[str]) -> Optional[str]:
-        """Fetch the sender's display name from the Feishu contact API with a 10-minute cache.
+        """从飞书联系人 API 获取发送者显示名称，带 10 分钟缓存。
 
         ID-type detection mirrors openclaw: ou_ → open_id, on_ → union_id, else user_id.
         Failures are silently suppressed; the message pipeline must not block on name resolution.
@@ -3170,11 +3170,11 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.exception("[Feishu] Background inbound processing failed")
 
     # =========================================================================
-    # Group policy and mention gating
+    # 群组策略和提及门控
     # =========================================================================
 
     def _allow_group_message(self, sender_id: Any, chat_id: str = "") -> bool:
-        """Per-group policy gate for non-DM traffic."""
+        """非私聊流量的按群策略门控。"""
         sender_open_id = getattr(sender_id, "open_id", None)
         sender_user_id = getattr(sender_id, "user_id", None)
         sender_ids = {sender_open_id, sender_user_id} - {None}
@@ -3206,7 +3206,7 @@ class FeishuAdapter(BasePlatformAdapter):
         return bool(sender_ids and (sender_ids & self._allowed_group_users))
 
     def _should_accept_group_message(self, message: Any, sender_id: Any, chat_id: str = "") -> bool:
-        """Require an explicit @mention before group messages enter the agent."""
+        """在群组消息进入 agent 前要求显式 @提及。"""
         if not self._allow_group_message(sender_id, chat_id):
             return False
         # @_all is Feishu's @everyone placeholder — always route to the bot.
@@ -3225,7 +3225,7 @@ class FeishuAdapter(BasePlatformAdapter):
         return False
 
     def _message_mentions_bot(self, mentions: List[Any]) -> bool:
-        """Check whether any mention targets the configured or inferred bot identity."""
+        """检查任何提及是否指向配置的或推断的机器人身份。"""
         for mention in mentions:
             mention_id = getattr(mention, "id", None)
             mention_open_id = getattr(mention_id, "open_id", None)
@@ -3251,7 +3251,7 @@ class FeishuAdapter(BasePlatformAdapter):
         return False
 
     async def _hydrate_bot_identity(self) -> None:
-        """Best-effort discovery of bot identity for precise group mention gating."""
+        """尽力发现机器人身份以实现精确的群组提及门控。"""
         if not self._client:
             return
         if any((self._bot_open_id, self._bot_user_id, self._bot_name)):
@@ -3276,7 +3276,7 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.debug("[Feishu] Failed to hydrate bot identity", exc_info=True)
 
     # =========================================================================
-    # Deduplication — seen message ID cache (persistent)
+    # 去重 — 已见消息 ID 缓存（持久化）
     # =========================================================================
 
     def _load_seen_message_ids(self) -> None:
@@ -3290,20 +3290,20 @@ class FeishuAdapter(BasePlatformAdapter):
         seen_data = payload.get("message_ids", {}) if isinstance(payload, dict) else {}
         now = time.time()
         ttl = _FEISHU_DEDUP_TTL_SECONDS
-        # Backward-compat: old format stored a plain list of IDs (no timestamps).
+        # 向后兼容：旧格式存储的是纯 ID 列表（无时间戳）。
         if isinstance(seen_data, list):
             entries: Dict[str, float] = {str(item).strip(): 0.0 for item in seen_data if str(item).strip()}
         elif isinstance(seen_data, dict):
             entries = {k: float(v) for k, v in seen_data.items() if isinstance(k, str) and k.strip()}
         else:
             return
-        # Filter out TTL-expired entries (entries saved with ts=0.0 are treated as immortal
-        # for one migration cycle to avoid nuking old data on first upgrade).
+        # 过滤掉 TTL 过期的条目（ts=0.0 的条目在一个迁移周期内被视为永久有效，
+        # 以避免在首次升级时清除旧数据）。
         valid: Dict[str, float] = {
             msg_id: ts for msg_id, ts in entries.items()
             if ts == 0.0 or ttl <= 0 or now - ts < ttl
         }
-        # Apply size cap; keep the most recently seen IDs.
+        # 应用大小上限；保留最近看到的 ID。
         sorted_ids = sorted(valid, key=lambda k: valid[k], reverse=True)[:self._dedup_cache_size]
         self._seen_message_order = list(reversed(sorted_ids))
         self._seen_message_ids = {k: valid[k] for k in sorted_ids}
@@ -3312,7 +3312,7 @@ class FeishuAdapter(BasePlatformAdapter):
         try:
             self._dedup_state_path.parent.mkdir(parents=True, exist_ok=True)
             recent = self._seen_message_order[-self._dedup_cache_size:]
-            # Save as {msg_id: timestamp} so TTL filtering works across restarts.
+            # 保存为 {msg_id: timestamp} 格式，以便 TTL 过滤在重启后依然有效。
             payload = {"message_ids": {k: self._seen_message_ids[k] for k in recent if k in self._seen_message_ids}}
             self._dedup_state_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         except OSError:
@@ -3325,7 +3325,7 @@ class FeishuAdapter(BasePlatformAdapter):
             seen_at = self._seen_message_ids.get(message_id)
             if seen_at is not None and (ttl <= 0 or now - seen_at < ttl):
                 return True
-            # Record with current wall-clock timestamp so TTL works across restarts.
+            # 使用当前时钟时间戳记录，以便 TTL 在重启后依然有效。
             self._seen_message_ids[message_id] = now
             self._seen_message_order.append(message_id)
             while len(self._seen_message_order) > self._dedup_cache_size:
@@ -3335,7 +3335,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return False
 
     # =========================================================================
-    # Outbound payload construction and send pipeline
+    # 出站负载构建和发送管道
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
@@ -3471,7 +3471,7 @@ class FeishuAdapter(BasePlatformAdapter):
         )
 
     # =========================================================================
-    # Connection internals — websocket / webhook setup
+    # 连接内部机制 — websocket / webhook 设置
     # =========================================================================
 
     async def _connect_with_retry(self) -> None:
@@ -3571,8 +3571,8 @@ class FeishuAdapter(BasePlatformAdapter):
                     reply_to=active_reply_to,
                     metadata=metadata,
                 )
-                # If replying to a message failed because it was withdrawn or not found,
-                # fall back to posting a new message directly to the chat.
+                # 如果回复消息因被撤回或未找到而失败，
+                # 则回退到直接在聊天中发送新消息。
                 if active_reply_to and not self._response_succeeded(response):
                     code = getattr(response, "code", None)
                     if code in _FEISHU_REPLY_FALLBACK_CODES:
@@ -3621,7 +3621,7 @@ class FeishuAdapter(BasePlatformAdapter):
             self._app_lock_identity = None
 
     # =========================================================================
-    # Lark API request builders
+    # Lark API 请求构建器
     # =========================================================================
 
     @staticmethod
@@ -3807,11 +3807,11 @@ class FeishuAdapter(BasePlatformAdapter):
 
 
 # =============================================================================
-# QR scan-to-create onboarding
+# 扫码创建引导
 #
-# Device-code flow: user scans a QR code with Feishu/Lark mobile app and the
-# platform creates a fully configured bot application automatically.
-# Called by `hermes gateway setup` via _setup_feishu() in hermes_cli/gateway.py.
+# 设备码流程：用户使用飞书/Lark 移动端扫描二维码，
+# 平台自动创建一个完全配置好的机器人应用。
+# 由 hermes_cli/gateway.py 中的 _setup_feishu() 通过 `hermes gateway setup` 调用。
 # =============================================================================
 
 
@@ -3824,11 +3824,11 @@ def _onboard_open_base_url(domain: str) -> str:
 
 
 def _post_registration(base_url: str, body: Dict[str, str]) -> dict:
-    """POST form-encoded data to the registration endpoint, return parsed JSON.
+    """向注册端点 POST 表单编码数据，返回解析后的 JSON。
 
-    The registration endpoint returns JSON even on 4xx (e.g. poll returns
-    authorization_pending as a 400). We always parse the body regardless of
-    HTTP status.
+    注册端点即使在 4xx 状态码时也返回 JSON（例如轮询时返回
+    authorization_pending 作为 400 响应）。无论 HTTP 状态码如何，
+    我们总是解析响应体。
     """
     url = f"{base_url}{_REGISTRATION_PATH}"
     data = urlencode(body).encode("utf-8")
@@ -3847,9 +3847,9 @@ def _post_registration(base_url: str, body: Dict[str, str]) -> dict:
 
 
 def _init_registration(domain: str = "feishu") -> None:
-    """Verify the environment supports client_secret auth.
+    """验证环境是否支持 client_secret 认证。
 
-    Raises RuntimeError if not supported.
+    如果不支持则抛出 RuntimeError。
     """
     base_url = _accounts_base_url(domain)
     res = _post_registration(base_url, {"action": "init"})
@@ -3862,7 +3862,7 @@ def _init_registration(domain: str = "feishu") -> None:
 
 
 def _begin_registration(domain: str = "feishu") -> dict:
-    """Start the device-code flow. Returns device_code, qr_url, user_code, interval, expire_in."""
+    """启动设备码流程。返回 device_code、qr_url、user_code、interval、expire_in。"""
     base_url = _accounts_base_url(domain)
     res = _post_registration(base_url, {
         "action": "begin",
@@ -3894,10 +3894,10 @@ def _poll_registration(
     expire_in: int,
     domain: str = "feishu",
 ) -> Optional[dict]:
-    """Poll until the user scans the QR code, or timeout/denial.
+    """轮询直到用户扫描二维码，或超时/拒绝。
 
-    Returns dict with app_id, app_secret, domain, open_id on success.
-    Returns None on failure.
+    成功时返回包含 app_id、app_secret、domain、open_id 的字典。
+    失败时返回 None。
     """
     deadline = time.time() + expire_in
     current_domain = domain
@@ -3922,15 +3922,15 @@ def _poll_registration(
         elif poll_count % 6 == 0:
             print(".", end="", flush=True)
 
-        # Domain auto-detection
+        # 域名自动检测
         user_info = res.get("user_info") or {}
         tenant_brand = user_info.get("tenant_brand")
         if tenant_brand == "lark" and not domain_switched:
             current_domain = "lark"
             domain_switched = True
-            # Fall through — server may return credentials in this same response.
+            # 继续执行 — 服务器可能在同一响应中返回凭据。
 
-        # Success
+        # 成功
         if res.get("client_id") and res.get("client_secret"):
             if poll_count > 0:
                 print()  # newline after "Fetching configuration results..." dots
@@ -3941,7 +3941,7 @@ def _poll_registration(
                 "open_id": user_info.get("open_id"),
             }
 
-        # Terminal errors
+        # 终端错误
         error = res.get("error", "")
         if error in ("access_denied", "expired_token"):
             if poll_count > 0:
@@ -3949,7 +3949,7 @@ def _poll_registration(
             logger.warning("[Feishu onboard] Registration %s", error)
             return None
 
-        # authorization_pending or unknown — keep polling
+        # authorization_pending 或未知状态 — 继续轮询
         time.sleep(interval)
 
     if poll_count > 0:
@@ -3965,7 +3965,7 @@ except (ImportError, TypeError):
 
 
 def _render_qr(url: str) -> bool:
-    """Try to render a QR code in the terminal. Returns True if successful."""
+    """尝试在终端中渲染二维码。成功时返回 True。"""
     if _qrcode_mod is None:
         return False
     try:
@@ -3979,10 +3979,10 @@ def _render_qr(url: str) -> bool:
 
 
 def probe_bot(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
-    """Verify bot connectivity via /open-apis/bot/v3/info.
+    """通过 /open-apis/bot/v3/info 验证机器人连通性。
 
-    Uses lark_oapi SDK when available, falls back to raw HTTP otherwise.
-    Returns {"bot_name": ..., "bot_open_id": ...} on success, None on failure.
+    优先使用 lark_oapi SDK，不可用时回退到原始 HTTP 请求。
+    成功时返回 {"bot_name": ..., "bot_open_id": ...}，失败时返回 None。
     """
     if FEISHU_AVAILABLE:
         return _probe_bot_sdk(app_id, app_secret, domain)
@@ -3990,7 +3990,7 @@ def probe_bot(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
 
 
 def _build_onboard_client(app_id: str, app_secret: str, domain: str) -> Any:
-    """Build a lark Client for the given credentials and domain."""
+    """使用给定凭据和域名构建 lark Client。"""
     sdk_domain = LARK_DOMAIN if domain == "lark" else FEISHU_DOMAIN
     return (
         lark.Client.builder()
@@ -4003,7 +4003,7 @@ def _build_onboard_client(app_id: str, app_secret: str, domain: str) -> Any:
 
 
 def _parse_bot_response(data: dict) -> Optional[dict]:
-    """Extract bot_name and bot_open_id from a /bot/v3/info response."""
+    """从 /bot/v3/info 响应中提取 bot_name 和 bot_open_id。"""
     if data.get("code") != 0:
         return None
     bot = data.get("bot") or data.get("data", {}).get("bot") or {}
@@ -4014,7 +4014,7 @@ def _parse_bot_response(data: dict) -> Optional[dict]:
 
 
 def _probe_bot_sdk(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
-    """Probe bot info using lark_oapi SDK."""
+    """使用 lark_oapi SDK 探测机器人信息。"""
     try:
         client = _build_onboard_client(app_id, app_secret, domain)
         resp = client.request(
@@ -4030,7 +4030,7 @@ def _probe_bot_sdk(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
 
 
 def _probe_bot_http(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
-    """Fallback probe using raw HTTP (when lark_oapi is not installed)."""
+    """当 lark_oapi 未安装时使用原始 HTTP 请求进行回退探测。"""
     base_url = _onboard_open_base_url(domain)
     try:
         token_data = json.dumps({"app_id": app_id, "app_secret": app_secret}).encode("utf-8")
@@ -4067,9 +4067,9 @@ def qr_register(
     initial_domain: str = "feishu",
     timeout_seconds: int = 600,
 ) -> Optional[dict]:
-    """Run the Feishu / Lark scan-to-create QR registration flow.
+    """运行飞书/Lark 扫码创建二维码注册流程。
 
-    Returns on success::
+    成功时返回::
 
         {
             "app_id": str,
@@ -4080,8 +4080,8 @@ def qr_register(
             "bot_open_id": str | None,
         }
 
-    Returns None on expected failures (network, auth denied, timeout).
-    Unexpected errors (bugs, protocol regressions) propagate to the caller.
+    预期失败（网络、认证拒绝、超时）时返回 None。
+    意外错误（Bug、协议回归）会传播给调用者。
     """
     try:
         return _qr_register_inner(initial_domain=initial_domain, timeout_seconds=timeout_seconds)
@@ -4095,7 +4095,7 @@ def _qr_register_inner(
     initial_domain: str,
     timeout_seconds: int,
 ) -> Optional[dict]:
-    """Run init → begin → poll → probe. Raises on network/protocol errors."""
+    """执行 init → begin → poll → probe 流程。网络/协议错误时抛出异常。"""
     print("  Connecting to Feishu / Lark...", end="", flush=True)
     _init_registration(initial_domain)
     begin = _begin_registration(initial_domain)
@@ -4119,7 +4119,7 @@ def _qr_register_inner(
     if not result:
         return None
 
-    # Probe bot — best-effort, don't fail the registration
+    # 探测机器人 — 尽力而为，不影响注册流程
     bot_info = probe_bot(result["app_id"], result["app_secret"], result["domain"])
     if bot_info:
         result["bot_name"] = bot_info.get("bot_name")

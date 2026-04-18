@@ -1,14 +1,13 @@
 """
-Gateway runtime status helpers.
+网关运行状态辅助工具。
 
-Provides PID-file based detection of whether the gateway daemon is running,
-used by send_message's check_fn to gate availability in the CLI.
+提供基于 PID 文件的网关守护进程运行状态检测，
+由 send_message 的 check_fn 使用，在 CLI 中控制可用性。
 
-The PID file lives at ``{HERMES_HOME}/gateway.pid``.  HERMES_HOME defaults to
-``~/.hermes`` but can be overridden via the environment variable.  This means
-separate HERMES_HOME directories naturally get separate PID files — a property
-that will be useful when we add named profiles (multiple agents running
-concurrently under distinct configurations).
+PID 文件位于 ``{HERMES_HOME}/gateway.pid``。HERMES_HOME 默认为
+``~/.hermes``，但可通过环境变量覆盖。这意味着不同的 HERMES_HOME
+目录自然拥有独立的 PID 文件 — 这个特性在我们添加命名配置文件
+（多个代理在不同配置下并发运行）时会很有用。
 """
 
 import hashlib
@@ -30,18 +29,18 @@ _UNSET = object()
 
 
 def _get_pid_path() -> Path:
-    """Return the path to the gateway PID file, respecting HERMES_HOME."""
+    """返回网关 PID 文件的路径，遵循 HERMES_HOME 设置。"""
     home = get_hermes_home()
     return home / "gateway.pid"
 
 
 def _get_runtime_status_path() -> Path:
-    """Return the persisted runtime health/status file path."""
+    """返回持久化的运行时健康/状态文件路径。"""
     return _get_pid_path().with_name(_RUNTIME_STATUS_FILE)
 
 
 def _get_lock_dir() -> Path:
-    """Return the machine-local directory for token-scoped gateway locks."""
+    """返回 token 范围网关锁的机器本地目录。"""
     override = os.getenv("HERMES_GATEWAY_LOCK_DIR")
     if override:
         return Path(override)
@@ -54,10 +53,10 @@ def _utc_now_iso() -> str:
 
 
 def terminate_pid(pid: int, *, force: bool = False) -> None:
-    """Terminate a PID with platform-appropriate force semantics.
+    """使用平台适当的强制语义终止进程。
 
-    POSIX uses SIGTERM/SIGKILL. Windows uses taskkill /T /F for true force-kill
-    because os.kill(..., SIGTERM) is not equivalent to a tree-killing hard stop.
+    POSIX 使用 SIGTERM/SIGKILL。Windows 使用 taskkill /T /F 实现真正的
+    树形强制终止，因为 os.kill(..., SIGTERM) 并不等同于树形硬停止。
     """
     if force and _IS_WINDOWS:
         try:
@@ -89,17 +88,17 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
 
 
 def _get_process_start_time(pid: int) -> Optional[int]:
-    """Return the kernel start time for a process when available."""
+    """返回进程的内核启动时间（如果可用）。"""
     stat_path = Path(f"/proc/{pid}/stat")
     try:
-        # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
+        # /proc/<pid>/stat 中的第 22 个字段是进程启动时间（时钟周期数）。
         return int(stat_path.read_text().split()[21])
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
         return None
 
 
 def _read_process_cmdline(pid: int) -> Optional[str]:
-    """Return the process command line as a space-separated string."""
+    """以空格分隔的字符串形式返回进程命令行。"""
     cmdline_path = Path(f"/proc/{pid}/cmdline")
     try:
         raw = cmdline_path.read_bytes()
@@ -112,7 +111,7 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
 
 
 def _looks_like_gateway_process(pid: int) -> bool:
-    """Return True when the live PID still looks like the Hermes gateway."""
+    """当存活的 PID 看起来仍像 Hermes 网关时返回 True。"""
     cmdline = _read_process_cmdline(pid)
     if not cmdline:
         return False
@@ -127,7 +126,7 @@ def _looks_like_gateway_process(pid: int) -> bool:
 
 
 def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
-    """Validate gateway identity from PID-file metadata when cmdline is unavailable."""
+    """当命令行不可用时，通过 PID 文件元数据验证网关身份。"""
     if record.get("kind") != _GATEWAY_KIND:
         return False
 
@@ -213,7 +212,7 @@ def _read_pid_record() -> Optional[dict]:
 
 
 def write_pid_file() -> None:
-    """Write the current process PID and metadata to the gateway PID file."""
+    """将当前进程的 PID 和元数据写入网关 PID 文件。"""
     _write_json_file(_get_pid_path(), _build_pid_record())
 
 
@@ -228,7 +227,7 @@ def write_runtime_status(
     error_code: Any = _UNSET,
     error_message: Any = _UNSET,
 ) -> None:
-    """Persist gateway runtime health information for diagnostics/status."""
+    """持久化网关运行时健康信息，用于诊断/状态查询。"""
     path = _get_runtime_status_path()
     payload = _read_json_file(path) or _build_runtime_status_record()
     payload.setdefault("platforms", {})
@@ -261,17 +260,16 @@ def write_runtime_status(
 
 
 def read_runtime_status() -> Optional[dict[str, Any]]:
-    """Read the persisted gateway runtime health/status information."""
+    """读取持久化的网关运行时健康/状态信息。"""
     return _read_json_file(_get_runtime_status_path())
 
 
 def remove_pid_file() -> None:
-    """Remove the gateway PID file, but only if it belongs to this process.
+    """移除网关 PID 文件，但仅当它属于当前进程时。
 
-    During --replace handoffs, the old process's atexit handler can fire AFTER
-    the new process has written its own PID file.  Blindly removing the file
-    would delete the new process's record, leaving the gateway running with no
-    PID file (invisible to ``get_running_pid()``).
+    在 --replace 交接期间，旧进程的 atexit 处理器可能在新进程
+    写入自己的 PID 文件之后才触发。盲目删除文件会删除新进程的记录，
+    导致网关在没有 PID 文件的情况下运行（对 ``get_running_pid()`` 不可见）。
     """
     try:
         path = _get_pid_path()
@@ -282,7 +280,7 @@ def remove_pid_file() -> None:
             except (KeyError, TypeError, ValueError):
                 file_pid = None
             if file_pid is not None and file_pid != os.getpid():
-                # PID file belongs to a different process — leave it alone.
+                # PID 文件属于另一个进程 — 保留不动。
                 return
         path.unlink(missing_ok=True)
     except Exception:
@@ -290,10 +288,10 @@ def remove_pid_file() -> None:
 
 
 def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, Any]] = None) -> tuple[bool, Optional[dict[str, Any]]]:
-    """Acquire a machine-local lock keyed by scope + identity.
+    """获取一个按 scope + identity 键控的机器本地锁。
 
-    Used to prevent multiple local gateways from using the same external identity
-    at once (e.g. the same Telegram bot token across different HERMES_HOME dirs).
+    用于防止多个本地网关同时使用同一个外部身份
+    （例如不同 HERMES_HOME 目录使用同一个 Telegram bot token）。
     """
     lock_path = _get_scope_lock_path(scope, identity)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -379,7 +377,7 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
 
 
 def release_scoped_lock(scope: str, identity: str) -> None:
-    """Release a previously-acquired scope lock when owned by this process."""
+    """当由当前进程拥有时，释放之前获取的范围锁。"""
     lock_path = _get_scope_lock_path(scope, identity)
     existing = _read_json_file(lock_path)
     if not existing:
@@ -395,11 +393,10 @@ def release_scoped_lock(scope: str, identity: str) -> None:
 
 
 def release_all_scoped_locks() -> int:
-    """Remove all scoped lock files in the lock directory.
+    """移除锁目录中的所有范围锁文件。
 
-    Called during --replace to clean up stale locks left by stopped/killed
-    gateway processes that did not release their locks gracefully.
-    Returns the number of lock files removed.
+    在 --replace 时调用，清理被停止/终止的网关进程遗留的
+    未正常释放的陈旧锁。返回被移除的锁文件数量。
     """
     lock_dir = _get_lock_dir()
     removed = 0
@@ -414,10 +411,10 @@ def release_all_scoped_locks() -> int:
 
 
 def get_running_pid() -> Optional[int]:
-    """Return the PID of a running gateway instance, or ``None``.
+    """返回正在运行的网关实例的 PID，或 ``None``。
 
-    Checks the PID file and verifies the process is actually alive.
-    Cleans up stale PID files automatically.
+    检查 PID 文件并验证进程是否确实存活。
+    自动清理陈旧的 PID 文件。
     """
     record = _read_pid_record()
     if not record:
@@ -431,7 +428,7 @@ def get_running_pid() -> Optional[int]:
         return None
 
     try:
-        os.kill(pid, 0)  # signal 0 = existence check, no actual signal sent
+        os.kill(pid, 0)  # 信号 0 = 存在性检查，不发送实际信号
     except (ProcessLookupError, PermissionError):
         remove_pid_file()
         return None
@@ -451,5 +448,5 @@ def get_running_pid() -> Optional[int]:
 
 
 def is_gateway_running() -> bool:
-    """Check if the gateway daemon is currently running."""
+    """检查网关守护进程是否正在运行。"""
     return get_running_pid() is not None

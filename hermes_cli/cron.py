@@ -1,8 +1,8 @@
 """
-Cron subcommand for hermes CLI.
+hermes CLI 的 cron 子命令。
 
-Handles standalone cron management commands like list, create, edit,
-pause/resume/run/remove, status, and tick.
+处理独立的定时任务管理命令，包括 list（列表）、create（创建）、edit（编辑）、
+pause/resume/run/remove（暂停/恢复/运行/删除）、status（状态）和 tick（执行）。
 """
 
 import json
@@ -17,6 +17,7 @@ from hermes_cli.colors import Colors, color
 
 
 def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None) -> Optional[List[str]]:
+    # 将单个技能和技能列表合并、去重后返回标准化的技能列表
     if skills is None:
         if single_skill is None:
             return None
@@ -33,13 +34,14 @@ def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None)
 
 
 def _cron_api(**kwargs):
+    # 调用底层定时任务工具并将 JSON 结果解析为字典
     from tools.cronjob_tools import cronjob as cronjob_tool
 
     return json.loads(cronjob_tool(**kwargs))
 
 
 def cron_list(show_all: bool = False):
-    """List all scheduled jobs."""
+    """列出所有已调度的定时任务。"""
     from cron.jobs import list_jobs
 
     jobs = list_jobs(include_disabled=show_all)
@@ -94,7 +96,7 @@ def cron_list(show_all: bool = False):
         if script:
             print(f"    Script:    {script}")
 
-        # Execution history
+        # 执行历史记录
         last_status = job.get("last_status")
         if last_status:
             last_run = job.get("last_run_at", "?")
@@ -119,13 +121,13 @@ def cron_list(show_all: bool = False):
 
 
 def cron_tick():
-    """Run due jobs once and exit."""
+    """运行所有到期任务一次后退出。"""
     from cron.scheduler import tick
     tick(verbose=True)
 
 
 def cron_status():
-    """Show cron execution status."""
+    """显示定时任务执行状态。"""
     from cron.jobs import list_jobs
     from hermes_cli.gateway import find_gateway_pids
 
@@ -192,6 +194,7 @@ def cron_edit(args):
         print(color(f"Job not found: {args.job_id}", Colors.RED))
         return 1
 
+    # 处理技能的编辑逻辑：支持替换、追加、移除和清空操作
     existing_skills = list(job.get("skills") or ([] if not job.get("skill") else [job.get("skill")]))
     replacement_skills = _normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None))
     add_skills = _normalize_skills(None, getattr(args, "add_skills", None)) or []
@@ -251,7 +254,7 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
 
 
 def cron_command(args):
-    """Handle cron subcommands."""
+    """处理 cron 子命令的分发。"""
     subcmd = getattr(args, 'cron_command', None)
 
     if subcmd is None or subcmd == "list":

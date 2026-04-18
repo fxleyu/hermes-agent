@@ -1,10 +1,10 @@
 """
-Telegram platform adapter.
+Telegram 平台适配器。
 
-Uses python-telegram-bot library for:
-- Receiving messages from users/groups
-- Sending responses back
-- Handling media and commands
+使用 python-telegram-bot 库实现：
+- 从用户/群组接收消息
+- 发送回复
+- 处理媒体和命令
 """
 
 import asyncio
@@ -51,8 +51,8 @@ except ImportError:
     ParseMode = None
     ChatType = None
 
-    # Mock ContextTypes so type annotations using ContextTypes.DEFAULT_TYPE
-    # don't crash during class definition when the library isn't installed.
+    # 模拟 ContextTypes 以便在库未安装时，使用 ContextTypes.DEFAULT_TYPE 的
+    # 类型注解在类定义期间不会崩溃。
     class _MockContextTypes:
         DEFAULT_TYPE = Any
     ContextTypes = _MockContextTypes
@@ -84,55 +84,54 @@ from gateway.platforms.telegram_network import (
 
 
 def check_telegram_requirements() -> bool:
-    """Check if Telegram dependencies are available."""
+    """检查 Telegram 依赖项是否可用。"""
     return TELEGRAM_AVAILABLE
 
 
-# Matches every character that MarkdownV2 requires to be backslash-escaped
-# when it appears outside a code span or fenced code block.
+# 匹配 MarkdownV2 要求在代码段或围栏代码块外部需要反斜杠转义的每个字符。
 _MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-=|{}.!\\])')
 
 
 def _escape_mdv2(text: str) -> str:
-    """Escape Telegram MarkdownV2 special characters with a preceding backslash."""
+    """用前置反斜杠转义 Telegram MarkdownV2 特殊字符。"""
     return _MDV2_ESCAPE_RE.sub(r'\\\1', text)
 
 
 def _strip_mdv2(text: str) -> str:
-    """Strip MarkdownV2 escape backslashes to produce clean plain text.
+    """去除 MarkdownV2 转义反斜杠以生成干净的纯文本。
 
-    Also removes MarkdownV2 formatting markers so the fallback
-    doesn't show stray syntax characters from format_message conversion.
+    同时移除 MarkdownV2 格式化标记，使回退时不会显示
+    format_message 转换产生的杂散语法字符。
     """
-    # Remove escape backslashes before special characters
+    # 移除特殊字符前的转义反斜杠
     cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)
-    # Remove MarkdownV2 bold markers that format_message converted from **bold**
+    # 移除 format_message 从 **bold** 转换来的 MarkdownV2 粗体标记
     cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)
-    # Remove MarkdownV2 italic markers that format_message converted from *italic*
-    # Use word boundary (\b) to avoid breaking snake_case like my_variable_name
+    # 移除 format_message 从 *italic* 转换来的 MarkdownV2 斜体标记
+    # 使用单词边界 (\b) 避免破坏 snake_case 如 my_variable_name
     cleaned = re.sub(r'(?<!\w)_([^_]+)_(?!\w)', r'\1', cleaned)
-    # Remove MarkdownV2 strikethrough markers (~text~ → text)
+    # 移除 MarkdownV2 删除线标记 (~text~ → text)
     cleaned = re.sub(r'~([^~]+)~', r'\1', cleaned)
-    # Remove MarkdownV2 spoiler markers (||text|| → text)
+    # 移除 MarkdownV2 遮挡标记 (||text|| → text)
     cleaned = re.sub(r'\|\|([^|]+)\|\|', r'\1', cleaned)
     return cleaned
 
 
 class TelegramAdapter(BasePlatformAdapter):
     """
-    Telegram bot adapter.
-    
-    Handles:
-    - Receiving messages from users and groups
-    - Sending responses with Telegram markdown
-    - Forum topics (thread_id support)
-    - Media messages
+    Telegram 机器人适配器。
+
+    功能：
+    - 从用户和群组接收消息
+    - 使用 Telegram markdown 发送回复
+    - 论坛话题（thread_id 支持）
+    - 媒体消息
     """
     
-    # Telegram message limits
+    # Telegram 消息长度限制
     MAX_MESSAGE_LENGTH = 4096
-    # Threshold for detecting Telegram client-side message splits.
-    # When a chunk is near this limit, a continuation is almost certain.
+    # 检测 Telegram 客户端消息拆分的阈值。
+    # 当分段接近此限制时，几乎可以确定有后续分段。
     _SPLIT_THRESHOLD = 4000
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     _GENERAL_TOPIC_THREAD_ID = "1"
@@ -145,15 +144,15 @@ class TelegramAdapter(BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
-        # Buffer rapid/album photo updates so Telegram image bursts are handled
-        # as a single MessageEvent instead of self-interrupting multiple turns.
+        # 缓冲快速/相册照片更新，使 Telegram 图片连发作为
+        # 单个 MessageEvent 处理，而不是自我中断的多轮对话。
         self._media_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "0.8"))
         self._pending_photo_batches: Dict[str, MessageEvent] = {}
         self._pending_photo_batch_tasks: Dict[str, asyncio.Task] = {}
         self._media_group_events: Dict[str, MessageEvent] = {}
         self._media_group_tasks: Dict[str, asyncio.Task] = {}
-        # Buffer rapid text messages so Telegram client-side splits of long
-        # messages are aggregated into a single MessageEvent.
+        # 缓冲快速文本消息，使 Telegram 客户端拆分的长消息
+        # 聚合为单个 MessageEvent。
         self._text_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS", "0.6"))
         self._text_batch_split_delay_seconds = float(os.getenv("HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
         self._pending_text_batches: Dict[str, MessageEvent] = {}
@@ -162,18 +161,18 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
-        # DM Topics: map of topic_name -> message_thread_id (populated at startup)
+        # DM 话题：topic_name -> message_thread_id 的映射（启动时填充）
         self._dm_topics: Dict[str, int] = {}
-        # DM Topics config from extra.dm_topics
+        # 来自 extra.dm_topics 的 DM 话题配置
         self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
-        # Interactive model picker state per chat
+        # 每个聊天的交互式模型选择器状态
         self._model_picker_state: Dict[str, dict] = {}
-        # Approval button state: message_id → session_key
+        # 审批按钮状态：message_id → session_key
         self._approval_state: Dict[int, str] = {}
 
     @staticmethod
     def _is_callback_user_authorized(user_id: str) -> bool:
-        """Return whether a Telegram inline-button caller may perform gated actions."""
+        """返回 Telegram 内联按钮调用者是否可以执行受限操作。"""
         allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
         if not allowed_csv:
             return True
@@ -204,7 +203,7 @@ class TelegramAdapter(BasePlatformAdapter):
         return "thread not found" in str(error).lower()
 
     def _fallback_ips(self) -> list[str]:
-        """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
+        """返回从配置中验证过的备用 IP（由 _apply_env_overrides 填充）。"""
         configured = self.config.extra.get("fallback_ips", []) if getattr(self.config, "extra", None) else []
         if isinstance(configured, str):
             configured = configured.split(",")
@@ -221,7 +220,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _looks_like_network_error(error: Exception) -> bool:
-        """Return True for transient network errors that warrant a reconnect attempt."""
+        """对需要重连尝试的瞬时网络错误返回 True。"""
         name = error.__class__.__name__.lower()
         if name in ("networkerror", "timedout", "connectionerror"):
             return True
@@ -254,16 +253,16 @@ class TelegramAdapter(BasePlatformAdapter):
         return {"disable_web_page_preview": True}
 
     async def _handle_polling_network_error(self, error: Exception) -> None:
-        """Reconnect polling after a transient network interruption.
+        """在瞬时网络中断后重连轮询。
 
-        Triggered by NetworkError/TimedOut in the polling error callback, which
-        happen when the host loses connectivity (Mac sleep, WiFi switch, VPN
-        reconnect, etc.).  The gateway process stays alive but the long-poll
-        connection silently dies; without this handler the bot never recovers.
+        由轮询错误回调中的 NetworkError/TimedOut 触发，
+        当主机失去连接时发生（Mac 休眠、WiFi 切换、VPN
+        重连等）。网关进程保持存活但长轮询连接静默断开；
+        没有此处理器机器人将永远无法恢复。
 
-        Strategy: exponential back-off (5s, 10s, 20s, 40s, 60s cap) up to
-        MAX_NETWORK_RETRIES attempts, then mark the adapter retryable-fatal so
-        the supervisor restarts the gateway process.
+        策略：指数退避（5秒、10秒、20秒、40秒、60秒上限）最多
+        MAX_NETWORK_RETRIES 次尝试，然后将适配器标记为可重试致命错误，
+        由监控进程重启网关。
         """
         if self.has_fatal_error:
             return
@@ -311,8 +310,8 @@ class TelegramAdapter(BasePlatformAdapter):
             self._polling_network_error_count = 0
         except Exception as retry_err:
             logger.warning("[%s] Telegram polling reconnect failed: %s", self.name, retry_err)
-            # start_polling failed — polling is dead and no further error
-            # callbacks will fire, so schedule the next retry ourselves.
+            # start_polling 失败 — 轮询已死且不会再触发错误
+            # 回调，因此我们自行调度下一次重试。
             if not self.has_fatal_error:
                 task = asyncio.ensure_future(
                     self._handle_polling_network_error(retry_err)
@@ -323,11 +322,10 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _handle_polling_conflict(self, error: Exception) -> None:
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":
             return
-        # Track consecutive conflicts — transient 409s can occur when a
-        # previous gateway instance hasn't fully released its long-poll
-        # session on Telegram's server (e.g. during --replace handoffs or
-        # systemd Restart=on-failure respawns).  Retry a few times before
-        # giving up, so the old session has time to expire.
+        # 跟踪连续冲突 — 当前一个网关实例尚未完全释放其在
+        # Telegram 服务器上的长轮询会话时会发生瞬时 409 错误（例如
+        # --replace 交接或 systemd Restart=on-failure 重生期间）。
+        # 在放弃之前重试几次，让旧会话有时间过期。
         self._polling_conflict_count += 1
 
         MAX_CONFLICT_RETRIES = 3
@@ -356,11 +354,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
             except Exception as retry_err:
                 logger.warning("[%s] Telegram polling retry failed: %s", self.name, retry_err)
-                # Don't fall through to fatal yet — wait for the next conflict
-                # to trigger another retry attempt (up to MAX_CONFLICT_RETRIES).
+                # 不要立即进入致命状态 — 等待下一次冲突
+                # 触发另一次重试尝试（最多 MAX_CONFLICT_RETRIES 次）。
                 return
 
-        # Exhausted retries — fatal
+        # 重试耗尽 — 致命错误
         message = (
             "Another process is already polling this Telegram bot token "
             "(possibly OpenClaw or another Hermes instance). "
@@ -385,10 +383,10 @@ class TelegramAdapter(BasePlatformAdapter):
         icon_color: Optional[int] = None,
         icon_custom_emoji_id: Optional[str] = None,
     ) -> Optional[int]:
-        """Create a forum topic in a private (DM) chat.
+        """在私聊（DM）中创建论坛话题。
 
-        Uses Bot API 9.4's createForumTopic which now works for 1-on-1 chats.
-        Returns the message_thread_id on success, None on failure.
+        使用 Bot API 9.4 的 createForumTopic，现在支持一对一聊天。
+        成功时返回 message_thread_id，失败时返回 None。
         """
         if not self._bot:
             return None
@@ -408,8 +406,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return thread_id
         except Exception as e:
             error_text = str(e).lower()
-            # If topic already exists, try to find it via getForumTopicIconStickers
-            # or we just log and skip — Telegram doesn't provide a "list topics" API
+            # 如果话题已存在，尝试通过 getForumTopicIconStickers 查找
+            # 或者只记录并跳过 — Telegram 没有提供"列出话题"的 API
             if "topic_name_duplicate" in error_text or "already" in error_text:
                 logger.info(
                     "[%s] DM topic '%s' already exists in chat %s (will be mapped from incoming messages)",
@@ -423,7 +421,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return None
 
     def _persist_dm_topic_thread_id(self, chat_id: int, topic_name: str, thread_id: int) -> None:
-        """Save a newly created thread_id back into config.yaml so it persists across restarts."""
+        """将新创建的 thread_id 保存回 config.yaml 以便跨重启持久化。"""
         try:
             from hermes_constants import get_hermes_home
             config_path = get_hermes_home() / "config.yaml"
@@ -435,7 +433,7 @@ class TelegramAdapter(BasePlatformAdapter):
             with open(config_path, "r") as f:
                 config = _yaml.safe_load(f) or {}
 
-            # Navigate to platforms.telegram.extra.dm_topics
+            # 导航到 platforms.telegram.extra.dm_topics
             dm_topics = (
                 config.get("platforms", {})
                 .get("telegram", {})
@@ -466,9 +464,9 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] Failed to persist thread_id to config: %s", self.name, e, exc_info=True)
 
     async def _setup_dm_topics(self) -> None:
-        """Load or create configured DM topics for specified chats.
+        """加载或创建指定聊天的已配置 DM 话题。
 
-        Reads config.extra['dm_topics'] — a list of dicts:
+        读取 config.extra['dm_topics'] — 一个字典列表：
         [
             {
                 "chat_id": 123456789,
@@ -479,10 +477,10 @@ class TelegramAdapter(BasePlatformAdapter):
             }
         ]
 
-        If a topic already has a thread_id in the config (persisted from a previous
-        creation), it is loaded into the cache without calling createForumTopic.
-        Only topics without a thread_id are created via the API, and their thread_id
-        is then saved back to config.yaml for future restarts.
+        如果话题在配置中已有 thread_id（从之前的创建中持久化），
+        则直接加载到缓存而不调用 createForumTopic。
+        只有没有 thread_id 的话题才会通过 API 创建，然后将其
+        thread_id 保存回 config.yaml 供未来重启使用。
         """
         if not self._dm_topics_config:
             return
@@ -505,7 +503,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 cache_key = f"{chat_id}:{topic_name}"
 
-                # If thread_id is already persisted in config, just load into cache
+                # 如果 thread_id 已持久化在配置中，只需加载到缓存
                 existing_thread_id = topic_conf.get("thread_id")
                 if existing_thread_id:
                     self._dm_topics[cache_key] = int(existing_thread_id)
@@ -515,7 +513,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                     continue
 
-                # No persisted thread_id — create the topic via API
+                # 没有持久化的 thread_id — 通过 API 创建话题
                 icon_color = topic_conf.get("icon_color")
                 icon_emoji = topic_conf.get("icon_custom_emoji_id")
 
@@ -532,22 +530,22 @@ class TelegramAdapter(BasePlatformAdapter):
                         "[%s] DM topic cached: %s -> thread_id=%s",
                         self.name, cache_key, thread_id,
                     )
-                    # Persist thread_id to config so we don't recreate on next restart
+                    # 将 thread_id 持久化到配置中，下次重启时不需要重新创建
                     self._persist_dm_topic_thread_id(int(chat_id), topic_name, thread_id)
 
     async def connect(self) -> bool:
-        """Connect to Telegram via polling or webhook.
+        """通过轮询或 webhook 连接到 Telegram。
 
-        By default, uses long polling (outbound connection to Telegram).
-        If ``TELEGRAM_WEBHOOK_URL`` is set, starts an HTTP webhook server
-        instead.  Webhook mode is useful for cloud deployments (Fly.io,
-        Railway) where inbound HTTP can wake a suspended machine.
+        默认使用长轮询（到 Telegram 的出站连接）。
+        如果设置了 ``TELEGRAM_WEBHOOK_URL``，则启动 HTTP webhook 服务器。
+        Webhook 模式适用于云部署（Fly.io、Railway），
+        其中入站 HTTP 可以唤醒挂起的机器。
 
-        Env vars for webhook mode::
+        Webhook 模式的环境变量::
 
-            TELEGRAM_WEBHOOK_URL    Public HTTPS URL (e.g. https://app.fly.dev/telegram)
-            TELEGRAM_WEBHOOK_PORT   Local listen port (default 8443)
-            TELEGRAM_WEBHOOK_SECRET Secret token for update verification
+            TELEGRAM_WEBHOOK_URL    公共 HTTPS URL（例如 https://app.fly.dev/telegram）
+            TELEGRAM_WEBHOOK_PORT   本地监听端口（默认 8443）
+            TELEGRAM_WEBHOOK_SECRET 更新验证的密钥令牌
         """
         if not TELEGRAM_AVAILABLE:
             logger.error(
@@ -564,7 +562,7 @@ class TelegramAdapter(BasePlatformAdapter):
             if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
                 return False
 
-            # Build the application
+            # 构建应用
             builder = Application.builder().token(self.config.token)
             custom_base_url = self.config.extra.get("base_url")
             if custom_base_url:
@@ -577,9 +575,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, custom_base_url,
                 )
 
-            # PTB defaults (pool_timeout=1s) are too aggressive on flaky networks and
-            # can trigger "Pool timeout: All connections in the connection pool are occupied"
-            # during reconnect/bootstrap. Use safer defaults and allow env overrides.
+            # PTB 默认值 (pool_timeout=1s) 在不稳定网络上过于激进，可能在
+            # 重连/启动时触发 "Pool timeout: All connections in the connection pool are occupied"
+            # 使用更安全的默认值并允许环境变量覆盖。
             def _env_int(name: str, default: int) -> int:
                 try:
                     return int(os.getenv(name, str(default)))
@@ -617,8 +615,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name,
                     ", ".join(fallback_ips),
                 )
-                # Keep request/update pools separate to reduce contention during
-                # polling reconnect + bot API bootstrap/delete_webhook calls.
+                # 保持请求/更新池分离以减少轮询重连 + bot API
+                # 启动/delete_webhook 调用期间的竞争。
                 request = HTTPXRequest(
                     **request_kwargs,
                     httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
@@ -641,7 +639,7 @@ class TelegramAdapter(BasePlatformAdapter):
             self._app = builder.build()
             self._bot = self._app.bot
             
-            # Register handlers
+            # 注册消息处理器
             self._app.add_handler(TelegramMessageHandler(
                 filters.TEXT & ~filters.COMMAND,
                 self._handle_text_message
@@ -658,10 +656,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
                 self._handle_media_message
             ))
-            # Handle inline keyboard button callbacks (update prompts)
+            # 处理内联键盘按钮回调（更新提示）
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
             
-            # Start polling — retry initialize() for transient TLS resets
+            # 开始轮询 — 对瞬时 TLS 重置重试 initialize()
             try:
                 from telegram.error import NetworkError, TimedOut
             except ImportError:
@@ -683,14 +681,14 @@ class TelegramAdapter(BasePlatformAdapter):
                         raise
             await self._app.start()
 
-            # Decide between webhook and polling mode
+            # 决定使用 webhook 还是轮询模式
             webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
 
             if webhook_url:
-                # ── Webhook mode ─────────────────────────────────────
-                # Telegram pushes updates to our HTTP endpoint.  This
-                # enables cloud platforms (Fly.io, Railway) to auto-wake
-                # suspended machines on inbound HTTP traffic.
+                # ── Webhook 模式 ─────────────────────────────────────
+                # Telegram 将更新推送到我们的 HTTP 端点。这使得
+                # 云平台（Fly.io、Railway）可以在收到入站 HTTP 流量时
+                # 自动唤醒挂起的机器。
                 webhook_port = int(os.getenv("TELEGRAM_WEBHOOK_PORT", "8443"))
                 webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip() or None
                 from urllib.parse import urlparse
@@ -711,9 +709,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, webhook_port, webhook_path,
                 )
             else:
-                # ── Polling mode (default) ───────────────────────────
-                # Clear any stale webhook first so polling doesn't inherit a
-                # previous webhook registration and silently stop receiving updates.
+                # ── 轮询模式（默认）───────────────────────────
+                # 先清除任何残留的 webhook 以防轮询继承之前的
+                # webhook 注册并静默停止接收更新。
                 delete_webhook = getattr(self._bot, "delete_webhook", None)
                 if callable(delete_webhook):
                     await delete_webhook(drop_pending_updates=False)
@@ -731,7 +729,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     else:
                         logger.error("[%s] Telegram polling error: %s", self.name, error, exc_info=True)
 
-                # Store reference for retry use in _handle_polling_conflict
+                # 存储引用以便在 _handle_polling_conflict 中重试时使用
                 self._polling_error_callback_ref = _polling_error_callback
 
                 await self._app.updater.start_polling(
@@ -740,15 +738,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     error_callback=_polling_error_callback,
                 )
             
-            # Register bot commands so Telegram shows a hint menu when users type /
-            # List is derived from the central COMMAND_REGISTRY — adding a new
-            # gateway command there automatically adds it to the Telegram menu.
+            # 注册机器人命令，使 Telegram 在用户输入 / 时显示提示菜单
+            # 列表来自中央 COMMAND_REGISTRY — 在那里添加新的
+            # 网关命令会自动添加到 Telegram 菜单。
             try:
                 from telegram import BotCommand
                 from hermes_cli.commands import telegram_menu_commands
-                # Telegram allows up to 100 commands but has an undocumented
-                # payload size limit.  Skill descriptions are truncated to 40
-                # chars in telegram_menu_commands() to fit 100 commands safely.
+                # Telegram 允许最多 100 个命令但有未记录的
+                # 载荷大小限制。技能描述在 telegram_menu_commands() 中
+                # 被截断为 40 个字符以安全容纳 100 个命令。
                 menu_commands, hidden_count = telegram_menu_commands(max_commands=100)
                 await self._bot.set_my_commands([
                     BotCommand(name, desc) for name, desc in menu_commands
@@ -770,9 +768,9 @@ class TelegramAdapter(BasePlatformAdapter):
             mode = "webhook" if self._webhook_mode else "polling"
             logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
 
-            # Set up DM topics (Bot API 9.4 — Private Chat Topics)
-            # Runs after connection is established so the bot can call createForumTopic.
-            # Failures here are non-fatal — the bot works fine without topics.
+            # 设置 DM 话题（Bot API 9.4 — 私聊话题）
+            # 在连接建立后运行，这样机器人可以调用 createForumTopic。
+            # 此处失败是非致命的 — 机器人没有话题也能正常工作。
             try:
                 await self._setup_dm_topics()
             except Exception as topics_err:
@@ -791,7 +789,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
     
     async def disconnect(self) -> None:
-        """Stop polling/webhook, cancel pending album flushes, and disconnect."""
+        """停止轮询/webhook，取消待处理的相册刷新，并断开连接。"""
         pending_media_group_tasks = list(self._media_group_tasks.values())
         for task in pending_media_group_tasks:
             task.cancel()
@@ -802,7 +800,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         if self._app:
             try:
-                # Only stop the updater if it's running
+                # 仅在更新器运行时停止它
                 if self._app.updater and self._app.updater.running:
                     await self._app.updater.stop()
                 if self._app.running:
@@ -824,14 +822,14 @@ class TelegramAdapter(BasePlatformAdapter):
         logger.info("[%s] Disconnected from Telegram", self.name)
 
     def _should_thread_reply(self, reply_to: Optional[str], chunk_index: int) -> bool:
-        """Determine if this message chunk should thread to the original message.
+        """判断此消息分段是否应回复原始消息。
 
         Args:
-            reply_to: The original message ID to reply to
-            chunk_index: Index of this chunk (0 = first chunk)
+            reply_to: 要回复的原始消息 ID
+            chunk_index: 此分段的索引（0 = 第一个分段）
 
         Returns:
-            True if this chunk should be threaded to the original message
+            如果此分段应回复原始消息则返回 True
         """
         if not reply_to:
             return False
@@ -850,24 +848,24 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None
     ) -> SendResult:
-        """Send a message to a Telegram chat."""
+        """向 Telegram 聊天发送消息。"""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         
-        # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
+        # 跳过仅含空白的文本以防止 Telegram 400 空文本错误。
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
         
         try:
-            # Format and split message if needed
+            # 格式化并在需要时拆分消息
             formatted = self.format_message(content)
             chunks = self.truncate_message(
                 formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
             )
             if len(chunks) > 1:
-                # truncate_message appends a raw " (1/2)" suffix. Escape the
-                # MarkdownV2-special parentheses so Telegram doesn't reject the
-                # chunk and fall back to plain text.
+                # truncate_message 追加了原始 " (1/2)" 后缀。转义
+                # MarkdownV2 特殊字符括号，避免 Telegram 拒绝分段
+                # 并回退到纯文本。
                 chunks = [
                     re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
                     for chunk in chunks
@@ -899,7 +897,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 msg = None
                 for _send_attempt in range(3):
                     try:
-                        # Try Markdown first, fall back to plain text if it fails
+                        # 先尝试 Markdown，失败后回退到纯文本
                         try:
                             msg = await self._bot.send_message(
                                 chat_id=int(chat_id),
@@ -910,7 +908,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 **self._link_preview_kwargs(),
                             )
                         except Exception as md_error:
-                            # Markdown parsing failed, try plain text
+                            # Markdown 解析失败，尝试纯文本
                             if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
                                 logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
                                 plain_chunk = _strip_mdv2(chunk)
@@ -924,17 +922,16 @@ class TelegramAdapter(BasePlatformAdapter):
                                 )
                             else:
                                 raise
-                        break  # success
+                        break  # 成功
                     except _NetErr as send_err:
-                        # BadRequest is a subclass of NetworkError in
-                        # python-telegram-bot but represents permanent errors
-                        # (not transient network issues). Detect and handle
-                        # specific cases instead of blindly retrying.
+                        # BadRequest 是 python-telegram-bot 中 NetworkError 的子类，
+                        # 但表示永久性错误（非瞬时网络问题）。
+                        # 检测并处理特定情况，而不是盲目重试。
                         if _BadReq and isinstance(send_err, _BadReq):
                             if self._is_thread_not_found_error(send_err) and effective_thread_id is not None:
-                                # Thread doesn't exist — retry without
-                                # message_thread_id so the message still
-                                # reaches the chat.
+                                # 话题不存在 — 不带
+                                # message_thread_id 重试以确保消息仍能
+                                # 到达聊天。
                                 logger.warning(
                                     "[%s] Thread %s not found, retrying without message_thread_id",
                                     self.name, effective_thread_id,
@@ -943,20 +940,18 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                             err_lower = str(send_err).lower()
                             if "message to be replied not found" in err_lower and reply_to_id is not None:
-                                # Original message was deleted before we
-                                # could reply — clear reply target and retry
-                                # so the response is still delivered.
+                                # 原始消息在我们回复之前已被删除 —
+                                # 清除回复目标并重试，确保回复仍能送达。
                                 logger.warning(
                                     "[%s] Reply target deleted, retrying without reply_to: %s",
                                     self.name, send_err,
                                 )
                                 reply_to_id = None
                                 continue
-                            # Other BadRequest errors are permanent — don't retry
+                            # 其他 BadRequest 错误是永久性的 — 不重试
                             raise
-                        # TimedOut is also a subclass of NetworkError but
-                        # indicates the request may have reached the server —
-                        # retrying risks duplicate message delivery.
+                        # TimedOut 也是 NetworkError 的子类，但表示请求
+                        # 可能已到达服务器 — 重试有重复发送消息的风险。
                         if _TimedOut and isinstance(send_err, _TimedOut):
                             raise
                         if _send_attempt < 2:
@@ -991,8 +986,8 @@ class TelegramAdapter(BasePlatformAdapter):
             
         except Exception as e:
             logger.error("[%s] Failed to send Telegram message: %s", self.name, e, exc_info=True)
-            # TimedOut means the request may have reached Telegram —
-            # mark as non-retryable so _send_with_retry() doesn't re-send.
+            # TimedOut 意味着请求可能已到达 Telegram —
+            # 标记为不可重试，使 _send_with_retry() 不会重新发送。
             _to = locals().get("_TimedOut")
             err_str = str(e).lower()
             is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
@@ -1004,7 +999,7 @@ class TelegramAdapter(BasePlatformAdapter):
         message_id: str,
         content: str,
     ) -> SendResult:
-        """Edit a previously sent Telegram message."""
+        """编辑之前发送的 Telegram 消息。"""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         try:
@@ -1017,10 +1012,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     parse_mode=ParseMode.MARKDOWN_V2,
                 )
             except Exception as fmt_err:
-                # "Message is not modified" is a no-op, not an error
+                # "Message is not modified" 是空操作，不是错误
                 if "not modified" in str(fmt_err).lower():
                     return SendResult(success=True, message_id=message_id)
-                # Fallback: retry without markdown formatting
+                # 回退：不带 markdown 格式重试
                 await self._bot.edit_message_text(
                     chat_id=int(chat_id),
                     message_id=int(message_id),
@@ -1029,12 +1024,12 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             err_str = str(e).lower()
-            # "Message is not modified" — content identical, treat as success
+            # "Message is not modified" — 内容相同，视为成功
             if "not modified" in err_str:
                 return SendResult(success=True, message_id=message_id)
-            # Message too long — content exceeded 4096 chars (e.g. during
-            # streaming).  Truncate and succeed so the stream consumer can
-            # split the overflow into a new message instead of dying.
+            # 消息过长 — 内容超过 4096 字符（例如流式传输期间）。
+            # 截断并成功返回，使流消费者可以将溢出部分拆分到
+            # 新消息中，而不是崩溃。
             if "message_too_long" in err_str or "too long" in err_str:
                 truncated = _prefix_within_utf16_limit(
                     content, self.MAX_MESSAGE_LENGTH - 20
@@ -1046,11 +1041,11 @@ class TelegramAdapter(BasePlatformAdapter):
                         text=truncated,
                     )
                 except Exception:
-                    pass  # best-effort truncation
+                    pass  # 尽力截断
                 return SendResult(success=True, message_id=message_id)
-            # Flood control / RetryAfter — short waits are retried inline,
-            # long waits return a failure immediately so streaming can fall back
-            # to a normal final send instead of leaving a truncated partial.
+            # 流量控制 / RetryAfter — 短等待内联重试，
+            # 长等待立即返回失败，使流式传输可以回退到
+            # 正常的最终发送，而不是留下截断的部分内容。
             retry_after = getattr(e, "retry_after", None)
             if retry_after is not None or "retry after" in err_str:
                 wait = retry_after if retry_after else 1.0
@@ -1087,10 +1082,10 @@ class TelegramAdapter(BasePlatformAdapter):
         self, chat_id: str, prompt: str, default: str = "",
         session_key: str = "",
     ) -> SendResult:
-        """Send an inline-keyboard update prompt (Yes / No buttons).
+        """发送内联键盘更新提示（是/否按钮）。
 
-        Used by the gateway ``/update`` watcher when ``hermes update --gateway``
-        needs user input (stash restore, config migration).
+        当 ``hermes update --gateway`` 需要用户输入（暂存恢复、
+        配置迁移）时由网关 ``/update`` 监视器使用。
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
@@ -1120,10 +1115,10 @@ class TelegramAdapter(BasePlatformAdapter):
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send an inline-keyboard approval prompt with interactive buttons.
+        """发送带交互按钮的内联键盘审批提示。
 
-        The buttons call ``resolve_gateway_approval()`` to unblock the waiting
-        agent thread — same mechanism as the text ``/approve`` flow.
+        按钮调用 ``resolve_gateway_approval()`` 来解除等待中的
+        代理线程 — 与文本 ``/approve`` 流程使用相同机制。
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
@@ -1136,12 +1131,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 f"Reason: {_html.escape(description)}"
             )
 
-            # Resolve thread context for thread replies
+            # 解析回复的话题上下文
             thread_id = self._metadata_thread_id(metadata)
 
-            # We'll use the message_id as part of callback_data to look up session_key
-            # Send a placeholder first, then update — or use a counter.
-            # Simpler: use a monotonic counter to generate short IDs.
+            # 我们将使用 message_id 作为 callback_data 的一部分来查找 session_key
+            # 先发送占位符再更新 — 或使用计数器。
+            # 更简单的方式：使用单调递增计数器生成短 ID。
             import itertools
             if not hasattr(self, "_approval_counter"):
                 self._approval_counter = itertools.count(1)
@@ -1171,7 +1166,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
             msg = await self._bot.send_message(**kwargs)
 
-            # Store session_key keyed by approval_id for the callback handler
+            # 存储按 approval_id 索引的 session_key 供回调处理器使用
             self._approval_state[approval_id] = session_key
 
             return SendResult(success=True, message_id=str(msg.message_id))
@@ -1189,10 +1184,10 @@ class TelegramAdapter(BasePlatformAdapter):
         on_model_selected,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send an interactive inline-keyboard model picker.
+        """发送交互式内联键盘模型选择器。
 
-        Two-step drill-down: provider selection → model selection.
-        Edits the same message in-place as the user navigates.
+        两步下钻：提供者选择 → 模型选择。
+        用户导航时原地编辑同一条消息。
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
@@ -1204,14 +1199,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 return slug
 
         try:
-            # Build provider buttons — 2 per row
+            # 构建提供者按钮 — 每行 2 个
             buttons: list = []
             for p in providers:
                 count = p.get("total_models", len(p.get("models", [])))
                 label = f"{p['name']} ({count})"
                 if p.get("is_current"):
                     label = f"✓ {label}"
-                # Compact callback data: mp:<slug>  (max 64 bytes)
+                # 紧凑回调数据：mp:<slug>（最大 64 字节）
                 buttons.append(
                     InlineKeyboardButton(label, callback_data=f"mp:{p['slug']}")
                 )
@@ -1238,7 +1233,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 **self._link_preview_kwargs(),
             )
 
-            # Store picker state keyed by chat_id
+            # 存储按 chat_id 索引的选择器状态
             self._model_picker_state[str(chat_id)] = {
                 "msg_id": msg.message_id,
                 "providers": providers,
@@ -1256,7 +1251,7 @@ class TelegramAdapter(BasePlatformAdapter):
     _MODEL_PAGE_SIZE = 8
 
     def _build_model_keyboard(self, models: list, page: int) -> tuple:
-        """Build paginated model buttons. Returns (keyboard, page_info_text)."""
+        """构建分页模型按钮。返回 (keyboard, page_info_text)。"""
         page_size = self._MODEL_PAGE_SIZE
         total = len(models)
         total_pages = max(1, (total + page_size - 1) // page_size)
@@ -1278,7 +1273,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
 
-        # Pagination row (if needed)
+        # 分页行（如果需要）
         if total_pages > 1:
             nav: list = []
             if page > 0:
@@ -1299,7 +1294,7 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _handle_model_picker_callback(
         self, query, data: str, chat_id: str
     ) -> None:
-        """Handle model picker inline keyboard callbacks (mp:/mm:/mb:/mx:/mg:)."""
+        """处理模型选择器内联键盘回调 (mp:/mm:/mb:/mx:/mg:)。"""
         state = self._model_picker_state.get(chat_id)
         if not state:
             await query.answer(text="Picker expired — use /model again.")
@@ -1312,7 +1307,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 return slug
 
         if data.startswith("mp:"):
-            # --- Provider selected: show model buttons (page 0) ---
+            # --- 选择了提供者：显示模型按钮（第 0 页）---
             provider_slug = data[3:]
             provider = next(
                 (p for p in state["providers"] if p["slug"] == provider_slug),
@@ -1347,7 +1342,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer()
 
         elif data.startswith("mg:"):
-            # --- Page navigation ---
+            # --- 页面导航 ---
             try:
                 page = int(data[3:])
             except ValueError:
@@ -1381,7 +1376,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer()
 
         elif data.startswith("mm:"):
-            # --- Model selected: perform the switch ---
+            # --- 选择了模型：执行切换 ---
             try:
                 idx = int(data[3:])
             except ValueError:
@@ -1407,7 +1402,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.error("Model picker switch failed: %s", exc)
                 result_text = f"Error switching model: {exc}"
 
-            # Edit message to show confirmation, remove buttons
+            # 编辑消息显示确认，移除按钮
             try:
                 await query.edit_message_text(
                     text=result_text,
@@ -1415,7 +1410,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     reply_markup=None,
                 )
             except Exception:
-                # Markdown parse failure — retry as plain text
+                # Markdown 解析失败 — 以纯文本重试
                 try:
                     await query.edit_message_text(
                         text=result_text,
@@ -1426,11 +1421,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     pass
             await query.answer(text="Model switched!")
 
-            # Clean up state
+            # 清理状态
             self._model_picker_state.pop(chat_id, None)
 
         elif data == "mb":
-            # --- Back to provider list ---
+            # --- 返回提供者列表 ---
             buttons = []
             for p in state["providers"]:
                 count = p.get("total_models", len(p.get("models", [])))
@@ -1463,7 +1458,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer()
 
         elif data == "mx":
-            # --- Cancel ---
+            # --- 取消 ---
             self._model_picker_state.pop(chat_id, None)
             await query.edit_message_text(
                 text="Model selection cancelled.",
@@ -1472,26 +1467,26 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer()
 
         else:
-            # Catch-all (e.g. page counter button "mx:noop")
+            # 捕获所有（例如页面计数器按钮 "mx:noop"）
             await query.answer()
 
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
-        """Handle inline keyboard button clicks."""
+        """处理内联键盘按钮点击。"""
         query = update.callback_query
         if not query or not query.data:
             return
         data = query.data
 
-        # --- Model picker callbacks ---
+        # --- 模型选择器回调 ---
         if data.startswith(("mp:", "mm:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)
             return
 
-        # --- Exec approval callbacks (ea:choice:id) ---
+        # --- 命令执行审批回调 (ea:choice:id) ---
         if data.startswith("ea:"):
             parts = data.split(":", 2)
             if len(parts) == 3:
@@ -1502,7 +1497,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="Invalid approval data.")
                     return
 
-                # Only authorized users may click approval buttons.
+                # 只有授权用户可以点击审批按钮。
                 caller_id = str(getattr(query.from_user, "id", ""))
                 if not self._is_callback_user_authorized(caller_id):
                     await query.answer(text="⛔ You are not authorized to approve commands.")
@@ -1513,7 +1508,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="This approval has already been resolved.")
                     return
 
-                # Map choice to human-readable label
+                # 将选择映射为人类可读的标签
                 label_map = {
                     "once": "✅ Approved once",
                     "session": "✅ Approved for session",
@@ -1525,7 +1520,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 await query.answer(text=label)
 
-                # Edit message to show decision, remove buttons
+                # 编辑消息显示决定，移除按钮
                 try:
                     await query.edit_message_text(
                         text=f"{label} by {user_display}",
@@ -1533,9 +1528,9 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_markup=None,
                     )
                 except Exception:
-                    pass  # non-fatal if edit fails
+                    pass  # 编辑失败非致命
 
-                # Resolve the approval — unblocks the agent thread
+                # 解决审批 — 解除代理线程阻塞
                 try:
                     from tools.approval import resolve_gateway_approval
                     count = resolve_gateway_approval(session_key, choice)
@@ -1547,7 +1542,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
             return
 
-        # --- Update prompt callbacks ---
+        # --- 更新提示回调 ---
         if not data.startswith("update_prompt:"):
             return
         answer = data.split(":", 1)[1]  # "y" or "n"
@@ -1556,7 +1551,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer(text="⛔ You are not authorized to answer update prompts.")
             return
         await query.answer(text=f"Sent '{answer}' to the update process.")
-        # Edit the message to show the choice and remove buttons
+        # 编辑消息以显示选择并移除按钮
         label = "Yes" if answer == "y" else "No"
         try:
             await query.edit_message_text(
@@ -1566,7 +1561,7 @@ class TelegramAdapter(BasePlatformAdapter):
             )
         except Exception:
             pass  # non-fatal if edit fails
-        # Write the response file
+        # 写入响应文件
         try:
             from hermes_constants import get_hermes_home
             home = get_hermes_home()
@@ -1588,7 +1583,7 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """Send audio as a native Telegram voice message or audio file."""
+        """以原生 Telegram 语音消息或音频文件发送音频。"""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         
@@ -1598,7 +1593,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=f"Audio file not found: {audio_path}")
             
             with open(audio_path, "rb") as audio_file:
-                # .ogg files -> send as voice (round playable bubble)
+                # .ogg 文件 -> 以语音发送（圆形可播放气泡）
                 if audio_path.endswith((".ogg", ".opus")):
                     _voice_thread = self._metadata_thread_id(metadata)
                     msg = await self._bot.send_voice(
@@ -1609,7 +1604,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         message_thread_id=self._message_thread_id_for_send(_voice_thread),
                     )
                 else:
-                    # .mp3 and others -> send as audio file
+                    # .mp3 和其他格式 -> 以音频文件发送
                     _audio_thread = self._metadata_thread_id(metadata)
                     msg = await self._bot.send_audio(
                         chat_id=int(chat_id),
@@ -1637,7 +1632,7 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """Send a local image file natively as a Telegram photo."""
+        """以原生 Telegram 照片发送本地图片文件。"""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
@@ -1675,7 +1670,7 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """Send a document/file natively as a Telegram file attachment."""
+        """以原生 Telegram 文件附件发送文档/文件。"""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
@@ -1709,7 +1704,7 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """Send a video natively as a Telegram video message."""
+        """以原生 Telegram 视频消息发送视频。"""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
@@ -1739,10 +1734,10 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send an image natively as a Telegram photo.
-        
-        Tries URL-based send first (fast, works for <5MB images).
-        Falls back to downloading and uploading as file (supports up to 10MB).
+        """以原生 Telegram 照片发送图片。
+
+        先尝试基于 URL 发送（快速，适用于 <5MB 图片）。
+        回退到下载后作为文件上传（支持最大 10MB）。
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
@@ -1753,7 +1748,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
 
         try:
-            # Telegram can send photos directly from URLs (up to ~5MB)
+            # Telegram 可以直接从 URL 发送照片（最大约 5MB）
             _photo_thread = self._metadata_thread_id(metadata)
             msg = await self._bot.send_photo(
                 chat_id=int(chat_id),
@@ -1770,7 +1765,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
-            # Fallback: download and upload as file (supports up to 10MB)
+            # 回退：下载后作为文件上传（支持最大 10MB）
             try:
                 import httpx
                 async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1793,7 +1788,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     e2,
                     exc_info=True,
                 )
-                # Final fallback: send URL as text
+                # 最终回退：以文本发送 URL
                 return await super().send_image(chat_id, image_url, caption, reply_to)
     
     async def send_animation(
@@ -1804,7 +1799,7 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send an animated GIF natively as a Telegram animation (auto-plays inline)."""
+        """以原生 Telegram 动画发送动态 GIF（自动内联播放）。"""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         
@@ -1825,11 +1820,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
-            # Fallback: try as a regular photo
+            # 回退：尝试作为普通照片发送
             return await self.send_image(chat_id, animation_url, caption, reply_to)
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
-        """Send typing indicator."""
+        """发送输入中指示器。"""
         if self._bot:
             try:
                 _typing_thread = self._metadata_thread_id(metadata)
@@ -1850,7 +1845,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     else:
                         raise
             except Exception as e:
-                # Typing failures are non-fatal; log at debug level only.
+                # 输入指示器失败是非致命的；仅在调试级别记录。
                 logger.debug(
                     "[%s] Failed to send Telegram typing indicator: %s",
                     self.name,
@@ -1859,7 +1854,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
     
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
-        """Get information about a Telegram chat."""
+        """获取 Telegram 聊天的信息。"""
         if not self._bot:
             return {"name": "Unknown", "type": "dm"}
         
@@ -1894,12 +1889,12 @@ class TelegramAdapter(BasePlatformAdapter):
     
     def format_message(self, content: str) -> str:
         """
-        Convert standard markdown to Telegram MarkdownV2 format.
+        将标准 markdown 转换为 Telegram MarkdownV2 格式。
 
-        Protected regions (code blocks, inline code) are extracted first so
-        their contents are never modified.  Standard markdown constructs
-        (headers, bold, italic, links) are translated to MarkdownV2 syntax,
-        and all remaining special characters are escaped.
+        受保护区域（代码块、内联代码）先被提取出来，
+        其内容永远不会被修改。标准 markdown 构造
+        （标题、粗体、斜体、链接）被翻译为 MarkdownV2 语法，
+        所有剩余特殊字符被转义。
         """
         if not content:
             return content
@@ -1908,7 +1903,7 @@ class TelegramAdapter(BasePlatformAdapter):
         counter = [0]
 
         def _ph(value: str) -> str:
-            """Stash *value* behind a placeholder token that survives escaping."""
+            """将 *value* 存储在占位符令牌后面，以在转义过程中保留。"""
             key = f"\x00PH{counter[0]}\x00"
             counter[0] += 1
             placeholders[key] = value
@@ -1916,8 +1911,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
         text = content
 
-        # 1) Protect fenced code blocks (``` ... ```)
-        #    Per MarkdownV2 spec, \ and ` inside pre/code must be escaped.
+        # 1) 保护围栏代码块 (``` ... ```)
+        #    按 MarkdownV2 规范，pre/code 内的 \ 和 ` 必须转义。
         def _protect_fenced(m):
             raw = m.group(0)
             # Split off opening ``` (with optional language) and closing ```
@@ -1934,16 +1929,16 @@ class TelegramAdapter(BasePlatformAdapter):
             text,
         )
 
-        # 2) Protect inline code (`...`)
-        #    Escape \ inside inline code per MarkdownV2 spec.
+        # 2) 保护内联代码 (`...`)
+        #    按 MarkdownV2 规范，转义内联代码中的 \。
         text = re.sub(
             r'(`[^`]+`)',
             lambda m: _ph(m.group(0).replace('\\', '\\\\')),
             text,
         )
 
-        # 3) Convert markdown links – escape the display text; inside the URL
-        #    only ')' and '\' need escaping per the MarkdownV2 spec.
+        # 3) 转换 markdown 链接 — 转义显示文本；URL 内部
+        #    按 MarkdownV2 规范只需转义 ')' 和 '\'。
         def _convert_link(m):
             display = _escape_mdv2(m.group(1))
             url = m.group(2).replace('\\', '\\\\').replace(')', '\\)')
@@ -1951,10 +1946,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
         text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', _convert_link, text)
 
-        # 4) Convert markdown headers (## Title) → bold *Title*
+        # 4) 转换 markdown 标题 (## Title) → 粗体 *Title*
         def _convert_header(m):
             inner = m.group(1).strip()
-            # Strip redundant bold markers that may appear inside a header
+            # 去除可能出现在标题内的冗余粗体标记
             inner = re.sub(r'\*\*(.+?)\*\*', r'\1', inner)
             return _ph(f'*{_escape_mdv2(inner)}*')
 
@@ -1962,44 +1957,44 @@ class TelegramAdapter(BasePlatformAdapter):
             r'^#{1,6}\s+(.+)$', _convert_header, text, flags=re.MULTILINE
         )
 
-        # 5) Convert bold: **text** → *text* (MarkdownV2 bold)
+        # 5) 转换粗体：**text** → *text*（MarkdownV2 粗体）
         text = re.sub(
             r'\*\*(.+?)\*\*',
             lambda m: _ph(f'*{_escape_mdv2(m.group(1))}*'),
             text,
         )
 
-        # 6) Convert italic: *text* (single asterisk) → _text_ (MarkdownV2 italic)
-        #    [^*\n]+ prevents matching across newlines (which would corrupt
-        #    bullet lists using * markers and multi-line content).
+        # 6) 转换斜体：*text*（单星号）→ _text_（MarkdownV2 斜体）
+        #    [^*\n]+ 防止跨行匹配（否则会破坏使用 * 标记的
+        #    项目列表和多行内容）。
         text = re.sub(
             r'\*([^*\n]+)\*',
             lambda m: _ph(f'_{_escape_mdv2(m.group(1))}_'),
             text,
         )
 
-        # 7) Convert strikethrough: ~~text~~ → ~text~ (MarkdownV2)
+        # 7) 转换删除线：~~text~~ → ~text~（MarkdownV2）
         text = re.sub(
             r'~~(.+?)~~',
             lambda m: _ph(f'~{_escape_mdv2(m.group(1))}~'),
             text,
         )
 
-        # 8) Convert spoiler: ||text|| → ||text|| (protect from | escaping)
+        # 8) 转换遮挡：||text|| → ||text||（保护 | 免受转义）
         text = re.sub(
             r'\|\|(.+?)\|\|',
             lambda m: _ph(f'||{_escape_mdv2(m.group(1))}||'),
             text,
         )
 
-        # 9) Convert blockquotes: > at line start → protect > from escaping
-        #    Handle both regular blockquotes (> text) and expandable blockquotes
-        #    (Telegram MarkdownV2: **> for expandable start, || to end the quote)
+        # 9) 转换引用块：行首的 > → 保护 > 免受转义
+        #    处理常规引用块 (> text) 和可展开引用块
+        #    （Telegram MarkdownV2：**> 表示可展开起始，|| 结束引用）
         def _convert_blockquote(m):
             prefix = m.group(1)  # >, >>, >>>, **>, or **>> etc.
             content = m.group(2)
-            # Check if content ends with || (expandable blockquote end marker)
-            # In this case, preserve the trailing || unescaped for Telegram
+            # 检查内容是否以 || 结尾（可展开引用块结束标记）
+            # 此情况下，保留尾部 || 不转义以供 Telegram 使用
             if prefix.startswith('**') and content.endswith('||'):
                 return _ph(f'{prefix} {_escape_mdv2(content[:-2])}||')
             return _ph(f'{prefix} {_escape_mdv2(content)}')
@@ -2011,39 +2006,39 @@ class TelegramAdapter(BasePlatformAdapter):
             flags=re.MULTILINE,
         )
 
-        # 10) Escape remaining special characters in plain text
+        # 10) 转义纯文本中剩余的特殊字符
         text = _escape_mdv2(text)
 
-        # 11) Restore placeholders in reverse insertion order so that
-        #    nested references (a placeholder inside another) resolve correctly.
+        # 11) 按逆插入顺序恢复占位符，使嵌套引用
+        #    （占位符内的占位符）能正确解析。
         for key in reversed(list(placeholders.keys())):
             text = text.replace(key, placeholders[key])
 
-        # 12) Safety net: escape unescaped ( ) { } that slipped through
-        #     placeholder processing.  Split the text into code/non-code
-        #     segments so we never touch content inside ``` or ` spans.
+        # 12) 安全网：转义通过占位符处理遗漏的未转义 ( ) { }。
+        #     将文本拆分为代码/非代码段，
+        #     确保永远不修改 ``` 或 ` 内的内容。
         _code_split = re.split(r'(```[\s\S]*?```|`[^`]+`)', text)
         _safe_parts = []
         for _idx, _seg in enumerate(_code_split):
             if _idx % 2 == 1:
-                # Inside code span/block — leave untouched
+                # 在代码段/块内 — 保持不变
                 _safe_parts.append(_seg)
             else:
-                # Outside code — escape bare ( ) { }
+                # 代码外部 — 转义裸露的 ( ) { }
                 def _esc_bare(m, _seg=_seg):
                     s = m.start()
                     ch = m.group(0)
-                    # Already escaped
+                    # 已转义
                     if s > 0 and _seg[s - 1] == '\\':
                         return ch
-                    # ( that opens a MarkdownV2 link [text](url)
+                    # 打开 MarkdownV2 链接 [text](url) 的 (
                     if ch == '(' and s > 0 and _seg[s - 1] == ']':
                         return ch
-                    # ) that closes a link URL
+                    # 关闭链接 URL 的 )
                     if ch == ')':
                         before = _seg[:s]
                         if '](http' in before or '](' in before:
-                            # Check depth
+                            # 检查深度
                             depth = 0
                             for j in range(s - 1, max(s - 2000, -1), -1):
                                 if _seg[j] == '(':
@@ -2060,10 +2055,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
         return text
     
-    # ── Group mention gating ──────────────────────────────────────────────
+    # ── 群组提及门控 ──────────────────────────────────────────────
 
     def _telegram_require_mention(self) -> bool:
-        """Return whether group chats should require an explicit bot trigger."""
+        """返回群聊是否应要求显式机器人触发。"""
         configured = self.config.extra.get("require_mention")
         if configured is not None:
             if isinstance(configured, str):
@@ -2101,7 +2096,7 @@ class TelegramAdapter(BasePlatformAdapter):
         return ignored
 
     def _compile_mention_patterns(self) -> List[re.Pattern]:
-        """Compile optional regex wake-word patterns for group triggers."""
+        """编译可选的正则唤醒词模式用于群组触发。"""
         patterns = self.config.extra.get("mention_patterns")
         if patterns is None:
             raw = os.getenv("TELEGRAM_MENTION_PATTERNS", "").strip()
@@ -2199,15 +2194,15 @@ class TelegramAdapter(BasePlatformAdapter):
         return cleaned or text
 
     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
-        """Apply Telegram group trigger rules.
+        """应用 Telegram 群组触发规则。
 
-        DMs remain unrestricted. Group/supergroup messages are accepted when:
-        - the chat is explicitly allowlisted in ``free_response_chats``
-        - ``require_mention`` is disabled
-        - the message is a command
-        - the message replies to the bot
-        - the bot is @mentioned
-        - the text/caption matches a configured regex wake-word pattern
+        DM 保持不受限。群组/超级群组消息在以下情况下被接受：
+        - 聊天被显式添加到 ``free_response_chats`` 白名单中
+        - ``require_mention`` 被禁用
+        - 消息是命令
+        - 消息回复了机器人
+        - 机器人被 @提及
+        - 文本/标题匹配配置的正则唤醒词模式
         """
         if not self._is_group_chat(message):
             return True
@@ -2231,11 +2226,11 @@ class TelegramAdapter(BasePlatformAdapter):
         return self._message_matches_mention_patterns(message)
 
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming text messages.
+        """处理传入的文本消息。
 
-        Telegram clients split long messages into multiple updates.  Buffer
-        rapid successive text messages from the same user/chat and aggregate
-        them into a single MessageEvent before dispatching.
+        Telegram 客户端会将长消息拆分为多个更新。缓冲来自
+        同一用户/聊天的快速连续文本消息，聚合为单个
+        MessageEvent 后再分发。
         """
         if not update.message or not update.message.text:
             return
@@ -2247,7 +2242,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._enqueue_text_event(event)
     
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming command messages."""
+        """处理传入的命令消息。"""
         if not update.message or not update.message.text:
             return
         if not self._should_process_message(update.message, is_command=True):
@@ -2257,7 +2252,7 @@ class TelegramAdapter(BasePlatformAdapter):
         await self.handle_message(event)
     
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming location/venue pin messages."""
+        """处理传入的位置/场馆标注消息。"""
         if not update.message:
             return
         if not self._should_process_message(update.message):
@@ -2275,7 +2270,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if lat is None or lon is None:
             return
 
-        # Build a text message with coordinates and context
+        # 构建包含坐标和上下文的文本消息
         parts = ["[The user shared a location pin.]"]
         if venue:
             title = getattr(venue, "title", None)
@@ -2294,11 +2289,11 @@ class TelegramAdapter(BasePlatformAdapter):
         await self.handle_message(event)
 
     # ------------------------------------------------------------------
-    # Text message aggregation (handles Telegram client-side splits)
+    # 文本消息聚合（处理 Telegram 客户端侧拆分）
     # ------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching."""
+        """会话范围的文本消息批处理键。"""
         from gateway.session import build_session_key
         return build_session_key(
             event.source,
@@ -2307,12 +2302,11 @@ class TelegramAdapter(BasePlatformAdapter):
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
-        """Buffer a text event and reset the flush timer.
+        """缓冲文本事件并重置刷新定时器。
 
-        When Telegram splits a long user message into multiple updates,
-        they arrive within a few hundred milliseconds.  This method
-        concatenates them and waits for a short quiet period before
-        dispatching the combined message.
+        当 Telegram 将长用户消息拆分为多个更新时，
+        它们会在几百毫秒内到达。此方法将它们拼接起来，
+        等待短暂的静默期后再分发合并的消息。
         """
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
@@ -2321,16 +2315,16 @@ class TelegramAdapter(BasePlatformAdapter):
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             self._pending_text_batches[key] = event
         else:
-            # Append text from the follow-up chunk
+            # 追加后续分段的文本
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-            # Merge any media that might be attached
+            # 合并可能附加的媒体
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
 
-        # Cancel any pending flush and restart the timer
+        # 取消任何待处理的刷新并重启定时器
         prior_task = self._pending_text_batch_tasks.get(key)
         if prior_task and not prior_task.done():
             prior_task.cancel()
@@ -2339,15 +2333,15 @@ class TelegramAdapter(BasePlatformAdapter):
         )
 
     async def _flush_text_batch(self, key: str) -> None:
-        """Wait for the quiet period then dispatch the aggregated text.
+        """等待静默期后分发聚合的文本。
 
-        Uses a longer delay when the latest chunk is near Telegram's 4096-char
-        split point, since a continuation chunk is almost certain.
+        当最新分段接近 Telegram 4096 字符拆分点时使用更长的延迟，
+        因为几乎可以确定会有后续分段。
         """
         current_task = asyncio.current_task()
         try:
-            # Adaptive delay: if the latest chunk is near Telegram's 4096-char
-            # split point, a continuation is almost certain — wait longer.
+            # 自适应延迟：如果最新分段接近 Telegram 4096 字符
+            # 拆分点，几乎可以确定会有后续分段 — 等待更长时间。
             pending = self._pending_text_batches.get(key)
             last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
             if last_len >= self._SPLIT_THRESHOLD:
@@ -2368,11 +2362,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._pending_text_batch_tasks.pop(key, None)
 
     # ------------------------------------------------------------------
-    # Photo batching
+    # 照片批处理
     # ------------------------------------------------------------------
 
     def _photo_batch_key(self, event: MessageEvent, msg: Message) -> str:
-        """Return a batching key for Telegram photos/albums."""
+        """返回 Telegram 照片/相册的批处理键。"""
         from gateway.session import build_session_key
         session_key = build_session_key(
             event.source,
@@ -2385,7 +2379,7 @@ class TelegramAdapter(BasePlatformAdapter):
         return f"{session_key}:photo-burst"
 
     async def _flush_photo_batch(self, batch_key: str) -> None:
-        """Send a buffered photo burst/album as a single MessageEvent."""
+        """将缓冲的照片连发/相册作为单个 MessageEvent 发送。"""
         current_task = asyncio.current_task()
         try:
             await asyncio.sleep(self._media_batch_delay_seconds)
@@ -2399,7 +2393,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._pending_photo_batch_tasks.pop(batch_key, None)
 
     def _enqueue_photo_event(self, batch_key: str, event: MessageEvent) -> None:
-        """Merge photo events into a pending batch and schedule flush."""
+        """将照片事件合并到待处理批次并调度刷新。"""
         existing = self._pending_photo_batches.get(batch_key)
         if existing is None:
             self._pending_photo_batches[batch_key] = event
@@ -2416,7 +2410,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_photo_batch_tasks[batch_key] = asyncio.create_task(self._flush_photo_batch(batch_key))
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming media messages, downloading images to local cache."""
+        """处理传入的媒体消息，将图片下载到本地缓存。"""
         if not update.message:
             return
         if not self._should_process_message(update.message):
@@ -2424,7 +2418,7 @@ class TelegramAdapter(BasePlatformAdapter):
         
         msg = update.message
         
-        # Determine media type
+        # 确定媒体类型
         if msg.sticker:
             msg_type = MessageType.STICKER
         elif msg.photo:
@@ -2442,33 +2436,33 @@ class TelegramAdapter(BasePlatformAdapter):
         
         event = self._build_message_event(msg, msg_type)
         
-        # Add caption as text
+        # 添加标题作为文本
         if msg.caption:
             event.text = self._clean_bot_trigger_text(msg.caption)
         
-        # Handle stickers: describe via vision tool with caching
+        # 处理贴纸：通过视觉工具描述并缓存
         if msg.sticker:
             await self._handle_sticker(msg, event)
             await self.handle_message(event)
             return
         
-        # Download photo to local image cache so the vision tool can access it
-        # even after Telegram's ephemeral file URLs expire (~1 hour).
+        # 下载照片到本地图片缓存，使视觉工具可以访问它，
+        # 即使 Telegram 的临时文件 URL 过期（约 1 小时）后也能使用。
         if msg.photo:
             try:
-                # msg.photo is a list of PhotoSize sorted by size; take the largest
+                # msg.photo 是按大小排列的 PhotoSize 列表；取最大的
                 photo = msg.photo[-1]
                 file_obj = await photo.get_file()
-                # Download the image bytes directly into memory
+                # 将图片字节直接下载到内存
                 image_bytes = await file_obj.download_as_bytearray()
-                # Determine extension from the file path if available
+                # 从文件路径确定扩展名（如果可用）
                 ext = ".jpg"
                 if file_obj.file_path:
                     for candidate in [".png", ".webp", ".gif", ".jpeg", ".jpg"]:
                         if file_obj.file_path.lower().endswith(candidate):
                             ext = candidate
                             break
-                # Save to local cache (for vision tool access)
+                # 保存到本地缓存（供视觉工具访问）
                 cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
                 event.media_urls = [cached_path]
                 event.media_types = [f"image/{ext.lstrip('.')}" ]
@@ -2484,7 +2478,7 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache photo: %s", e, exc_info=True)
 
-        # Download voice/audio messages to cache for STT transcription
+        # 下载语音/音频消息到缓存用于 STT 转录
         if msg.voice:
             try:
                 file_obj = await msg.voice.get_file()
@@ -2506,23 +2500,23 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
 
-        # Download document files to cache for agent processing
+        # 下载文档文件到缓存供代理处理
         elif msg.document:
             doc = msg.document
             try:
-                # Determine file extension
+                # 确定文件扩展名
                 ext = ""
                 original_filename = doc.file_name or ""
                 if original_filename:
                     _, ext = os.path.splitext(original_filename)
                     ext = ext.lower()
 
-                # If no extension from filename, reverse-lookup from MIME type
+                # 如果文件名没有扩展名，从 MIME 类型反向查找
                 if not ext and doc.mime_type:
                     mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
                     ext = mime_to_ext.get(doc.mime_type, "")
 
-                # Check if supported
+                # 检查是否支持
                 if ext not in SUPPORTED_DOCUMENT_TYPES:
                     supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
                     event.text = (
@@ -2533,7 +2527,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     await self.handle_message(event)
                     return
 
-                # Check file size (Telegram Bot API limit: 20 MB)
+                # 检查文件大小（Telegram Bot API 限制：20 MB）
                 MAX_DOC_BYTES = 20 * 1024 * 1024
                 if not doc.file_size or doc.file_size > MAX_DOC_BYTES:
                     event.text = (
@@ -2544,7 +2538,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     await self.handle_message(event)
                     return
 
-                # Download and cache
+                # 下载并缓存
                 file_obj = await doc.get_file()
                 doc_bytes = await file_obj.download_as_bytearray()
                 raw_bytes = bytes(doc_bytes)
@@ -2554,7 +2548,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.media_types = [mime_type]
                 logger.info("[Telegram] Cached user document at %s", cached_path)
 
-                # For text files, inject content into event.text (capped at 100 KB)
+                # 对于文本文件，将内容注入 event.text（上限 100 KB）
                 MAX_TEXT_INJECT_BYTES = 100 * 1024
                 if ext in (".md", ".txt") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                     try:
@@ -2583,12 +2577,12 @@ class TelegramAdapter(BasePlatformAdapter):
         await self.handle_message(event)
     
     async def _queue_media_group_event(self, media_group_id: str, event: MessageEvent) -> None:
-        """Buffer Telegram media-group items so albums arrive as one logical event.
+        """缓冲 Telegram 媒体组项目，使相册作为一个逻辑事件到达。
 
-        Telegram delivers albums as multiple updates with a shared media_group_id.
-        If we forward each item immediately, the gateway thinks the second image is a
-        new user message and interrupts the first. We debounce briefly and merge the
-        attachments into a single MessageEvent.
+        Telegram 以共享 media_group_id 的多个更新传递相册。
+        如果我们立即转发每个项目，网关会认为第二张图片是
+        新的用户消息并中断第一张。我们短暂防抖并将
+        附件合并为单个 MessageEvent。
         """
         existing = self._media_group_events.get(media_group_id)
         if existing is None:
@@ -2620,11 +2614,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_sticker(self, msg: Message, event: "MessageEvent") -> None:
         """
-        Describe a Telegram sticker via vision analysis, with caching.
+        通过视觉分析描述 Telegram 贴纸，带缓存。
 
-        For static stickers (WEBP), we download, analyze with vision, and cache
-        the description by file_unique_id. For animated/video stickers, we inject
-        a placeholder noting the emoji.
+        对于静态贴纸 (WEBP)，下载后用视觉工具分析，并按
+        file_unique_id 缓存描述。对于动画/视频贴纸，注入
+        标注表情符号的占位符。
         """
         from gateway.sticker_cache import (
             get_cached_description,
@@ -2638,12 +2632,12 @@ class TelegramAdapter(BasePlatformAdapter):
         emoji = sticker.emoji or ""
         set_name = sticker.set_name or ""
 
-        # Animated and video stickers can't be analyzed as static images
+        # 动画和视频贴纸无法作为静态图片分析
         if sticker.is_animated or sticker.is_video:
             event.text = build_animated_sticker_injection(emoji)
             return
 
-        # Check the cache first
+        # 先检查缓存
         cached = get_cached_description(sticker.file_unique_id)
         if cached:
             event.text = build_sticker_injection(
@@ -2652,7 +2646,7 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.info("[Telegram] Sticker cache hit: %s", sticker.file_unique_id)
             return
 
-        # Cache miss -- download and analyze
+        # 缓存未命中 -- 下载并分析
         try:
             file_obj = await sticker.get_file()
             image_bytes = await file_obj.download_as_bytearray()
@@ -2673,7 +2667,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 cache_sticker_description(sticker.file_unique_id, description, emoji, set_name)
                 event.text = build_sticker_injection(description, emoji, set_name)
             else:
-                # Vision failed -- use emoji as fallback
+                # 视觉分析失败 -- 使用表情符号作为回退
                 event.text = build_sticker_injection(
                     f"a sticker with emoji {emoji}" if emoji else "a sticker",
                     emoji, set_name,
@@ -2686,10 +2680,10 @@ class TelegramAdapter(BasePlatformAdapter):
             )
 
     def _reload_dm_topics_from_config(self) -> None:
-        """Re-read dm_topics from config.yaml and load any new thread_ids into cache.
+        """从 config.yaml 重新读取 dm_topics 并将任何新的 thread_id 加载到缓存。
 
-        This allows topics created externally (e.g. by the agent via API) to be
-        recognized without a gateway restart.
+        这允许外部创建的话题（例如通过 API 由代理创建）
+        无需重启网关即可被识别。
         """
         try:
             from hermes_constants import get_hermes_home
@@ -2710,7 +2704,7 @@ class TelegramAdapter(BasePlatformAdapter):
             if not dm_topics:
                 return
 
-            # Update in-memory config and cache any new thread_ids
+            # 更新内存中的配置并缓存任何新的 thread_id
             self._dm_topics_config = dm_topics
             for chat_entry in dm_topics:
                 cid = chat_entry.get("chat_id")
@@ -2731,21 +2725,21 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.debug("[%s] Failed to reload dm_topics from config: %s", self.name, e)
 
     def _get_dm_topic_info(self, chat_id: str, thread_id: Optional[str]) -> Optional[Dict[str, Any]]:
-        """Look up DM topic config by chat_id and thread_id.
+        """按 chat_id 和 thread_id 查找 DM 话题配置。
 
-        Returns the topic config dict (name, skill, etc.) if this thread_id
-        matches a known DM topic, or None.
+        如果此 thread_id 匹配已知的 DM 话题则返回话题配置字典
+        （name、skill 等），否则返回 None。
         """
         if not thread_id:
             return None
 
         thread_id_int = int(thread_id)
 
-        # Check cached topics first (created by us or loaded at startup)
+        # 先检查已缓存的话题（由我们创建或启动时加载）
         for key, cached_tid in self._dm_topics.items():
             if cached_tid == thread_id_int and key.startswith(f"{chat_id}:"):
                 topic_name = key.split(":", 1)[1]
-                # Find the full config for this topic
+                # 查找此话题的完整配置
                 for chat_entry in self._dm_topics_config:
                     if str(chat_entry.get("chat_id")) == chat_id:
                         for t in chat_entry.get("topics", []):
@@ -2753,10 +2747,10 @@ class TelegramAdapter(BasePlatformAdapter):
                                 return t
                 return {"name": topic_name}
 
-        # Not in cache — hot-reload config in case topics were added externally
+        # 不在缓存中 — 热重载配置以防话题是在外部添加的
         self._reload_dm_topics_from_config()
 
-        # Check cache again after reload
+        # 重载后再次检查缓存
         for key, cached_tid in self._dm_topics.items():
             if cached_tid == thread_id_int and key.startswith(f"{chat_id}:"):
                 topic_name = key.split(":", 1)[1]
@@ -2770,7 +2764,7 @@ class TelegramAdapter(BasePlatformAdapter):
         return None
 
     def _cache_dm_topic_from_message(self, chat_id: str, thread_id: str, topic_name: str) -> None:
-        """Cache a thread_id -> topic_name mapping discovered from an incoming message."""
+        """缓存从传入消息中发现的 thread_id -> topic_name 映射。"""
         cache_key = f"{chat_id}:{topic_name}"
         if cache_key not in self._dm_topics:
             self._dm_topics[cache_key] = int(thread_id)
@@ -2780,18 +2774,18 @@ class TelegramAdapter(BasePlatformAdapter):
             )
 
     def _build_message_event(self, message: Message, msg_type: MessageType) -> MessageEvent:
-        """Build a MessageEvent from a Telegram message."""
+        """从 Telegram 消息构建 MessageEvent。"""
         chat = message.chat
         user = message.from_user
         
-        # Determine chat type
+        # 确定聊天类型
         chat_type = "dm"
         if chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
             chat_type = "group"
         elif chat.type == ChatType.CHANNEL:
             chat_type = "channel"
 
-        # Resolve DM topic name and skill binding
+        # 解析 DM 话题名称和技能绑定
         thread_id_raw = message.message_thread_id
         thread_id_str = str(thread_id_raw) if thread_id_raw is not None else None
         if chat_type == "group" and thread_id_str is None and getattr(chat, "is_forum", False):
@@ -2805,7 +2799,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 chat_topic = topic_info.get("name")
                 topic_skill = topic_info.get("skill")
 
-            # Also check forum_topic_created service message for topic discovery
+            # 也检查 forum_topic_created 服务消息以发现话题
             if hasattr(message, "forum_topic_created") and message.forum_topic_created:
                 created_name = message.forum_topic_created.name
                 if created_name:
@@ -2814,7 +2808,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         chat_topic = created_name
 
         elif chat_type == "group" and thread_id_str:
-            # Group/supergroup forum topic skill binding via config.extra['group_topics']
+            # 群组/超级群组论坛话题通过 config.extra['group_topics'] 绑定技能
             group_topics_config: list = self.config.extra.get("group_topics", [])
             for chat_entry in group_topics_config:
                 if str(chat_entry.get("chat_id", "")) == str(chat.id):
@@ -2826,7 +2820,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             break
                     break
 
-        # Build source
+        # 构建来源
         source = self.build_source(
             chat_id=str(chat.id),
             chat_name=chat.title or (chat.full_name if hasattr(chat, "full_name") else None),
@@ -2837,14 +2831,14 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_topic=chat_topic,
         )
         
-        # Extract reply context if this message is a reply
+        # 如果此消息是回复，提取回复上下文
         reply_to_id = None
         reply_to_text = None
         if message.reply_to_message:
             reply_to_id = str(message.reply_to_message.message_id)
             reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
 
-        # Per-channel/topic ephemeral prompt
+        # 每频道/话题的临时提示
         from gateway.platforms.base import resolve_channel_prompt
         _chat_id_str = str(chat.id)
         _channel_prompt = resolve_channel_prompt(
@@ -2866,14 +2860,14 @@ class TelegramAdapter(BasePlatformAdapter):
             timestamp=message.date,
         )
 
-    # ── Message reactions (processing lifecycle) ──────────────────────────
+    # ── 消息反应（处理生命周期）──────────────────────────
 
     def _reactions_enabled(self) -> bool:
-        """Check if message reactions are enabled via config/env."""
+        """检查消息反应是否通过配置/环境变量启用。"""
         return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in ("false", "0", "no")
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
-        """Set a single emoji reaction on a Telegram message."""
+        """在 Telegram 消息上设置单个表情反应。"""
         if not self._bot:
             return False
         try:
@@ -2888,7 +2882,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction when message processing begins."""
+        """消息处理开始时添加处理中反应。"""
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)
@@ -2897,10 +2891,10 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._set_reaction(chat_id, message_id, "\U0001f440")
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction.
+        """将处理中反应替换为最终的成功/失败反应。
 
-        Unlike Discord (additive reactions), Telegram's set_message_reaction
-        replaces all existing reactions in one call — no remove step needed.
+        与 Discord（累加反应）不同，Telegram 的 set_message_reaction
+        在一次调用中替换所有现有反应 — 无需移除步骤。
         """
         if not self._reactions_enabled():
             return

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract skill metadata from SKILL.md files and index caches into JSON."""
+"""从 SKILL.md 文件和索引缓存中提取技能元数据并生成 JSON。"""
 
 import json
 import os
@@ -149,7 +149,7 @@ def extract_cached_index_skills():
                     "name": agent.get("identifier", agent.get("meta", {}).get("title", "unknown")),
                     "description": (agent.get("meta", {}).get("description", "") or "").split("\n")[0][:200],
                     "category": _guess_category(agent.get("meta", {}).get("tags", [])),
-                    "categoryLabel": "",  # filled below
+                    "categoryLabel": "",  # 下方填充
                     "source": source_label,
                     "tags": agent.get("meta", {}).get("tags", []),
                     "platforms": [],

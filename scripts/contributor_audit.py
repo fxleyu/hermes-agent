@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Contributor Audit Script
+"""贡献者审计脚本
 
-Cross-references git authors, Co-authored-by trailers, and salvaged PR
-descriptions to find any contributors missing from the release notes.
+交叉引用 git 作者、Co-authored-by 尾部标记和挽救的 PR 描述，
+以查找发布说明中可能遗漏的贡献者。
 
-Usage:
-    # Basic audit since a tag
+用法:
+    # 从某个标签开始的基本审计
     python scripts/contributor_audit.py --since-tag v2026.4.8
 
-    # Audit with a custom endpoint
+    # 使用自定义终点的审计
     python scripts/contributor_audit.py --since-tag v2026.4.8 --until v2026.4.13
 
-    # Compare against a release notes file
+    # 与发布说明文件进行对比
     python scripts/contributor_audit.py --since-tag v2026.4.8 --release-file RELEASE_v0.9.0.md
 """
 
@@ -25,7 +25,7 @@ from collections import defaultdict
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Import AUTHOR_MAP and resolve_author from the sibling release.py module
+# 从同级 release.py 模块导入 AUTHOR_MAP 和 resolve_author
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -35,7 +35,7 @@ from release import AUTHOR_MAP, resolve_author  # noqa: E402
 REPO_ROOT = SCRIPT_DIR.parent
 
 # ---------------------------------------------------------------------------
-# AI assistants, bots, and machine accounts to exclude from contributor lists
+# 需要从贡献者列表中排除的 AI 助手、机器人和机器账户
 # ---------------------------------------------------------------------------
 IGNORED_PATTERNS = [
     re.compile(r"^Claude", re.IGNORECASE),
@@ -59,7 +59,7 @@ IGNORED_EMAILS = {
 
 
 def is_ignored(handle: str, email: str = "") -> bool:
-    """Return True if this contributor is a bot/AI/machine account."""
+    """判断该贡献者是否为机器人/AI/机器账户，返回 True 表示应忽略。"""
     if email in IGNORED_EMAILS:
         return True
     for pattern in IGNORED_PATTERNS:
@@ -69,11 +69,11 @@ def is_ignored(handle: str, email: str = "") -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# 辅助函数
 # ---------------------------------------------------------------------------
 
 def git(*args, cwd=None):
-    """Run a git command and return stdout."""
+    """运行 git 命令并返回标准输出。"""
     result = subprocess.run(
         ["git"] + list(args),
         capture_output=True,
@@ -87,10 +87,10 @@ def git(*args, cwd=None):
 
 
 def gh_pr_list():
-    """Fetch merged PRs from GitHub using the gh CLI.
+    """使用 gh CLI 从 GitHub 获取已合并的 PR。
 
-    Returns a list of dicts with keys: number, title, body, author.
-    Returns an empty list if gh is not available or the call fails.
+    返回包含 number、title、body、author 键的字典列表。
+    如果 gh 不可用或调用失败，返回空列表。
     """
     try:
         result = subprocess.run(
@@ -121,25 +121,25 @@ def gh_pr_list():
 
 
 # ---------------------------------------------------------------------------
-# Contributor collection
+# 贡献者收集
 # ---------------------------------------------------------------------------
 
-# Patterns that indicate salvaged/cherry-picked/co-authored work in PR bodies
+# 在 PR 正文中表示挽救/cherry-pick/co-author 工作的模式
 SALVAGE_PATTERNS = [
-    # "Salvaged from @username" or "Salvaged from #123"
+    # "Salvaged from @username" 或 "Salvaged from #123"
     re.compile(r"[Ss]alvaged\s+from\s+@(\w[\w-]*)"),
     re.compile(r"[Ss]alvaged\s+from\s+#(\d+)"),
-    # "Cherry-picked from @username"
+    # "Cherry-picked from @username"（从某用户的提交中 cherry-pick）
     re.compile(r"[Cc]herry[- ]?picked\s+from\s+@(\w[\w-]*)"),
-    # "Based on work by @username"
+    # "Based on work by @username"（基于某用户的工作）
     re.compile(r"[Bb]ased\s+on\s+work\s+by\s+@(\w[\w-]*)"),
-    # "Original PR by @username"
+    # "Original PR by @username"（原始 PR 的作者）
     re.compile(r"[Oo]riginal\s+PR\s+by\s+@(\w[\w-]*)"),
-    # "Co-authored with @username"
+    # "Co-authored with @username"（与某用户联合编写）
     re.compile(r"[Cc]o[- ]?authored\s+with\s+@(\w[\w-]*)"),
 ]
 
-# Pattern for Co-authored-by trailers in commit messages
+# 提交消息中 Co-authored-by 尾部标记的正则模式
 CO_AUTHORED_RE = re.compile(
     r"Co-authored-by:\s*(.+?)\s*<([^>]+)>",
     re.IGNORECASE,
@@ -147,11 +147,11 @@ CO_AUTHORED_RE = re.compile(
 
 
 def collect_commit_authors(since_tag, until="HEAD"):
-    """Collect contributors from git commit authors.
+    """从 git 提交作者中收集贡献者。
 
-    Returns:
-        contributors: dict mapping github_handle -> set of source labels
-        unknown_emails: dict mapping email -> git name (for emails not in AUTHOR_MAP)
+    返回:
+        contributors: 字典，映射 github_handle -> 来源标签集合
+        unknown_emails: 字典，映射 email -> git 名称（不在 AUTHOR_MAP 中的邮箱）
     """
     range_spec = f"{since_tag}..{until}"
     log = git(
@@ -175,11 +175,11 @@ def collect_commit_authors(since_tag, until="HEAD"):
         _sha, name, email, _subject = parts
 
         handle = resolve_author(name, email)
-        # resolve_author returns "@handle" or plain name
+        # resolve_author 返回 "@handle" 或纯名称
         if handle.startswith("@"):
             contributors[handle.lstrip("@")].add("commit")
         else:
-            # Could not resolve — record as unknown
+            # 无法解析 — 记录为未知
             contributors[handle].add("commit")
             unknown_emails[email] = name
 
@@ -187,14 +187,14 @@ def collect_commit_authors(since_tag, until="HEAD"):
 
 
 def collect_co_authors(since_tag, until="HEAD"):
-    """Collect contributors from Co-authored-by trailers in commit messages.
+    """从提交消息中的 Co-authored-by 尾部标记收集贡献者。
 
-    Returns:
-        contributors: dict mapping github_handle -> set of source labels
-        unknown_emails: dict mapping email -> git name
+    返回:
+        contributors: 字典，映射 github_handle -> 来源标签集合
+        unknown_emails: 字典，映射 email -> git 名称
     """
     range_spec = f"{since_tag}..{until}"
-    # Get full commit messages to scan for trailers
+    # 获取完整的提交消息以扫描尾部标记
     log = git(
         "log", range_spec,
         "--format=__COMMIT__%H%n%b",
@@ -223,19 +223,19 @@ def collect_co_authors(since_tag, until="HEAD"):
 
 
 def collect_salvaged_contributors(since_tag, until="HEAD"):
-    """Scan merged PR bodies for salvage/cherry-pick/co-author attribution.
+    """扫描已合并 PR 的描述，查找挽救/cherry-pick/co-author 的贡献者归属。
 
-    Uses the gh CLI to fetch PRs, then filters to the date range defined
-    by since_tag..until and scans bodies for salvage patterns.
+    使用 gh CLI 获取 PR，然后按 since_tag..until 定义的日期范围过滤，
+    并扫描 PR 正文中的挽救模式。
 
-    Returns:
-        contributors: dict mapping github_handle -> set of source labels
-        pr_refs: dict mapping github_handle -> list of PR numbers where found
+    返回:
+        contributors: 字典，映射 github_handle -> 来源标签集合
+        pr_refs: 字典，映射 github_handle -> 发现该贡献者的 PR 编号列表
     """
     contributors = defaultdict(set)
     pr_refs = defaultdict(list)
 
-    # Determine the date range from git tags/refs
+    # 从 git 标签/引用确定日期范围
     since_date = git("log", "-1", "--format=%aI", since_tag)
     if until == "HEAD":
         until_date = git("log", "-1", "--format=%aI", "HEAD")
@@ -251,7 +251,7 @@ def collect_salvaged_contributors(since_tag, until="HEAD"):
         return contributors, pr_refs
 
     for pr in prs:
-        # Filter by merge date if available
+        # 如果有合并日期则按其过滤
         merged_at = pr.get("mergedAt", "")
         if merged_at and since_date:
             if merged_at < since_date:
@@ -262,15 +262,15 @@ def collect_salvaged_contributors(since_tag, until="HEAD"):
         body = pr.get("body") or ""
         pr_number = pr.get("number", "?")
 
-        # Also credit the PR author
+        # 同时记录 PR 作者
         pr_author = pr.get("author", {})
         pr_author_login = pr_author.get("login", "") if isinstance(pr_author, dict) else ""
 
         for pattern in SALVAGE_PATTERNS:
             for match in pattern.finditer(body):
                 value = match.group(1)
-                # If it's a number, it's a PR reference — skip for now
-                # (would need another API call to resolve PR author)
+                # 如果是数字，则为 PR 引用 — 暂时跳过
+                # （需要额外的 API 调用来解析 PR 作者）
                 if value.isdigit():
                     continue
                 contributors[value].add("salvage")
@@ -280,15 +280,15 @@ def collect_salvaged_contributors(since_tag, until="HEAD"):
 
 
 # ---------------------------------------------------------------------------
-# Release file comparison
+# 发布文件对比
 # ---------------------------------------------------------------------------
 
 def check_release_file(release_file, all_contributors):
-    """Check which contributors are mentioned in the release file.
+    """检查哪些贡献者在发布文件中被提及。
 
-    Returns:
-        mentioned: set of handles found in the file
-        missing: set of handles NOT found in the file
+    返回:
+        mentioned: 在文件中找到的用户名集合
+        missing: 未在文件中找到的用户名集合
     """
     try:
         content = Path(release_file).read_text()
@@ -301,7 +301,7 @@ def check_release_file(release_file, all_contributors):
     content_lower = content.lower()
 
     for handle in all_contributors:
-        # Check for @handle or just handle (case-insensitive)
+        # 检查 @handle 或仅 handle（不区分大小写）
         if f"@{handle.lower()}" in content_lower or handle.lower() in content_lower:
             mentioned.add(handle)
         else:
@@ -311,7 +311,7 @@ def check_release_file(release_file, all_contributors):
 
 
 # ---------------------------------------------------------------------------
-# Main
+# 主函数
 # ---------------------------------------------------------------------------
 
 def main():
@@ -348,22 +348,22 @@ def main():
     print(f"=== Contributor Audit: {args.since_tag}..{args.until} ===")
     print()
 
-    # ---- 1. Git commit authors ----
+    # ---- 1. Git 提交作者 ----
     print("[1/3] Scanning git commit authors...")
     commit_contribs, commit_unknowns = collect_commit_authors(args.since_tag, args.until)
     print(f"      Found {len(commit_contribs)} contributor(s) from commits.")
 
-    # ---- 2. Co-authored-by trailers ----
+    # ---- 2. Co-authored-by 尾部标记 ----
     print("[2/3] Scanning Co-authored-by trailers...")
     coauthor_contribs, coauthor_unknowns = collect_co_authors(args.since_tag, args.until)
     print(f"      Found {len(coauthor_contribs)} contributor(s) from co-author trailers.")
 
-    # ---- 3. Salvaged PRs ----
+    # ---- 3. 挽救的 PR ----
     print("[3/3] Scanning salvaged/cherry-picked PR descriptions...")
     salvage_contribs, salvage_pr_refs = collect_salvaged_contributors(args.since_tag, args.until)
     print(f"      Found {len(salvage_contribs)} contributor(s) from salvaged PRs.")
 
-    # ---- Merge all contributors ----
+    # ---- 合并所有贡献者 ----
     all_contributors = defaultdict(set)
     for handle, sources in commit_contribs.items():
         all_contributors[handle].update(sources)
@@ -372,24 +372,24 @@ def main():
     for handle, sources in salvage_contribs.items():
         all_contributors[handle].update(sources)
 
-    # Merge unknown emails
+    # 合并未知邮箱
     all_unknowns = {}
     all_unknowns.update(commit_unknowns)
     all_unknowns.update(coauthor_unknowns)
 
-    # Filter out AI assistants, bots, and machine accounts
+    # 过滤掉 AI 助手、机器人和机器账户
     ignored = {h for h in all_contributors if is_ignored(h)}
     for h in ignored:
         del all_contributors[h]
-    # Also filter unknowns by email
+    # 同时按邮箱过滤未知贡献者
     all_unknowns = {e: n for e, n in all_unknowns.items() if not is_ignored(n, e)}
 
-    # ---- Output ----
+    # ---- 输出 ----
     print()
     print(f"=== All Contributors ({len(all_contributors)}) ===")
     print()
 
-    # Sort by handle, case-insensitive
+    # 按用户名排序，不区分大小写
     for handle in sorted(all_contributors.keys(), key=str.lower):
         sources = sorted(all_contributors[handle])
         source_str = ", ".join(sources)
@@ -399,7 +399,7 @@ def main():
             extra = f"  (PRs: {', '.join(f'#{n}' for n in pr_nums)})"
         print(f"  @{handle}  [{source_str}]{extra}")
 
-    # ---- Unknown emails ----
+    # ---- 未知邮箱 ----
     if all_unknowns:
         print()
         print(f"=== Unknown Emails ({len(all_unknowns)}) ===")
@@ -408,15 +408,14 @@ def main():
         for email, name in sorted(all_unknowns.items()):
             print(f'  "{email}": "{name}",')
 
-    # ---- Strict mode: fail CI if new unmapped emails are introduced ----
+    # ---- 严格模式：如果引入新的未映射邮箱则 CI 失败 ----
     if args.strict and all_unknowns:
-        # In strict mode, check if ANY unknown emails come from commits in this
-        # PR's diff range (new unmapped emails that weren't there before).
-        # This is the CI gate: existing unknowns are grandfathered, but new
-        # commits must have their author email in AUTHOR_MAP.
+        # 在严格模式下，检查是否有未知邮箱来自此 PR 差异范围中的提交
+        # （之前不存在的新未映射邮箱）。
+        # 这是 CI 门禁：已有的未知邮箱被豁免，但新提交必须在 AUTHOR_MAP 中有其作者邮箱。
         new_unknowns = {}
         if args.diff_base:
-            # Only flag emails from commits after diff_base
+            # 仅标记 diff_base 之后提交中的邮箱
             new_commits_output = git(
                 "log", f"{args.diff_base}..HEAD",
                 "--format=%ae", "--no-merges",
@@ -444,7 +443,7 @@ def main():
     else:
         strict_failed = False
 
-    # ---- Release file comparison ----
+    # ---- 发布文件对比 ----
     if args.release_file:
         print()
         print(f"=== Release File Check: {args.release_file} ===")

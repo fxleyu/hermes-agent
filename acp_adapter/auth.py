@@ -1,4 +1,4 @@
-"""ACP auth helpers — detect the currently configured Hermes provider."""
+"""ACP 认证辅助工具 -- 检测当前配置的 Hermes 提供商。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from typing import Optional
 
 
 def detect_provider() -> Optional[str]:
-    """Resolve the active Hermes runtime provider, or None if unavailable."""
+    """解析当前活跃的 Hermes 运行时提供商，如果不可用则返回 None。"""
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         runtime = resolve_runtime_provider()
@@ -20,5 +20,5 @@ def detect_provider() -> Optional[str]:
 
 
 def has_provider() -> bool:
-    """Return True if Hermes can resolve any runtime provider credentials."""
+    """如果 Hermes 能解析出任何运行时提供商凭据则返回 True。"""
     return detect_provider() is not None

@@ -1,7 +1,7 @@
 """
-Qwen3-Coder tool call parser.
+Qwen3-Coder 工具调用解析器。
 
-Format uses XML-style nested tags:
+格式使用 XML 风格的嵌套标签：
     <tool_call>
     <function=function_name>
     <parameter=param_name>value</parameter>
@@ -9,10 +9,10 @@ Format uses XML-style nested tags:
     </function>
     </tool_call>
 
-Parameters are extracted from <parameter=name>value</parameter> tags and
-type-converted using the schema if available, otherwise treated as strings.
+参数从 <parameter=name>value</parameter> 标签中提取，
+如果有 schema 则进行类型转换，否则作为字符串处理。
 
-Based on VLLM's Qwen3CoderToolParser.extract_tool_calls()
+基于 VLLM 的 Qwen3CoderToolParser.extract_tool_calls()
 """
 
 import ast
@@ -31,67 +31,67 @@ from environments.tool_call_parsers import ParseResult, ToolCallParser, register
 
 def _try_convert_value(value: str) -> Any:
     """
-    Try to convert a parameter value string to a native Python type.
-    Handles null, numbers, booleans, JSON objects/arrays, and falls back to string.
+    尝试将参数值字符串转换为原生 Python 类型。
+    依次处理 null、数字、布尔值、JSON 对象/数组，最后回退为字符串。
     """
     stripped = value.strip()
 
-    # Handle null
+    # 处理 null 值
     if stripped.lower() == "null":
         return None
 
-    # Try JSON first (handles objects, arrays, strings, numbers, booleans)
+    # 首先尝试 JSON 解析（处理对象、数组、字符串、数字、布尔值）
     try:
         return json.loads(stripped)
     except (json.JSONDecodeError, TypeError):
         pass
 
-    # Try Python literal eval (handles tuples, etc.)
+    # 尝试 Python 字面量求值（处理元组等）
     try:
         return ast.literal_eval(stripped)
     except (ValueError, SyntaxError, TypeError):
         pass
 
-    # Return as string
+    # 以上都失败，返回原始字符串
     return stripped
 
 
 @register_parser("qwen3_coder")
 class Qwen3CoderToolCallParser(ToolCallParser):
     """
-    Parser for Qwen3-Coder XML-format tool calls.
+    Qwen3-Coder XML 格式工具调用的解析器。
 
-    Uses nested XML tags: <tool_call><function=name><parameter=key>val</parameter></function></tool_call>
+    使用嵌套 XML 标签：<tool_call><function=name><parameter=key>val</parameter></function></tool_call>
     """
 
     START_TOKEN = "<tool_call>"
     FUNCTION_PREFIX = "<function="
 
-    # Find complete tool_call blocks (or unclosed at end)
+    # 查找完整的 tool_call 块（或末尾未闭合的块）
     TOOL_CALL_REGEX = re.compile(
         r"<tool_call>(.*?)</tool_call>|<tool_call>(.*?)$", re.DOTALL
     )
 
-    # Find function blocks within a tool_call
+    # 在 tool_call 内查找 function 块
     FUNCTION_REGEX = re.compile(
         r"<function=(.*?)</function>|<function=(.*)$", re.DOTALL
     )
 
-    # Find parameter blocks within a function
+    # 在 function 内查找 parameter 块
     PARAMETER_REGEX = re.compile(
         r"<parameter=(.*?)(?:</parameter>|(?=<parameter=)|(?=</function>)|$)",
         re.DOTALL,
     )
 
     def _parse_function_call(self, function_str: str) -> Optional[ChatCompletionMessageToolCall]:
-        """Parse a single <function=name>...</function> block into a ToolCall."""
+        """将单个 <function=name>...</function> 块解析为 ToolCall 对象。"""
         try:
-            # Extract function name: everything before the first '>'
+            # 提取函数名：第一个 '>' 之前的所有内容
             gt_idx = function_str.index(">")
             func_name = function_str[:gt_idx].strip()
             params_str = function_str[gt_idx + 1:]
 
-            # Extract parameters
+            # 提取参数键值对
             param_dict: Dict[str, Any] = {}
             for match_text in self.PARAMETER_REGEX.findall(params_str):
                 if ">" not in match_text:
@@ -100,12 +100,13 @@ class Qwen3CoderToolCallParser(ToolCallParser):
                 param_name = match_text[:eq_idx].strip()
                 param_value = match_text[eq_idx + 1:]
 
-                # Clean up whitespace
+                # 清理首尾空白
                 if param_value.startswith("\n"):
                     param_value = param_value[1:]
                 if param_value.endswith("\n"):
                     param_value = param_value[:-1]
 
+                # 将字符串值转换为合适的 Python 类型
                 param_dict[param_name] = _try_convert_value(param_value)
 
             return ChatCompletionMessageToolCall(
@@ -120,19 +121,20 @@ class Qwen3CoderToolCallParser(ToolCallParser):
             return None
 
     def parse(self, text: str) -> ParseResult:
+        # 快速检查：如果文本中不包含 <function= 前缀，直接返回
         if self.FUNCTION_PREFIX not in text:
             return text, None
 
         try:
-            # Find all tool_call blocks
+            # 查找所有 tool_call 块
             tc_matches = self.TOOL_CALL_REGEX.findall(text)
             raw_blocks = [m[0] if m[0] else m[1] for m in tc_matches]
 
-            # Fallback: if no tool_call tags, try the whole text
+            # 回退：如果没有 tool_call 标签，尝试对整个文本进行解析
             if not raw_blocks:
                 raw_blocks = [text]
 
-            # Find function blocks within each tool_call
+            # 在每个 tool_call 块中查找 function 块
             function_strs: List[str] = []
             for block in raw_blocks:
                 func_matches = self.FUNCTION_REGEX.findall(block)
@@ -141,7 +143,7 @@ class Qwen3CoderToolCallParser(ToolCallParser):
             if not function_strs:
                 return text, None
 
-            # Parse each function call
+            # 逐个解析每个 function 调用
             tool_calls: List[ChatCompletionMessageToolCall] = []
             for func_str in function_strs:
                 tc = self._parse_function_call(func_str)
@@ -151,7 +153,7 @@ class Qwen3CoderToolCallParser(ToolCallParser):
             if not tool_calls:
                 return text, None
 
-            # Content before tool calls
+            # 提取工具调用之前的文本作为 content
             first_tc = text.find(self.START_TOKEN)
             if first_tc < 0:
                 first_tc = text.find(self.FUNCTION_PREFIX)

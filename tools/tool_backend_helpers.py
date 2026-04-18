@@ -1,4 +1,4 @@
-"""Shared helpers for tool backend selection."""
+"""工具后端选择的共享辅助函数。"""
 
 from __future__ import annotations
 
@@ -13,11 +13,10 @@ _VALID_MODAL_MODES = {"auto", "direct", "managed"}
 
 
 def managed_nous_tools_enabled() -> bool:
-    """Return True when the user has an active paid Nous subscription.
+    """当用户拥有活跃的付费 Nous 订阅时返回 True。
 
-    The Tool Gateway is available to any Nous subscriber who is NOT on
-    the free tier.  We intentionally catch all exceptions and return
-    False — never block the agent startup path.
+    工具网关对任何非免费层级的 Nous 订阅者可用。
+    我们有意捕获所有异常并返回 False——永远不阻塞代理启动路径。
     """
     try:
         from hermes_cli.auth import get_nous_auth_status
@@ -29,20 +28,20 @@ def managed_nous_tools_enabled() -> bool:
         from hermes_cli.models import check_nous_free_tier
 
         if check_nous_free_tier():
-            return False  # free-tier users don't get gateway access
+            return False  # 免费层级用户无法访问网关
         return True
     except Exception:
         return False
 
 
 def normalize_browser_cloud_provider(value: object | None) -> str:
-    """Return a normalized browser provider key."""
+    """返回规范化的浏览器提供者键。"""
     provider = str(value or _DEFAULT_BROWSER_PROVIDER).strip().lower()
     return provider or _DEFAULT_BROWSER_PROVIDER
 
 
 def coerce_modal_mode(value: object | None) -> str:
-    """Return the requested modal mode when valid, else the default."""
+    """如果请求的 modal 模式有效则返回它，否则返回默认值。"""
     mode = str(value or _DEFAULT_MODAL_MODE).strip().lower()
     if mode in _VALID_MODAL_MODES:
         return mode
@@ -50,12 +49,12 @@ def coerce_modal_mode(value: object | None) -> str:
 
 
 def normalize_modal_mode(value: object | None) -> str:
-    """Return a normalized modal execution mode."""
+    """返回规范化的 modal 执行模式。"""
     return coerce_modal_mode(value)
 
 
 def has_direct_modal_credentials() -> bool:
-    """Return True when direct Modal credentials/config are available."""
+    """当直接 Modal 凭证/配置可用时返回 True。"""
     return bool(
         (os.getenv("MODAL_TOKEN_ID") and os.getenv("MODAL_TOKEN_SECRET"))
         or (Path.home() / ".modal.toml").exists()
@@ -68,12 +67,12 @@ def resolve_modal_backend_state(
     has_direct: bool,
     managed_ready: bool,
 ) -> Dict[str, Any]:
-    """Resolve direct vs managed Modal backend selection.
+    """解析直接模式 vs 托管模式的 Modal 后端选择。
 
-    Semantics:
-    - ``direct`` means direct-only
-    - ``managed`` means managed-only
-    - ``auto`` prefers managed when available, then falls back to direct
+    语义:
+    - ``direct`` 表示仅直接模式
+    - ``managed`` 表示仅托管模式
+    - ``auto`` 优先使用可用的托管模式，然后回退到直接模式
     """
     requested_mode = coerce_modal_mode(modal_mode)
     normalized_mode = normalize_modal_mode(modal_mode)
@@ -99,7 +98,7 @@ def resolve_modal_backend_state(
 
 
 def resolve_openai_audio_api_key() -> str:
-    """Prefer the voice-tools key, but fall back to the normal OpenAI key."""
+    """优先使用语音工具密钥，但回退到普通 OpenAI 密钥。"""
     return (
         os.getenv("VOICE_TOOLS_OPENAI_KEY", "")
         or os.getenv("OPENAI_API_KEY", "")
@@ -107,9 +106,9 @@ def resolve_openai_audio_api_key() -> str:
 
 
 def prefers_gateway(config_section: str) -> bool:
-    """Return True when the user opted into the Tool Gateway for this tool.
+    """当用户为此工具选择了工具网关时返回 True。
 
-    Reads ``<section>.use_gateway`` from config.yaml.  Never raises.
+    从 config.yaml 中读取 ``<section>.use_gateway``。不会抛出异常。
     """
     try:
         from hermes_cli.config import load_config

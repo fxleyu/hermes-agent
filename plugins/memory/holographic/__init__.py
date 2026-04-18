@@ -1,14 +1,14 @@
-"""hermes-memory-store — holographic memory plugin using MemoryProvider interface.
+"""hermes-memory-store — 基于 MemoryProvider 接口的全息记忆插件。
 
-Registers as a MemoryProvider plugin, giving the agent structured fact storage
-with entity resolution, trust scoring, and HRR-based compositional retrieval.
+注册为 MemoryProvider 插件，为智能体提供结构化事实存储，
+具备实体解析、信任评分和基于 HRR 的组合检索功能。
 
-Original plugin by dusterbloom (PR #2351), adapted to the MemoryProvider ABC.
+原始插件由 dusterbloom 提交（PR #2351），已适配为 MemoryProvider 抽象基类。
 
-Config in $HERMES_HOME/config.yaml (profile-scoped):
+通过 $HERMES_HOME/config.yaml（配置文件作用域）配置：
   plugins:
     hermes-memory-store:
-      db_path: $HERMES_HOME/memory_store.db   # omit to use the default
+      db_path: $HERMES_HOME/memory_store.db   # 省略则使用默认值
       auto_extract: false
       default_trust: 0.5
       min_trust_threshold: 0.3
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Tool schemas (unchanged from original PR)
+# 工具模式定义（与原始 PR 相同）
 # ---------------------------------------------------------------------------
 
 FACT_STORE_SCHEMA = {
@@ -90,7 +90,7 @@ FACT_FEEDBACK_SCHEMA = {
 
 
 # ---------------------------------------------------------------------------
-# Config
+# 配置
 # ---------------------------------------------------------------------------
 
 def _load_plugin_config() -> dict:
@@ -108,11 +108,11 @@ def _load_plugin_config() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# MemoryProvider implementation
+# MemoryProvider 实现
 # ---------------------------------------------------------------------------
 
 class HolographicMemoryProvider(MemoryProvider):
-    """Holographic memory with structured facts, entity resolution, and HRR retrieval."""
+    """基于结构化事实、实体解析和 HRR 检索的全息记忆。"""
 
     def __init__(self, config: dict | None = None):
         self._config = config or _load_plugin_config()
@@ -128,7 +128,7 @@ class HolographicMemoryProvider(MemoryProvider):
         return True  # SQLite is always available, numpy is optional
 
     def save_config(self, values, hermes_home):
-        """Write config to config.yaml under plugins.hermes-memory-store."""
+        """将配置写入 config.yaml 的 plugins.hermes-memory-store 节点下。"""
         from pathlib import Path
         config_path = Path(hermes_home) / "config.yaml"
         try:
@@ -159,9 +159,9 @@ class HolographicMemoryProvider(MemoryProvider):
         _hermes_home = str(get_hermes_home())
         _default_db = _hermes_home + "/memory_store.db"
         db_path = self._config.get("db_path", _default_db)
-        # Expand $HERMES_HOME in user-supplied paths so config values like
-        # "$HERMES_HOME/memory_store.db" or "~/.hermes/memory_store.db" both
-        # resolve to the active profile's directory.
+        # 展开用户提供路径中的 $HERMES_HOME，使得
+        # "$HERMES_HOME/memory_store.db" 或 "~/.hermes/memory_store.db"
+        # 这样的配置值都能正确解析到活跃配置文件的目录。
         if isinstance(db_path, str):
             db_path = db_path.replace("$HERMES_HOME", _hermes_home)
             db_path = db_path.replace("${HERMES_HOME}", _hermes_home)
@@ -219,8 +219,8 @@ class HolographicMemoryProvider(MemoryProvider):
             return ""
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        # Holographic memory stores explicit facts via tools, not auto-sync.
-        # The on_session_end hook handles auto-extraction if configured.
+        # 全息记忆通过工具存储显式事实，不自动同步。
+        # on_session_end 钩子在配置启用时处理自动提取。
         pass
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
@@ -241,7 +241,7 @@ class HolographicMemoryProvider(MemoryProvider):
         self._auto_extract_facts(messages)
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
-        """Mirror built-in memory writes as facts."""
+        """将内建记忆写入操作镜像为事实。"""
         if action == "add" and self._store and content:
             try:
                 category = "user_pref" if target == "user" else "general"
@@ -253,7 +253,7 @@ class HolographicMemoryProvider(MemoryProvider):
         self._store = None
         self._retriever = None
 
-    # -- Tool handlers -------------------------------------------------------
+    # -- 工具处理器 -------------------------------------------------------
 
     def _handle_fact_store(self, args: dict) -> str:
         try:
@@ -353,7 +353,7 @@ class HolographicMemoryProvider(MemoryProvider):
         except Exception as exc:
             return tool_error(str(exc))
 
-    # -- Auto-extraction (on_session_end) ------------------------------------
+    # -- 自动提取（on_session_end） ------------------------------------
 
     def _auto_extract_facts(self, messages: list) -> None:
         _PREF_PATTERNS = [
@@ -397,11 +397,11 @@ class HolographicMemoryProvider(MemoryProvider):
 
 
 # ---------------------------------------------------------------------------
-# Plugin entry point
+# 插件入口
 # ---------------------------------------------------------------------------
 
 def register(ctx) -> None:
-    """Register the holographic memory provider with the plugin system."""
+    """将全息记忆提供者注册到插件系统。"""
     config = _load_plugin_config()
     provider = HolographicMemoryProvider(config=config)
     ctx.register_memory_provider(provider)

@@ -1,14 +1,13 @@
-"""Per-thread interrupt signaling for all tools.
+"""所有工具的线程级中断信号。
 
-Provides thread-scoped interrupt tracking so that interrupting one agent
-session does not kill tools running in other sessions.  This is critical
-in the gateway where multiple agents run concurrently in the same process.
+提供线程范围的中断跟踪，使中断一个代理会话不会杀死在其他会话中
+运行的工具。这在网关中至关重要，因为多个代理在同一进程中并发运行。
 
-The agent stores its execution thread ID at the start of run_conversation()
-and passes it to set_interrupt()/clear_interrupt().  Tools call
-is_interrupted() which checks the CURRENT thread — no argument needed.
+代理在 run_conversation() 开始时存储其执行线程 ID，并将其传递给
+set_interrupt()/clear_interrupt()。工具调用 is_interrupted()
+来检查当前线程——无需传递参数。
 
-Usage in tools:
+工具中的用法：
     from tools.interrupt import is_interrupted
     if is_interrupted():
         return {"output": "[interrupted]", "returncode": 130}
@@ -16,18 +15,18 @@ Usage in tools:
 
 import threading
 
-# Set of thread idents that have been interrupted.
+# 已被中断的线程标识符集合。
 _interrupted_threads: set[int] = set()
 _lock = threading.Lock()
 
 
 def set_interrupt(active: bool, thread_id: int | None = None) -> None:
-    """Set or clear interrupt for a specific thread.
+    """设置或清除特定线程的中断状态。
 
-    Args:
-        active: True to signal interrupt, False to clear it.
-        thread_id: Target thread ident.  When None, targets the
-                   current thread (backward compat for CLI/tests).
+    参数:
+        active: True 表示发出中断信号，False 表示清除中断。
+        thread_id: 目标线程标识符。为 None 时针对当前线程
+                   （向后兼容 CLI/测试）。
     """
     tid = thread_id if thread_id is not None else threading.current_thread().ident
     with _lock:
@@ -38,10 +37,9 @@ def set_interrupt(active: bool, thread_id: int | None = None) -> None:
 
 
 def is_interrupted() -> bool:
-    """Check if an interrupt has been requested for the current thread.
+    """检查当前线程是否有中断请求。
 
-    Safe to call from any thread — each thread only sees its own
-    interrupt state.
+    可从任何线程安全调用——每个线程只能看到自己的中断状态。
     """
     tid = threading.current_thread().ident
     with _lock:
@@ -49,15 +47,15 @@ def is_interrupted() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Backward-compatible _interrupt_event proxy
+# 向后兼容的 _interrupt_event 代理
 # ---------------------------------------------------------------------------
-# Some legacy call sites (code_execution_tool, process_registry, tests)
-# import _interrupt_event directly and call .is_set() / .set() / .clear().
-# This shim maps those calls to the per-thread functions above so existing
-# code keeps working while the underlying mechanism is thread-scoped.
+# 一些遗留调用点（code_execution_tool、process_registry、测试）
+# 直接导入 _interrupt_event 并调用 .is_set() / .set() / .clear()。
+# 此垫片将这些调用映射到上面的线程级函数，使现有代码在底层机制
+# 为线程范围的情况下继续工作。
 
 class _ThreadAwareEventProxy:
-    """Drop-in proxy that maps threading.Event methods to per-thread state."""
+    """将 threading.Event 方法映射到线程级状态的直接替换代理。"""
 
     def is_set(self) -> bool:
         return is_interrupted()
@@ -69,7 +67,7 @@ class _ThreadAwareEventProxy:
         set_interrupt(False)
 
     def wait(self, timeout: float | None = None) -> bool:
-        """Not truly supported — returns current state immediately."""
+        """实际上不支持——立即返回当前状态。"""
         return self.is_set()
 
 

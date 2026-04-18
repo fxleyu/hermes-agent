@@ -1,14 +1,14 @@
 """
-HermesAgentLoop -- Reusable Multi-Turn Agent Engine
+HermesAgentLoop -- 可复用的多轮智能体引擎
 
-Runs the hermes-agent tool-calling loop using standard OpenAI-spec tool calling.
-Works with any server that returns ChatCompletion objects with tool_calls:
-    - Phase 1: OpenAI server type (VLLM, SGLang, OpenRouter, OpenAI API)
-    - Phase 2: ManagedServer with client-side tool call parser
+使用标准 OpenAI 规范的工具调用运行 hermes-agent 的工具调用循环。
+兼容任何返回 ChatCompletion 对象（包含 tool_calls）的服务器：
+    - 第一阶段：OpenAI 服务器类型（VLLM、SGLang、OpenRouter、OpenAI API）
+    - 第二阶段：ManagedServer 配合客户端工具调用解析器
 
-The loop passes tools= and checks response.choices[0].message.tool_calls,
-identical to hermes-agent's run_agent.py. Tool execution is dispatched via
-handle_function_call() from model_tools.py.
+循环通过 tools= 传递工具定义，并检查 response.choices[0].message.tool_calls，
+与 hermes-agent 的 run_agent.py 行为一致。工具执行通过 model_tools.py 中的
+handle_function_call() 进行分派。
 """
 
 import asyncio
@@ -24,21 +24,21 @@ from model_tools import handle_function_call
 from tools.terminal_tool import get_active_env
 from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
 
-# Thread pool for running sync tool calls that internally use asyncio.run()
-# (e.g., the Modal/Docker/Daytona terminal backends). Running them in a separate
-# thread gives them a clean event loop so they don't deadlock inside Atropos's loop.
-# Size must be large enough for concurrent eval tasks (e.g., 89 TB2 tasks all
-# making tool calls). Too small = thread pool starvation, tasks queue for minutes.
-# Resized at runtime by HermesAgentBaseEnv.__init__ via resize_tool_pool().
+# 用于运行同步工具调用的线程池，这些调用内部使用 asyncio.run()
+# （例如 Modal/Docker/Daytona 终端后端）。在单独的线程中运行可以给它们
+# 一个干净的事件循环，避免在 Atropos 的循环内部死锁。
+# 线程池大小必须足够大以支持并发评估任务（例如 89 个 TB2 任务同时发起工具调用）。
+# 太小 = 线程池饥饿，任务排队等待数分钟。
+# 在运行时由 HermesAgentBaseEnv.__init__ 通过 resize_tool_pool() 调整大小。
 _tool_executor = concurrent.futures.ThreadPoolExecutor(max_workers=128)
 
 
 def resize_tool_pool(max_workers: int):
     """
-    Replace the global tool executor with a new one of the given size.
+    用指定大小的新线程池替换全局工具执行器。
 
-    Called by HermesAgentBaseEnv.__init__ based on config.tool_pool_size.
-    Safe to call before any tasks are submitted.
+    由 HermesAgentBaseEnv.__init__ 根据 config.tool_pool_size 调用。
+    在提交任何任务之前调用是安全的。
     """
     global _tool_executor
     old_executor = _tool_executor
@@ -51,61 +51,60 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ToolError:
-    """Record of a tool execution error during the agent loop."""
+    """智能体循环中工具执行错误的记录。"""
 
-    turn: int                  # Which turn the error occurred on
-    tool_name: str             # Which tool was called
-    arguments: str             # The arguments passed (truncated)
-    error: str                 # The error message
-    tool_result: str           # The raw result returned to the model
+    turn: int                  # 错误发生在哪一轮
+    tool_name: str             # 调用了哪个工具
+    arguments: str             # 传递的参数（截断后）
+    error: str                 # 错误消息
+    tool_result: str           # 返回给模型的原始结果
 
 
 @dataclass
 class AgentResult:
-    """Result of running the agent loop."""
+    """运行智能体循环的结果。"""
 
-    # Full conversation history in OpenAI message format
+    # OpenAI 消息格式的完整对话历史
     messages: List[Dict[str, Any]]
-    # ManagedServer.get_state() if available (Phase 2), None otherwise
+    # ManagedServer.get_state() 的返回值（第二阶段可用），否则为 None
     managed_state: Optional[Dict[str, Any]] = None
-    # How many LLM calls were made
+    # 进行了多少次 LLM 调用
     turns_used: int = 0
-    # True if model stopped calling tools naturally (vs hitting max_turns)
+    # 如果模型自然停止调用工具（而非达到 max_turns 上限）则为 True
     finished_naturally: bool = False
-    # Extracted reasoning content per turn (from PR #297 helpers)
+    # 每轮提取的推理内容（来自 PR #297 辅助函数）
     reasoning_per_turn: List[Optional[str]] = field(default_factory=list)
-    # Tool errors encountered during the loop
+    # 循环期间遇到的工具错误
     tool_errors: List[ToolError] = field(default_factory=list)
 
 
 def _extract_reasoning_from_message(message) -> Optional[str]:
     """
-    Extract reasoning content from a ChatCompletion message.
+    从 ChatCompletion 消息中提取推理内容。
 
-    Handles multiple provider formats:
-    1. message.reasoning_content field (some providers)
-    2. message.reasoning field (some providers)
-    3. message.reasoning_details[].text (OpenRouter style)
+    处理多种提供商格式：
+    1. message.reasoning_content 字段（部分提供商）
+    2. message.reasoning 字段（部分提供商）
+    3. message.reasoning_details[].text（OpenRouter 风格）
 
-    Note: <think> block extraction from content is NOT done here -- that's
-    handled by the response already in Phase 1 (server does it) or by
-    ManagedServer's patch in Phase 2.
+    注意：这里不从 content 中提取 <think> 块 -- 在第一阶段由服务器处理，
+    在第二阶段由 ManagedServer 的补丁处理。
 
-    Args:
-        message: The assistant message from ChatCompletion response
+    参数：
+        message: ChatCompletion 响应中的助手消息
 
-    Returns:
-        Extracted reasoning text, or None if not found
+    返回：
+        提取的推理文本，如果未找到则返回 None
     """
-    # Check reasoning_content field (common across providers)
+    # 检查 reasoning_content 字段（各提供商通用）
     if hasattr(message, "reasoning_content") and message.reasoning_content:
         return message.reasoning_content
 
-    # Check reasoning field
+    # 检查 reasoning 字段
     if hasattr(message, "reasoning") and message.reasoning:
         return message.reasoning
 
-    # Check reasoning_details (OpenRouter style)
+    # 检查 reasoning_details（OpenRouter 风格）
     if hasattr(message, "reasoning_details") and message.reasoning_details:
         for detail in message.reasoning_details:
             if hasattr(detail, "text") and detail.text:
@@ -118,16 +117,15 @@ def _extract_reasoning_from_message(message) -> Optional[str]:
 
 class HermesAgentLoop:
     """
-    Runs hermes-agent's tool-calling loop using standard OpenAI-spec tool calling.
+    使用标准 OpenAI 规范的工具调用运行 hermes-agent 的工具调用循环。
 
-    Same pattern as run_agent.py:
-    - Pass tools= to the API
-    - Check response.choices[0].message.tool_calls
-    - Dispatch via handle_function_call()
+    与 run_agent.py 相同的模式：
+    - 将 tools= 传递给 API
+    - 检查 response.choices[0].message.tool_calls
+    - 通过 handle_function_call() 分派执行
 
-    Works identically with any server type -- OpenAI, VLLM, SGLang, OpenRouter,
-    or ManagedServer with a parser. The server determines how tool_calls get
-    populated on the response.
+    兼容任何服务器类型 -- OpenAI、VLLM、SGLang、OpenRouter 或带解析器的
+    ManagedServer。服务器决定如何在响应中填充 tool_calls。
     """
 
     def __init__(
@@ -143,23 +141,23 @@ class HermesAgentLoop:
         budget_config: Optional["BudgetConfig"] = None,
     ):
         """
-        Initialize the agent loop.
+        初始化智能体循环。
 
-        Args:
-            server: Server object with chat_completion() method (OpenAIServer,
-                    ManagedServer, ServerManager, etc.)
-            tool_schemas: OpenAI-format tool definitions from get_tool_definitions()
-            valid_tool_names: Set of tool names the model is allowed to call
-            max_turns: Maximum number of LLM calls before stopping
-            task_id: Unique ID for terminal/browser session isolation
-            temperature: Sampling temperature for generation
-            max_tokens: Max tokens per generation (None for server default)
-            extra_body: Extra parameters passed to the OpenAI client's create() call.
-                        Used for OpenRouter provider preferences, transforms, etc.
-                        e.g. {"provider": {"ignore": ["DeepInfra"]}}
-            budget_config: Tool result persistence budget. Controls per-tool
-                        thresholds, per-turn aggregate budget, and preview size.
-                        If None, uses DEFAULT_BUDGET (current hardcoded values).
+        参数：
+            server: 具有 chat_completion() 方法的服务器对象（OpenAIServer、
+                    ManagedServer、ServerManager 等）
+            tool_schemas: 来自 get_tool_definitions() 的 OpenAI 格式工具定义
+            valid_tool_names: 模型允许调用的工具名称集合
+            max_turns: 停止前的最大 LLM 调用次数
+            task_id: 用于终端/浏览器会话隔离的唯一 ID
+            temperature: 生成时的采样温度
+            max_tokens: 每次生成的最大 token 数（None 使用服务器默认值）
+            extra_body: 传递给 OpenAI 客户端 create() 调用的额外参数。
+                        用于 OpenRouter 提供商偏好、转换等。
+                        例如 {"provider": {"ignore": ["DeepInfra"]}}
+            budget_config: 工具结果持久化预算。控制每个工具的阈值、
+                        每轮聚合预算和预览大小。
+                        如果为 None，使用 DEFAULT_BUDGET（当前硬编码值）。
         """
         from tools.budget_config import DEFAULT_BUDGET
         self.server = server
@@ -174,29 +172,29 @@ class HermesAgentLoop:
 
     async def run(self, messages: List[Dict[str, Any]]) -> AgentResult:
         """
-        Execute the full agent loop using standard OpenAI tool calling.
+        使用标准 OpenAI 工具调用执行完整的智能体循环。
 
-        Args:
-            messages: Initial conversation messages (system + user).
-                      Modified in-place as the conversation progresses.
+        参数：
+            messages: 初始对话消息（system + user）。
+                      随着对话推进会被原地修改。
 
-        Returns:
-            AgentResult with full conversation history, managed state, and metadata
+        返回：
+            包含完整对话历史、管理状态和元数据的 AgentResult
         """
         reasoning_per_turn = []
         tool_errors: List[ToolError] = []
 
-        # Per-loop TodoStore for the todo tool (ephemeral, dies with the loop)
+        # 每次循环独立的 TodoStore，用于 todo 工具（临时的，随循环结束销毁）
         from tools.todo_tool import TodoStore, todo_tool as _todo_tool
         _todo_store = TodoStore()
 
-        # Extract user task from first user message for browser_snapshot context
+        # 从第一条用户消息中提取用户任务，用于 browser_snapshot 上下文
         _user_task = None
         for msg in messages:
             if msg.get("role") == "user":
                 content = msg.get("content", "")
                 if isinstance(content, str) and content.strip():
-                    _user_task = content.strip()[:500]  # Cap to avoid huge strings
+                    _user_task = content.strip()[:500]  # 截断以避免超大字符串
                 break
 
         import time as _time
@@ -204,27 +202,27 @@ class HermesAgentLoop:
         for turn in range(self.max_turns):
             turn_start = _time.monotonic()
 
-            # Build the chat_completion kwargs
+            # 构建 chat_completion 的关键字参数
             chat_kwargs = {
                 "messages": messages,
                 "n": 1,
                 "temperature": self.temperature,
             }
 
-            # Only pass tools if we have them
+            # 仅在有工具定义时传递 tools 参数
             if self.tool_schemas:
                 chat_kwargs["tools"] = self.tool_schemas
 
-            # Only pass max_tokens if explicitly set
+            # 仅在显式设置时传递 max_tokens
             if self.max_tokens is not None:
                 chat_kwargs["max_tokens"] = self.max_tokens
 
-            # Inject extra_body for provider-specific params (e.g., OpenRouter
-            # provider preferences like banned/preferred providers, transforms)
+            # 注入 extra_body 用于提供商特定参数（例如 OpenRouter
+            # 提供商偏好，如禁用/首选提供商、转换等）
             if self.extra_body:
                 chat_kwargs["extra_body"] = self.extra_body
 
-            # Make the API call -- standard OpenAI spec
+            # 发起 API 调用 -- 标准 OpenAI 规范
             api_start = _time.monotonic()
             try:
                 response = await self.server.chat_completion(**chat_kwargs)
@@ -255,16 +253,15 @@ class HermesAgentLoop:
 
             assistant_msg = response.choices[0].message
 
-            # Extract reasoning content from the response (all provider formats)
+            # 从响应中提取推理内容（所有提供商格式）
             reasoning = _extract_reasoning_from_message(assistant_msg)
             reasoning_per_turn.append(reasoning)
 
-            # Check for tool calls -- standard OpenAI spec.
-            # Fallback: if response has no structured tool_calls but content
-            # contains raw tool call tags (e.g. <tool_call>), parse them using
-            # hermes-agent's standalone parsers. This handles the case where
-            # ManagedServer's ToolCallTranslator couldn't parse because vLLM
-            # isn't installed.
+            # 检查工具调用 -- 标准 OpenAI 规范。
+            # 回退机制：如果响应没有结构化的 tool_calls，但 content 中
+            # 包含原始工具调用标签（例如 <tool_call>），则使用 hermes-agent
+            # 的独立解析器解析。这处理了 ManagedServer 的 ToolCallTranslator
+            # 因为未安装 vLLM 而无法解析的情况。
             if (
                 not assistant_msg.tool_calls
                 and assistant_msg.content
@@ -286,11 +283,11 @@ class HermesAgentLoop:
                             len(parsed_calls),
                         )
                 except Exception:
-                    pass  # Fall through to no tool calls
+                    pass  # 继续执行，作为没有工具调用处理
 
             if assistant_msg.tool_calls:
-                # Normalize tool calls to dicts — they may come as objects
-                # (OpenAI API) or dicts (vLLM ToolCallTranslator).
+                # 将工具调用规范化为字典 — 它们可能是对象
+                # （OpenAI API）或字典（vLLM ToolCallTranslator）。
                 def _tc_to_dict(tc):
                     if isinstance(tc, dict):
                         return {
@@ -310,24 +307,24 @@ class HermesAgentLoop:
                         },
                     }
 
-                # Build the assistant message dict for conversation history
+                # 构建助手消息字典用于对话历史
                 msg_dict: Dict[str, Any] = {
                     "role": "assistant",
                     "content": assistant_msg.content or "",
                     "tool_calls": [_tc_to_dict(tc) for tc in assistant_msg.tool_calls],
                 }
 
-                # Preserve reasoning_content for multi-turn chat template handling
-                # (e.g., Kimi-K2's template renders <think> blocks differently
-                # for history vs. the latest turn based on this field)
+                # 保留 reasoning_content 用于多轮聊天模板处理
+                # （例如 Kimi-K2 的模板根据此字段以不同方式渲染
+                # 历史消息和最新轮次的 <think> 块）
                 if reasoning:
                     msg_dict["reasoning_content"] = reasoning
 
                 messages.append(msg_dict)
 
-                # Execute each tool call via hermes-agent's dispatch
+                # 通过 hermes-agent 的分派机制执行每个工具调用
                 for tc in assistant_msg.tool_calls:
-                    # Handle both object (OpenAI) and dict (vLLM) formats
+                    # 处理对象（OpenAI）和字典（vLLM）两种格式
                     if isinstance(tc, dict):
                         tool_name = tc.get("function", {}).get("name", tc.get("name", ""))
                         tool_args_raw = tc.get("function", {}).get("arguments", tc.get("arguments", "{}"))
@@ -335,7 +332,7 @@ class HermesAgentLoop:
                         tool_name = tc.function.name
                         tool_args_raw = tc.function.arguments
 
-                    # Validate tool name
+                    # 验证工具名称
                     if tool_name not in self.valid_tool_names:
                         tool_result = json.dumps(
                             {
@@ -354,7 +351,7 @@ class HermesAgentLoop:
                             tool_name, turn + 1,
                         )
                     else:
-                        # Parse arguments
+                        # 解析参数
                         try:
                             args = json.loads(tool_args_raw)
                         except json.JSONDecodeError as e:
@@ -373,7 +370,7 @@ class HermesAgentLoop:
                                 tool_name, tool_args_raw[:200],
                             )
 
-                        # Dispatch tool only if arguments parsed successfully
+                        # 仅在参数解析成功时分派工具
                         if args is not None:
                             try:
                                 if tool_name == "terminal":
@@ -385,7 +382,7 @@ class HermesAgentLoop:
 
                                 tool_submit_time = _time.monotonic()
 
-                                # Todo tool -- handle locally (needs per-loop TodoStore)
+                                # Todo 工具 -- 本地处理（需要每次循环独立的 TodoStore）
                                 if tool_name == "todo":
                                     tool_result = _todo_tool(
                                         todos=args.get("todos"),
@@ -400,11 +397,11 @@ class HermesAgentLoop:
                                     tool_result = json.dumps({"error": "Session search is not available in RL environments."})
                                     tool_elapsed = _time.monotonic() - tool_submit_time
                                 else:
-                                    # Run tool calls in a thread pool so backends that
-                                    # use asyncio.run() internally (modal, docker, daytona) get
-                                    # a clean event loop instead of deadlocking.
+                                    # 在线程池中运行工具调用，使得内部使用
+                                    # asyncio.run() 的后端（modal、docker、daytona）
+                                    # 获得干净的事件循环而不会死锁。
                                     loop = asyncio.get_event_loop()
-                                    # Capture current tool_name/args for the lambda
+                                    # 捕获当前的 tool_name/args 供 lambda 使用
                                     _tn, _ta, _tid = tool_name, args, self.task_id
                                     tool_result = await loop.run_in_executor(
                                         _tool_executor,
@@ -415,7 +412,7 @@ class HermesAgentLoop:
                                     )
                                     tool_elapsed = _time.monotonic() - tool_submit_time
 
-                                # Log slow tools and thread pool stats for debugging
+                                # 记录慢工具和线程池统计信息用于调试
                                 pool_active = _tool_executor._work_queue.qsize()
                                 if tool_elapsed > 30:
                                     logger.warning(
@@ -438,7 +435,7 @@ class HermesAgentLoop:
                                     tool_name, turn + 1, e,
                                 )
 
-                        # Also check if the tool returned an error in its JSON result
+                        # 同时检查工具是否在 JSON 结果中返回了错误
                         try:
                             result_data = json.loads(tool_result)
                             if isinstance(result_data, dict):
@@ -487,7 +484,7 @@ class HermesAgentLoop:
                 )
 
             else:
-                # No tool calls -- model is done
+                # 没有工具调用 -- 模型已完成
                 msg_dict = {
                     "role": "assistant",
                     "content": assistant_msg.content or "",
@@ -511,7 +508,7 @@ class HermesAgentLoop:
                     tool_errors=tool_errors,
                 )
 
-        # Hit max turns without the model stopping
+        # 达到最大轮次但模型未自行停止
         logger.info("Agent hit max_turns (%d) without finishing", self.max_turns)
         return AgentResult(
             messages=messages,
@@ -524,10 +521,10 @@ class HermesAgentLoop:
 
     def _get_managed_state(self) -> Optional[Dict[str, Any]]:
         """
-        Get ManagedServer state if the server supports it.
+        获取 ManagedServer 状态（如果服务器支持）。
 
-        Returns state dict with SequenceNodes containing tokens/logprobs/masks,
-        or None if the server doesn't support get_state() (e.g., regular OpenAI server).
+        返回包含 SequenceNodes（含 tokens/logprobs/masks）的状态字典，
+        如果服务器不支持 get_state()（例如普通 OpenAI 服务器）则返回 None。
         """
         if hasattr(self.server, "get_state"):
             return self.server.get_state()

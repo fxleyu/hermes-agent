@@ -1,4 +1,4 @@
-"""Local execution environment — spawn-per-call with session snapshot."""
+"""本地执行环境 - 每次调用创建新进程，并使用会话快照保持状态。"""
 
 import os
 import platform
@@ -12,12 +12,12 @@ from tools.environments.base import BaseEnvironment, _pipe_stdin
 _IS_WINDOWS = platform.system() == "Windows"
 
 
-# Hermes-internal env vars that should NOT leak into terminal subprocesses.
+# Hermes 内部环境变量，不应泄露到终端子进程中。
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 
 
 def _build_provider_env_blocklist() -> frozenset:
-    """Derive the blocklist from provider, tool, and gateway config."""
+    """从提供者、工具和网关配置中推导黑名单。"""
     blocked: set[str] = set()
 
     try:
@@ -108,7 +108,7 @@ _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
 
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
-    """Filter Hermes-managed secrets from a subprocess environment."""
+    """从子进程环境中过滤 Hermes 管理的密钥。"""
     try:
         from tools.env_passthrough import is_env_passthrough as _is_passthrough
     except Exception:
@@ -129,7 +129,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
         elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
             sanitized[key] = value
 
-    # Per-profile HOME isolation for background processes (same as _make_run_env).
+    # 按配置文件隔离 HOME 目录（用于后台进程，与 _make_run_env 相同）。
     from hermes_constants import get_subprocess_home
     _profile_home = get_subprocess_home()
     if _profile_home:
@@ -139,7 +139,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
 
 
 def _find_bash() -> str:
-    """Find bash for command execution."""
+    """查找用于命令执行的 bash。"""
     if not _IS_WINDOWS:
         return (
             shutil.which("bash")
@@ -172,11 +172,11 @@ def _find_bash() -> str:
     )
 
 
-# Backward compat — process_registry.py imports this name
+# 向后兼容 - process_registry.py 导入此名称
 _find_shell = _find_bash
 
 
-# Standard PATH entries for environments with minimal PATH.
+# PATH 最小化环境的标准路径条目。
 _SANE_PATH = (
     "/opt/homebrew/bin:/opt/homebrew/sbin:"
     "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -184,7 +184,7 @@ _SANE_PATH = (
 
 
 def _make_run_env(env: dict) -> dict:
-    """Build a run environment with a sane PATH and provider-var stripping."""
+    """构建具有合理 PATH 和提供者变量过滤的运行环境。"""
     try:
         from tools.env_passthrough import is_env_passthrough as _is_passthrough
     except Exception:
@@ -202,9 +202,9 @@ def _make_run_env(env: dict) -> dict:
     if "/usr/bin" not in existing_path.split(":"):
         run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
 
-    # Per-profile HOME isolation: redirect system tool configs (git, ssh, gh,
-    # npm …) into {HERMES_HOME}/home/ when that directory exists.  Only the
-    # subprocess sees the override — the Python process keeps the real HOME.
+    # 按配置文件隔离 HOME：将系统工具配置（git、ssh、gh、npm 等）
+    # 重定向到 {HERMES_HOME}/home/ 目录（当该目录存在时）。
+    # 只有子进程看到此覆盖 - Python 进程保留真实的 HOME。
     from hermes_constants import get_subprocess_home
     _profile_home = get_subprocess_home()
     if _profile_home:
@@ -214,11 +214,11 @@ def _make_run_env(env: dict) -> dict:
 
 
 class LocalEnvironment(BaseEnvironment):
-    """Run commands directly on the host machine.
+    """直接在宿主机上运行命令。
 
-    Spawn-per-call: every execute() spawns a fresh bash process.
-    Session snapshot preserves env vars across calls.
-    CWD persists via file-based read after each command.
+    每次调用创建新进程：每次 execute() 都启动一个新的 bash 进程。
+    会话快照在调用间保持环境变量。
+    工作目录通过每条命令执行后的文件读取来持久化。
     """
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
@@ -226,16 +226,14 @@ class LocalEnvironment(BaseEnvironment):
         self.init_session()
 
     def get_temp_dir(self) -> str:
-        """Return a shell-safe writable temp dir for local execution.
+        """返回本地执行的 shell 安全可写临时目录。
 
-        Termux does not provide /tmp by default, but exposes a POSIX TMPDIR.
-        Prefer POSIX-style env vars when available, keep using /tmp on regular
-        Unix systems, and only fall back to tempfile.gettempdir() when it also
-        resolves to a POSIX path.
+        Termux 默认不提供 /tmp，但暴露了 POSIX TMPDIR。
+        优先使用 POSIX 风格的环境变量（如果可用），在常规 Unix 系统上继续使用
+        /tmp，仅在 tempfile.gettempdir() 也解析为 POSIX 路径时才回退使用它。
 
-        Check the environment configured for this backend first so callers can
-        override the temp root explicitly (for example via terminal.env or a
-        custom TMPDIR), then fall back to the host process environment.
+        首先检查为此后端配置的环境变量，以便调用方可以显式覆盖临时目录根目录
+        （例如通过 terminal.env 或自定义 TMPDIR），然后回退到宿主机进程环境。
         """
         for env_var in ("TMPDIR", "TMP", "TEMP"):
             candidate = self.env.get(env_var) or os.environ.get(env_var)
@@ -276,7 +274,7 @@ class LocalEnvironment(BaseEnvironment):
         return proc
 
     def _kill_process(self, proc):
-        """Kill the entire process group (all children)."""
+        """终止整个进程组（包括所有子进程）。"""
         try:
             if _IS_WINDOWS:
                 proc.terminate()
@@ -294,7 +292,7 @@ class LocalEnvironment(BaseEnvironment):
                 pass
 
     def _update_cwd(self, result: dict):
-        """Read CWD from temp file (local-only, no round-trip needed)."""
+        """从临时文件读取工作目录（仅限本地，无需网络往返）。"""
         try:
             cwd_path = open(self._cwd_file).read().strip()
             if cwd_path:
@@ -302,11 +300,11 @@ class LocalEnvironment(BaseEnvironment):
         except (OSError, FileNotFoundError):
             pass
 
-        # Still strip the marker from output so it's not visible
+        # 仍然需要从输出中去除标记，以免显示出来
         self._extract_cwd_from_output(result)
 
     def cleanup(self):
-        """Clean up temp files."""
+        """清理临时文件。"""
         for f in (self._snapshot_path, self._cwd_file):
             try:
                 os.unlink(f)

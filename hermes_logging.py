@@ -1,26 +1,25 @@
-"""Centralized logging setup for Hermes Agent.
+"""Hermes Agent 的集中式日志配置。
 
-Provides a single ``setup_logging()`` entry point that both the CLI and
-gateway call early in their startup path.  All log files live under
-``~/.hermes/logs/`` (profile-aware via ``get_hermes_home()``).
+提供一个 ``setup_logging()`` 入口点，供 CLI 和网关在启动早期调用。
+所有日志文件存放在 ``~/.hermes/logs/`` 下（通过 ``get_hermes_home()`` 支持 profile 感知）。
 
-Log files produced:
-    agent.log   — INFO+, all agent/tool/session activity (the main log)
-    errors.log  — WARNING+, errors and warnings only (quick triage)
-    gateway.log — INFO+, gateway-only events (created when mode="gateway")
+生成的日志文件:
+    agent.log   — INFO+，所有 agent/工具/会话活动（主日志）
+    errors.log  — WARNING+，仅错误和警告（快速问题排查）
+    gateway.log — INFO+，仅网关事件（当 mode="gateway" 时创建）
 
-All files use ``RotatingFileHandler`` with ``RedactingFormatter`` so
-secrets are never written to disk.
+所有文件使用 ``RotatingFileHandler`` 配合 ``RedactingFormatter``，
+确保敏感信息不会被写入磁盘。
 
-Component separation:
-    gateway.log only receives records from ``gateway.*`` loggers —
-    platform adapters, session management, slash commands, delivery.
-    agent.log remains the catch-all (everything goes there).
+组件分离:
+    gateway.log 仅接收来自 ``gateway.*`` 日志记录器的记录 --
+    平台适配器、会话管理、斜杠命令、消息投递。
+    agent.log 保持为全局兜底日志（所有内容都会写入其中）。
 
-Session context:
-    Call ``set_session_context(session_id)`` at the start of a conversation
-    and ``clear_session_context()`` when done.  All log lines emitted on
-    that thread will include ``[session_id]`` for filtering/correlation.
+会话上下文:
+    在对话开始时调用 ``set_session_context(session_id)``，
+    结束时调用 ``clear_session_context()``。该线程上产生的所有日志行
+    都会包含 ``[session_id]`` 用于过滤/关联。
 """
 
 import logging
@@ -32,21 +31,21 @@ from typing import Optional, Sequence
 
 from hermes_constants import get_config_path, get_hermes_home
 
-# Sentinel to track whether setup_logging() has already run.  The function
-# is idempotent — calling it twice is safe but the second call is a no-op
-# unless ``force=True``.
+# 哨兵标记，用于追踪 setup_logging() 是否已执行。
+# 该函数是幂等的 -- 调用两次是安全的，但第二次调用为空操作，
+# 除非传入 ``force=True``。
 _logging_initialized = False
 
-# Thread-local storage for per-conversation session context.
+# 线程本地存储，用于保存每个对话的会话上下文。
 _session_context = threading.local()
 
-# Default log format — includes timestamp, level, optional session tag,
-# logger name, and message.  The ``%(session_tag)s`` field is guaranteed to
-# exist on every LogRecord via _install_session_record_factory() below.
+# 默认日志格式 -- 包含时间戳、级别、可选的会话标签、日志记录器名称和消息。
+# ``%(session_tag)s`` 字段通过下方的 _install_session_record_factory() 确保
+# 在每条 LogRecord 上都存在。
 _LOG_FORMAT = "%(asctime)s %(levelname)s%(session_tag)s %(name)s: %(message)s"
 _LOG_FORMAT_VERBOSE = "%(asctime)s - %(name)s - %(levelname)s%(session_tag)s - %(message)s"
 
-# Third-party loggers that are noisy at DEBUG/INFO level.
+# 在 DEBUG/INFO 级别输出较多噪音的第三方日志记录器。
 _NOISY_LOGGERS = (
     "openai",
     "openai._base_client",
@@ -66,43 +65,41 @@ _NOISY_LOGGERS = (
 
 
 # ---------------------------------------------------------------------------
-# Public session context API
+# 公共会话上下文 API
 # ---------------------------------------------------------------------------
 
 def set_session_context(session_id: str) -> None:
-    """Set the session ID for the current thread.
+    """设置当前线程的会话 ID。
 
-    All subsequent log records on this thread will include ``[session_id]``
-    in the formatted output.  Call at the start of ``run_conversation()``.
+    此后该线程上的所有日志记录将在格式化输出中包含 ``[session_id]``。
+    在 ``run_conversation()`` 开始时调用。
     """
     _session_context.session_id = session_id
 
 
 def clear_session_context() -> None:
-    """Clear the session ID for the current thread."""
+    """清除当前线程的会话 ID。"""
     _session_context.session_id = None
 
 
 # ---------------------------------------------------------------------------
-# Record factory — injects session_tag into every LogRecord at creation
+# 记录工厂 -- 在创建每条 LogRecord 时注入 session_tag
 # ---------------------------------------------------------------------------
 
 def _install_session_record_factory() -> None:
-    """Replace the global LogRecord factory with one that adds ``session_tag``.
+    """用一个添加了 ``session_tag`` 的工厂替换全局 LogRecord 工厂。
 
-    Unlike a ``logging.Filter`` on a handler or logger, the record factory
-    runs for EVERY record in the process — including records that propagate
-    from child loggers and records handled by third-party handlers.  This
-    guarantees ``%(session_tag)s`` is always available in format strings,
-    eliminating the KeyError that would occur if a handler used our format
-    without having a ``_SessionFilter`` attached.
+    与 handler 或 logger 上的 ``logging.Filter`` 不同，记录工厂对
+    进程中的每条记录都生效 -- 包括从子日志记录器传播的记录和
+    第三方 handler 处理的记录。这保证 ``%(session_tag)s`` 在
+    格式字符串中始终可用，避免了在 handler 使用我们的格式但未
+    附加 ``_SessionFilter`` 时产生的 KeyError。
 
-    Idempotent — checks for a marker attribute to avoid double-wrapping if
-    the module is reloaded.
+    幂等 -- 通过标记属性检查来避免在模块重新加载时重复包装。
     """
     current_factory = logging.getLogRecordFactory()
     if getattr(current_factory, "_hermes_session_injector", False):
-        return  # already installed
+        return  # 已安装
 
     def _session_record_factory(*args, **kwargs):
         record = current_factory(*args, **kwargs)
@@ -114,20 +111,20 @@ def _install_session_record_factory() -> None:
     logging.setLogRecordFactory(_session_record_factory)
 
 
-# Install immediately on import — session_tag is available on all records
-# from this point forward, even before setup_logging() is called.
+# 在导入时立即安装 -- 从此刻起 session_tag 在所有记录上可用，
+# 甚至在调用 setup_logging() 之前。
 _install_session_record_factory()
 
 
 # ---------------------------------------------------------------------------
-# Filters
+# 过滤器
 # ---------------------------------------------------------------------------
 
 class _ComponentFilter(logging.Filter):
-    """Only pass records whose logger name starts with one of *prefixes*.
+    """仅通过日志记录器名称以 *prefixes* 中某一个开头的记录。
 
-    Used to route gateway-specific records to ``gateway.log`` while
-    keeping ``agent.log`` as the catch-all.
+    用于将网关特定的记录路由到 ``gateway.log``，
+    同时保持 ``agent.log`` 作为全局兜底日志。
     """
 
     def __init__(self, prefixes: Sequence[str]) -> None:
@@ -138,8 +135,8 @@ class _ComponentFilter(logging.Filter):
         return record.name.startswith(self._prefixes)
 
 
-# Logger name prefixes that belong to each component.
-# Used by _ComponentFilter and exposed for ``hermes logs --component``.
+# 属于各组件的日志记录器名称前缀。
+# 由 _ComponentFilter 使用，也对外暴露给 ``hermes logs --component``。
 COMPONENT_PREFIXES = {
     "gateway": ("gateway",),
     "agent": ("agent", "run_agent", "model_tools", "batch_runner"),
@@ -150,7 +147,7 @@ COMPONENT_PREFIXES = {
 
 
 # ---------------------------------------------------------------------------
-# Main setup
+# 主要配置
 # ---------------------------------------------------------------------------
 
 def setup_logging(
@@ -162,37 +159,37 @@ def setup_logging(
     mode: Optional[str] = None,
     force: bool = False,
 ) -> Path:
-    """Configure the Hermes logging subsystem.
+    """配置 Hermes 日志子系统。
 
-    Safe to call multiple times — the second call is a no-op unless
-    *force* is ``True``.
+    可安全多次调用 -- 第二次调用为空操作，
+    除非 *force* 为 ``True``。
 
-    Parameters
+    参数
     ----------
     hermes_home
-        Override for the Hermes home directory.  Falls back to
-        ``get_hermes_home()`` (profile-aware).
+        覆盖 Hermes 主目录。回退到
+        ``get_hermes_home()``（支持 profile 感知）。
     log_level
-        Minimum level for the ``agent.log`` file handler.  Accepts any
-        standard Python level name (``"DEBUG"``, ``"INFO"``, ``"WARNING"``).
-        Defaults to ``"INFO"`` or the value from config.yaml ``logging.level``.
+        ``agent.log`` 文件处理器的最低级别。接受任何
+        标准 Python 级别名称（``"DEBUG"``、``"INFO"``、``"WARNING"``）。
+        默认为 ``"INFO"`` 或 config.yaml ``logging.level`` 中的值。
     max_size_mb
-        Maximum size of each log file in megabytes before rotation.
-        Defaults to 5 or the value from config.yaml ``logging.max_size_mb``.
+        每个日志文件在轮转前的最大大小（MB）。
+        默认为 5 或 config.yaml ``logging.max_size_mb`` 中的值。
     backup_count
-        Number of rotated backup files to keep.
-        Defaults to 3 or the value from config.yaml ``logging.backup_count``.
+        保留的轮转备份文件数量。
+        默认为 3 或 config.yaml ``logging.backup_count`` 中的值。
     mode
-        Caller context: ``"cli"``, ``"gateway"``, ``"cron"``.
-        When ``"gateway"``, an additional ``gateway.log`` file is created
-        that receives only gateway-component records.
+        调用方上下文: ``"cli"``、``"gateway"``、``"cron"``。
+        当为 ``"gateway"`` 时，会额外创建 ``gateway.log`` 文件，
+        仅接收网关组件的记录。
     force
-        Re-run setup even if it has already been called.
+        即使已调用过也重新执行配置。
 
-    Returns
+    返回
     -------
     Path
-        The ``logs/`` directory where files are written.
+        写入日志文件的 ``logs/`` 目录。
     """
     global _logging_initialized
     if _logging_initialized and not force:
@@ -203,7 +200,7 @@ def setup_logging(
     log_dir = home / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Read config defaults (best-effort — config may not be loaded yet).
+    # 尽力读取配置默认值（配置可能尚未加载）。
     cfg_level, cfg_max_size, cfg_backup = _read_logging_config()
 
     level_name = (log_level or cfg_level or "INFO").upper()
@@ -211,12 +208,12 @@ def setup_logging(
     max_bytes = (max_size_mb or cfg_max_size or 5) * 1024 * 1024
     backups = backup_count or cfg_backup or 3
 
-    # Lazy import to avoid circular dependency at module load time.
+    # 延迟导入以避免模块加载时的循环依赖。
     from agent.redact import RedactingFormatter
 
     root = logging.getLogger()
 
-    # --- agent.log (INFO+) — the main activity log -------------------------
+    # --- agent.log (INFO+) — 主活动日志 ------------------------------------
     _add_rotating_handler(
         root,
         log_dir / "agent.log",
@@ -226,7 +223,7 @@ def setup_logging(
         formatter=RedactingFormatter(_LOG_FORMAT),
     )
 
-    # --- errors.log (WARNING+) — quick triage log --------------------------
+    # --- errors.log (WARNING+) — 快速问题排查日志 --------------------------
     _add_rotating_handler(
         root,
         log_dir / "errors.log",
@@ -236,7 +233,7 @@ def setup_logging(
         formatter=RedactingFormatter(_LOG_FORMAT),
     )
 
-    # --- gateway.log (INFO+, gateway component only) ------------------------
+    # --- gateway.log (INFO+, 仅网关组件) -----------------------------------
     if mode == "gateway":
         _add_rotating_handler(
             root,
@@ -248,11 +245,11 @@ def setup_logging(
             log_filter=_ComponentFilter(COMPONENT_PREFIXES["gateway"]),
         )
 
-    # Ensure root logger level is low enough for the handlers to fire.
+    # 确保根日志记录器级别足够低，使处理器能触发。
     if root.level == logging.NOTSET or root.level > level:
         root.setLevel(level)
 
-    # Suppress noisy third-party loggers.
+    # 抑制产生大量噪音的第三方日志记录器。
     for name in _NOISY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
 
@@ -261,15 +258,15 @@ def setup_logging(
 
 
 def setup_verbose_logging() -> None:
-    """Enable DEBUG-level console logging for ``--verbose`` / ``-v`` mode.
+    """为 ``--verbose`` / ``-v`` 模式启用 DEBUG 级别的控制台日志。
 
-    Called by ``AIAgent.__init__()`` when ``verbose_logging=True``.
+    由 ``AIAgent.__init__()`` 在 ``verbose_logging=True`` 时调用。
     """
     from agent.redact import RedactingFormatter
 
     root = logging.getLogger()
 
-    # Avoid adding duplicate stream handlers.
+    # 避免重复添加控制台处理器。
     for h in root.handlers:
         if isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler):
             if getattr(h, "_hermes_verbose", False):
@@ -281,29 +278,29 @@ def setup_verbose_logging() -> None:
     handler._hermes_verbose = True  # type: ignore[attr-defined]
     root.addHandler(handler)
 
-    # Lower root logger level so DEBUG records reach all handlers.
+    # 降低根日志记录器级别以使 DEBUG 记录到达所有处理器。
     if root.level > logging.DEBUG:
         root.setLevel(logging.DEBUG)
 
-    # Keep third-party libraries at WARNING to reduce noise.
+    # 保持第三方库为 WARNING 级别以减少噪音。
     for name in _NOISY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
-    # rex-deploy at INFO for sandbox status.
+    # rex-deploy 设为 INFO 以显示沙箱状态。
     logging.getLogger("rex-deploy").setLevel(logging.INFO)
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# 内部辅助函数
 # ---------------------------------------------------------------------------
 
 class _ManagedRotatingFileHandler(RotatingFileHandler):
-    """RotatingFileHandler that ensures group-writable perms in managed mode.
+    """在托管模式下确保组可写权限的 RotatingFileHandler。
 
-    In managed mode (NixOS), the stateDir uses setgid (2770) so new files
-    inherit the hermes group. However, both _open() (initial creation) and
-    doRollover() create files via open(), which uses the process umask —
-    typically 0022, producing 0644. This subclass applies chmod 0660 after
-    both operations so the gateway and interactive users can share log files.
+    在托管模式 (NixOS) 下，stateDir 使用 setgid (2770)，
+    因此新文件会继承 hermes 组。但 _open()（初始创建）和
+    doRollover() 都通过 open() 创建文件，使用进程的 umask --
+    通常是 0022，产生 0644 权限。此子类在两种操作后都应用
+    chmod 0660，以便网关和交互用户可以共享日志文件。
     """
 
     def __init__(self, *args, **kwargs):
@@ -312,6 +309,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         super().__init__(*args, **kwargs)
 
     def _chmod_if_managed(self):
+        """如果处于托管模式，则修改文件权限为 0660。"""
         if self._managed:
             try:
                 os.chmod(self.baseFilename, 0o660)
@@ -338,22 +336,23 @@ def _add_rotating_handler(
     formatter: logging.Formatter,
     log_filter: Optional[logging.Filter] = None,
 ) -> None:
-    """Add a ``RotatingFileHandler`` to *logger*, skipping if one already
-    exists for the same resolved file path (idempotent).
+    """向 *logger* 添加一个 ``RotatingFileHandler``，如果同一解析路径
+    已存在相同处理器则跳过（幂等）。
 
-    Parameters
+    参数
     ----------
     log_filter
-        Optional filter to attach to the handler (e.g. ``_ComponentFilter``
-        for gateway.log).
+        附加到处理器的可选过滤器（例如 ``_ComponentFilter``
+        用于 gateway.log）。
     """
     resolved = path.resolve()
+    # 检查是否已存在相同文件路径的处理器，避免重复
     for existing in logger.handlers:
         if (
             isinstance(existing, RotatingFileHandler)
             and Path(getattr(existing, "baseFilename", "")).resolve() == resolved
         ):
-            return  # already attached
+            return  # 已附加
 
     path.parent.mkdir(parents=True, exist_ok=True)
     handler = _ManagedRotatingFileHandler(
@@ -368,9 +367,9 @@ def _add_rotating_handler(
 
 
 def _read_logging_config():
-    """Best-effort read of ``logging.*`` from config.yaml.
+    """尽力读取 config.yaml 中的 ``logging.*`` 配置。
 
-    Returns ``(level, max_size_mb, backup_count)`` — any may be ``None``.
+    返回 ``(level, max_size_mb, backup_count)`` -- 任何一项都可能为 ``None``。
     """
     try:
         import yaml

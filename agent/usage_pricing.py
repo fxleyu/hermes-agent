@@ -78,8 +78,7 @@ class CostResult:
 _UTC_NOW = lambda: datetime.now(timezone.utc)
 
 
-# Official docs snapshot entries. Models whose published pricing and cache
-# semantics are stable enough to encode exactly.
+# 官方文档快照条目。定价和缓存语义足够稳定、可以精确编码的模型。
 _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     (
         "anthropic",
@@ -105,7 +104,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
         pricing_version="anthropic-prompt-caching-2026-03-16",
     ),
-    # OpenAI
+    # OpenAI 模型
     (
         "openai",
         "gpt-4o",
@@ -183,7 +182,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://openai.com/api/pricing/",
         pricing_version="openai-pricing-2026-03-16",
     ),
-    # Anthropic older models (pre-4.6 generation)
+    # Anthropic 旧版模型（4.6 代之前）
     (
         "anthropic",
         "claude-3-5-sonnet-20241022",
@@ -232,7 +231,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
         pricing_version="anthropic-pricing-2026-03-16",
     ),
-    # DeepSeek
+    # DeepSeek 模型
     (
         "deepseek",
         "deepseek-chat",
@@ -253,7 +252,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://api-docs.deepseek.com/quick_start/pricing",
         pricing_version="deepseek-pricing-2026-03-16",
     ),
-    # Google Gemini
+    # Google Gemini 模型
     (
         "google",
         "gemini-2.5-pro",
@@ -284,10 +283,10 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://ai.google.dev/pricing",
         pricing_version="google-pricing-2026-03-16",
     ),
-    # AWS Bedrock — pricing per the Bedrock pricing page.
-    # Bedrock charges the same per-token rates as the model provider but
-    # through AWS billing.  These are the on-demand prices (no commitment).
-    # Source: https://aws.amazon.com/bedrock/pricing/
+    # AWS Bedrock——定价参照 Bedrock 定价页面。
+    # Bedrock 使用与模型提供商相同的每 token 费率，但通过 AWS 计费。
+    # 以下为按需价格（无承诺）。
+    # 来源：https://aws.amazon.com/bedrock/pricing/
     (
         "bedrock",
         "anthropic.claude-opus-4-6",
@@ -497,16 +496,15 @@ def normalize_usage(
     provider: Optional[str] = None,
     api_mode: Optional[str] = None,
 ) -> CanonicalUsage:
-    """Normalize raw API response usage into canonical token buckets.
+    """将原始 API 响应的 usage 数据标准化为规范的 token 分类。
 
-    Handles three API shapes:
-    - Anthropic: input_tokens/output_tokens/cache_read_input_tokens/cache_creation_input_tokens
-    - Codex Responses: input_tokens includes cache tokens; input_tokens_details.cached_tokens separates them
-    - OpenAI Chat Completions: prompt_tokens includes cache tokens; prompt_tokens_details.cached_tokens separates them
+    处理三种 API 格式：
+    - Anthropic：input_tokens/output_tokens/cache_read_input_tokens/cache_creation_input_tokens
+    - Codex Responses：input_tokens 包含缓存 token；input_tokens_details.cached_tokens 将其分离
+    - OpenAI Chat Completions：prompt_tokens 包含缓存 token；prompt_tokens_details.cached_tokens 将其分离
 
-    In both Codex and OpenAI modes, input_tokens is derived by subtracting cache
-    tokens from the total — the API contract is that input/prompt totals include
-    cached tokens and the details object breaks them out.
+    在 Codex 和 OpenAI 模式中，input_tokens 通过从总量中减去缓存 token 得出——
+    API 约定是 input/prompt 总量包含缓存 token，details 对象将其分解出来。
     """
     if not response_usage:
         return CanonicalUsage()
@@ -637,10 +635,9 @@ def has_known_pricing(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
 ) -> bool:
-    """Check whether we have pricing data for this model+route.
+    """检查该模型+路由是否有已知定价数据。
 
-    Uses direct lookup instead of routing through the full estimation
-    pipeline — avoids creating dummy usage objects just to check status.
+    使用直接查找而非通过完整的估算流程——避免仅为检查状态而创建虚拟 usage 对象。
     """
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
     if route.billing_mode == "subscription_included":

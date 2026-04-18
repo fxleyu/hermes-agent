@@ -1,4 +1,4 @@
-"""Shared runtime provider resolution for CLI, gateway, cron, and helpers."""
+"""CLI、网关、定时任务和辅助工具的共享运行时提供商解析。"""
 
 from __future__ import annotations
 
@@ -36,10 +36,10 @@ def _normalize_custom_provider_name(value: str) -> str:
 
 
 def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
-    """Auto-detect api_mode from the resolved base URL.
+    """从解析后的 base URL 自动检测 api_mode。
 
-    Direct api.openai.com endpoints need the Responses API for GPT-5.x
-    tool calls with reasoning (chat/completions returns 400).
+    直连 api.openai.com 端点需要 Responses API 来处理带推理的
+    GPT-5.x 工具调用（chat/completions 会返回 400）。
     """
     normalized = (base_url or "").strip().lower().rstrip("/")
     if "api.x.ai" in normalized:
@@ -50,7 +50,7 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
 
 
 def _auto_detect_local_model(base_url: str) -> str:
-    """Query a local server for its model name when only one model is loaded."""
+    """当本地服务器只加载了一个模型时，查询其模型名称。"""
     if not base_url:
         return ""
     try:
@@ -75,7 +75,7 @@ def _get_model_config() -> Dict[str, Any]:
     model_cfg = config.get("model")
     if isinstance(model_cfg, dict):
         cfg = dict(model_cfg)
-        # Accept "model" as alias for "default" (users intuitively write model.model)
+        # 接受 "model" 作为 "default" 的别名（用户习惯写 model.model）
         if not cfg.get("default") and cfg.get("model"):
             cfg["default"] = cfg["model"]
         default = (cfg.get("default") or "").strip()
@@ -93,12 +93,11 @@ def _get_model_config() -> Dict[str, Any]:
 
 
 def _provider_supports_explicit_api_mode(provider: Optional[str], configured_provider: Optional[str] = None) -> bool:
-    """Check whether a persisted api_mode should be honored for a given provider.
+    """检查给定提供商是否应遵守持久化的 api_mode。
 
-    Prevents stale api_mode from a previous provider leaking into a
-    different one after a model/provider switch.  Only applies the
-    persisted mode when the config's provider matches the runtime
-    provider (or when no configured provider is recorded).
+    防止前一个提供商的过期 api_mode 泄漏到切换后的新提供商。
+    仅当配置的提供商与运行时提供商匹配（或未记录配置提供商时）
+    才应用持久化的模式。
     """
     normalized_provider = (provider or "").strip().lower()
     normalized_configured = (configured_provider or "").strip().lower()
@@ -131,7 +130,7 @@ _VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages",
 
 
 def _parse_api_mode(raw: Any) -> Optional[str]:
-    """Validate an api_mode value from config. Returns None if invalid."""
+    """验证来自配置的 api_mode 值。无效时返回 None。"""
     if isinstance(raw, str):
         normalized = raw.strip().lower()
         if normalized in _VALID_API_MODES:
@@ -178,10 +177,10 @@ def _resolve_runtime_from_pool_entry(
         base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
     else:
         configured_provider = str(model_cfg.get("provider") or "").strip().lower()
-        # Honour model.base_url from config.yaml when the configured provider
-        # matches this provider — same pattern as the Anthropic branch above.
-        # Only override when the pool entry has no explicit base_url (i.e. it
-        # fell back to the hardcoded default).  Env var overrides win (#6039).
+        # 当配置的提供商与此提供商匹配时，遵循 config.yaml 中的
+        # model.base_url — 与上面 Anthropic 分支相同的模式。
+        # 仅当池条目没有显式 base_url（即回退到硬编码默认值）时
+        # 才覆盖。环境变量覆盖优先（#6039）。
         pconfig = PROVIDER_REGISTRY.get(provider)
         pool_url_is_default = pconfig and base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/")
         if configured_provider == provider and pool_url_is_default:
@@ -197,10 +196,10 @@ def _resolve_runtime_from_pool_entry(
         elif base_url.rstrip("/").endswith("/anthropic"):
             api_mode = "anthropic_messages"
 
-    # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
-    # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the
-    # trailing /v1 so the SDK constructs the correct path (e.g.
-    # https://opencode.ai/zen/go/v1/messages instead of .../v1/v1/messages).
+    # OpenCode 的 base URL 以 /v1 结尾用于 OpenAI 兼容模型，但
+    # Anthropic SDK 会在 base_url 前加上自己的 /v1/messages。剥离
+    # 尾部的 /v1，使 SDK 构造正确的路径（例如
+    # https://opencode.ai/zen/go/v1/messages 而非 .../v1/v1/messages）。
     if api_mode == "anthropic_messages" and provider in ("opencode-zen", "opencode-go"):
         base_url = re.sub(r"/v1/?$", "", base_url)
 
@@ -216,7 +215,7 @@ def _resolve_runtime_from_pool_entry(
 
 
 def resolve_requested_provider(requested: Optional[str] = None) -> str:
-    """Resolve provider request from explicit arg, config, then env."""
+    """从显式参数、配置、然后环境变量解析提供商请求。"""
     if requested and requested.strip():
         return requested.strip().lower()
 
@@ -225,8 +224,8 @@ def resolve_requested_provider(requested: Optional[str] = None) -> str:
     if isinstance(cfg_provider, str) and cfg_provider.strip():
         return cfg_provider.strip().lower()
 
-    # Prefer the persisted config selection over any stale shell/.env
-    # provider override so chat uses the endpoint the user last saved.
+    # 优先使用持久化配置选择，而非过期的 shell/.env 提供商覆盖，
+    # 以确保聊天使用用户最后保存的端点。
     env_provider = os.getenv("HERMES_INFERENCE_PROVIDER", "").strip().lower()
     if env_provider:
         return env_provider
@@ -239,7 +238,7 @@ def _try_resolve_from_custom_pool(
     provider_label: str,
     api_mode_override: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Check if a credential pool exists for a custom endpoint and return a runtime dict if so."""
+    """检查自定义端点是否存在凭证池，如果存在则返回运行时字典。"""
     pool_key = get_custom_provider_pool_key(base_url)
     if not pool_key:
         return None
@@ -270,9 +269,8 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     if not requested_norm or requested_norm == "custom":
         return None
 
-    # Raw names should only map to custom providers when they are not already
-    # valid built-in providers or aliases. Explicit menu keys like
-    # ``custom:local`` always target the saved custom provider.
+    # 原始名称只在不是已有内置提供商或别名时才映射到自定义提供商。
+    # 显式菜单键如 ``custom:local`` 始终指向已保存的自定义提供商。
     if requested_norm == "auto":
         return None
     if not requested_norm.startswith("custom:"):
@@ -285,23 +283,23 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
 
     config = load_config()
     
-    # First check providers: dict (new-style user-defined providers)
+    # 首先检查 providers: dict（新式用户自定义提供商）
     providers = config.get("providers")
     if isinstance(providers, dict):
         for ep_name, entry in providers.items():
             if not isinstance(entry, dict):
                 continue
-            # Match exact name or normalized name
+            # 匹配精确名称或规范化名称
             name_norm = _normalize_custom_provider_name(ep_name)
-            # Resolve the API key from the env var name stored in key_env
+            # 从 key_env 中存储的环境变量名解析 API 密钥
             key_env = str(entry.get("key_env", "") or "").strip()
             resolved_api_key = os.getenv(key_env, "").strip() if key_env else ""
-            # Fall back to inline api_key when key_env is absent or unresolvable
+            # 当 key_env 不存在或无法解析时，回退到内联 api_key
             if not resolved_api_key:
                 resolved_api_key = str(entry.get("api_key", "") or "").strip()
 
             if requested_norm in {ep_name, name_norm, f"custom:{name_norm}"}:
-                # Found match by provider key
+                # 通过提供商键找到匹配
                 base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                 if base_url:
                     return {
@@ -310,12 +308,12 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
                     }
-            # Also check the 'name' field if present
+            # 如果存在 'name' 字段，也检查它
             display_name = entry.get("name", "")
             if display_name:
                 display_norm = _normalize_custom_provider_name(display_name)
                 if requested_norm in {display_name, display_norm, f"custom:{display_norm}"}:
-                    # Found match by display name
+                    # 通过显示名称找到匹配
                     base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                     if base_url:
                         return {
@@ -325,7 +323,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                             "model": entry.get("default_model", ""),
                         }
 
-    # Fall back to custom_providers: list (legacy format)
+    # 回退到 custom_providers: list（旧格式）
     custom_providers = config.get("custom_providers")
     if isinstance(custom_providers, dict):
         logger.warning(
@@ -391,11 +389,11 @@ def _resolve_named_custom_runtime(
     if not base_url:
         return None
 
-    # Check if a credential pool exists for this custom endpoint
+    # 检查自定义端点是否存在凭证池
     pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"))
     if pool_result:
-        # Propagate the model name even when using pooled credentials —
-        # the pool doesn't know about the custom_providers model field.
+        # 即使使用池化凭证也传播模型名称 —
+        # 凭证池不知道 custom_providers 的 model 字段。
         model_name = custom_provider.get("model")
         if model_name:
             pool_result["model"] = model_name
@@ -419,8 +417,8 @@ def _resolve_named_custom_runtime(
         "api_key": api_key or "no-key-required",
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
     }
-    # Propagate the model name so callers can override self.model when the
-    # provider name differs from the actual model string the API expects.
+    # 传播模型名称，以便调用者在提供商名称与 API 期望的实际模型字符串
+    # 不同时可以覆盖 self.model。
     if custom_provider.get("model"):
         result["model"] = custom_provider["model"]
     return result
@@ -446,9 +444,9 @@ def _resolve_openrouter_runtime(
 
     env_openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "").strip()
 
-    # Use config base_url when available and the provider context matches.
-    # OPENAI_BASE_URL env var is no longer consulted — config.yaml is
-    # the single source of truth for endpoint URLs.
+    # 当有可用配置 base_url 且提供商上下文匹配时使用它。
+    # 不再查询 OPENAI_BASE_URL 环境变量 — config.yaml 是
+    # 端点 URL 的唯一事实来源。
     use_config_base_url = False
     if cfg_base_url.strip() and not explicit_base_url:
         if requested_norm == "auto":
@@ -464,11 +462,11 @@ def _resolve_openrouter_runtime(
         or OPENROUTER_BASE_URL
     ).rstrip("/")
 
-    # Choose API key based on whether the resolved base_url targets OpenRouter.
-    # When hitting OpenRouter, prefer OPENROUTER_API_KEY (issue #289).
-    # When hitting a custom endpoint (e.g. Z.ai, local LLM), prefer
-    # OPENAI_API_KEY so the OpenRouter key doesn't leak to an unrelated
-    # provider (issues #420, #560).
+    # 根据解析后的 base_url 是否指向 OpenRouter 来选择 API 密钥。
+    # 访问 OpenRouter 时，优先使用 OPENROUTER_API_KEY（issue #289）。
+    # 访问自定义端点（如 Z.ai、本地 LLM）时，优先使用
+    # OPENAI_API_KEY，避免 OpenRouter 密钥泄漏到不相关的
+    # 提供商（issues #420, #560）。
     _is_openrouter_url = "openrouter.ai" in base_url
     if _is_openrouter_url:
         api_key_candidates = [
@@ -477,9 +475,9 @@ def _resolve_openrouter_runtime(
             os.getenv("OPENAI_API_KEY"),
         ]
     else:
-        # Custom endpoint: use api_key from config when using config base_url (#1760).
-        # When the endpoint is Ollama Cloud, check OLLAMA_API_KEY — it's
-        # the canonical env var for ollama.com authentication.
+        # 自定义端点：当使用配置的 base_url 时使用配置中的 api_key（#1760）。
+        # 当端点是 Ollama Cloud 时，检查 OLLAMA_API_KEY — 它是
+        # ollama.com 认证的规范环境变量。
         _is_ollama_url = "ollama.com" in base_url.lower()
         api_key_candidates = [
             explicit_api_key,
@@ -495,13 +493,13 @@ def _resolve_openrouter_runtime(
 
     source = "explicit" if (explicit_api_key or explicit_base_url) else "env/config"
 
-    # When "custom" was explicitly requested, preserve that as the provider
-    # name instead of silently relabeling to "openrouter" (#2562).
-    # Also provide a placeholder API key for local servers that don't require
-    # authentication — the OpenAI SDK requires a non-empty api_key string.
+    # 当明确请求 "custom" 时，保留其作为提供商名称，
+    # 而不是静默地重标记为 "openrouter"（#2562）。
+    # 同时为不需要认证的本地服务器提供占位 API 密钥 —
+    # OpenAI SDK 要求 api_key 字符串非空。
     effective_provider = "custom" if requested_norm == "custom" else "openrouter"
 
-    # For custom endpoints, check if a credential pool exists
+    # 对于自定义端点，检查是否存在凭证池
     if effective_provider == "custom" and base_url:
         pool_result = _try_resolve_from_custom_pool(
             base_url, effective_provider, _parse_api_mode(model_cfg.get("api_mode")),
@@ -587,10 +585,10 @@ def _resolve_explicit_runtime(
             explicit_base_url
             or str(state.get("inference_base_url") or auth_mod.DEFAULT_NOUS_INFERENCE_URL).strip().rstrip("/")
         )
-        # Only use agent_key for inference — access_token is an OAuth token for the
-        # portal API (minting keys, refreshing tokens), not for the inference API.
-        # Falling back to access_token sends an OAuth bearer token to the inference
-        # endpoint, which returns 404 because it is not a valid inference credential.
+    # 仅推理使用 agent_key — access_token 是门户 API 的 OAuth 令牌
+    # （用于铸造密钥、刷新令牌），不是推理 API 的。
+    # 回退到 access_token 会将 OAuth 承载令牌发送到推理端点，
+    # 该端点会返回 404，因为它不是有效的推理凭证。
         api_key = explicit_api_key or str(state.get("agent_key") or "").strip()
         expires_at = state.get("agent_key_expires_at") or state.get("expires_at")
         if not api_key:
@@ -663,7 +661,7 @@ def resolve_runtime_provider(
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Resolve runtime provider credentials for agent execution."""
+    """解析智能体执行的运行时提供商凭证。"""
     requested_provider = resolve_requested_provider(requested)
 
     custom_runtime = _resolve_named_custom_runtime(
@@ -723,12 +721,11 @@ def resolve_runtime_provider(
                 getattr(entry, "runtime_api_key", None)
                 or getattr(entry, "access_token", "")
             )
-        # For Nous, the pool entry's runtime_api_key is the agent_key — a
-        # short-lived inference credential (~30 min TTL).  The pool doesn't
-        # refresh it during selection (that would trigger network calls in
-        # non-runtime contexts like `hermes auth list`).  If the key is
-        # expired, clear pool_api_key so we fall through to
-        # resolve_nous_runtime_credentials() which handles refresh + mint.
+    # 对于 Nous，池条目的 runtime_api_key 是 agent_key — 一个
+    # 短期推理凭证（约 30 分钟 TTL）。池在选择时不会刷新它
+    # （那会在非运行时上下文如 `hermes auth list` 中触发网络调用）。
+    # 如果密钥已过期，清除 pool_api_key 以便回退到
+    # resolve_nous_runtime_credentials()，它会处理刷新和铸造。
         if provider == "nous" and entry is not None and pool_api_key:
             min_ttl = max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800")))
             nous_state = {
@@ -765,8 +762,8 @@ def resolve_runtime_provider(
         except AuthError:
             if requested_provider != "auto":
                 raise
-            # Auto-detected Nous but credentials are stale/revoked —
-            # fall through to env-var providers (e.g. OpenRouter).
+            # 自动检测到 Nous 但凭证过期/已撤销 —
+            # 回退到环境变量提供商（如 OpenRouter）。
             logger.info("Auto-detected Nous provider but credentials failed; "
                         "falling through to next provider.")
 
@@ -785,8 +782,8 @@ def resolve_runtime_provider(
         except AuthError:
             if requested_provider != "auto":
                 raise
-            # Auto-detected Codex but credentials are stale/revoked —
-            # fall through to env-var providers (e.g. OpenRouter).
+            # 自动检测到 Codex 但凭证过期/已撤销 —
+            # 回退到环境变量提供商（如 OpenRouter）。
             logger.info("Auto-detected Codex provider but credentials failed; "
                         "falling through to next provider.")
 
@@ -841,7 +838,7 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
-    # Anthropic (native Messages API)
+    # Anthropic（原生 Messages API）
     if provider == "anthropic":
         from agent.anthropic_adapter import resolve_anthropic_token
         token = resolve_anthropic_token()
@@ -850,9 +847,9 @@ def resolve_runtime_provider(
                 "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
                 "run 'claude setup-token', or authenticate with 'claude /login'."
             )
-        # Allow base URL override from config.yaml model.base_url, but only
-        # when the configured provider is anthropic — otherwise a non-Anthropic
-        # base_url (e.g. Codex endpoint) would leak into Anthropic requests.
+        # 允许从 config.yaml 的 model.base_url 覆盖 base URL，但仅当
+        # 配置的提供商是 anthropic 时 — 否则非 Anthropic 的
+        # base_url（如 Codex 端点）会泄漏到 Anthropic 请求中。
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         cfg_base_url = ""
         if cfg_provider == "anthropic":
@@ -867,7 +864,7 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
-    # AWS Bedrock (native Converse API via boto3)
+    # AWS Bedrock（通过 boto3 的原生 Converse API）
     if provider == "bedrock":
         from agent.bedrock_adapter import (
             has_aws_credentials,
@@ -875,10 +872,9 @@ def resolve_runtime_provider(
             resolve_bedrock_region,
             is_anthropic_bedrock_model,
         )
-        # When the user explicitly selected bedrock (not auto-detected),
-        # trust boto3's credential chain — it handles IMDS, ECS task roles,
-        # Lambda execution roles, SSO, and other implicit sources that our
-        # env-var check can't detect.
+        # 当用户明确选择 bedrock（非自动检测）时，
+        # 信任 boto3 的凭证链 — 它处理 IMDS、ECS 任务角色、
+        # Lambda 执行角色、SSO 和其他我们环境变量检查无法检测的隐式来源。
         is_explicit = requested_provider in ("bedrock", "aws", "aws-bedrock", "amazon-bedrock", "amazon")
         if not is_explicit and not has_aws_credentials():
             raise AuthError(
@@ -889,13 +885,13 @@ def resolve_runtime_provider(
                 "Or run 'aws configure' to set up credentials.",
                 code="no_aws_credentials",
             )
-        # Read bedrock-specific config from config.yaml
+        # 从 config.yaml 读取 bedrock 特定配置
         from hermes_cli.config import load_config as _load_bedrock_config
         _bedrock_cfg = _load_bedrock_config().get("bedrock", {})
-        # Region priority: config.yaml bedrock.region → env var → us-east-1
+        # 区域优先级：config.yaml bedrock.region → 环境变量 → us-east-1
         region = (_bedrock_cfg.get("region") or "").strip() or resolve_bedrock_region()
         auth_source = resolve_aws_auth_env_var() or "aws-sdk-default-chain"
-        # Build guardrail config if configured
+        # 如果已配置则构建护栏配置
         _gr = _bedrock_cfg.get("guardrail", {})
         guardrail_config = None
         if _gr.get("guardrail_identifier") and _gr.get("guardrail_version"):
@@ -907,12 +903,12 @@ def resolve_runtime_provider(
                 guardrail_config["streamProcessingMode"] = _gr["stream_processing_mode"]
             if _gr.get("trace"):
                 guardrail_config["trace"] = _gr["trace"]
-        # Dual-path routing: Claude models use AnthropicBedrock SDK for full
-        # feature parity (prompt caching, thinking budgets, adaptive thinking).
-        # Non-Claude models use the Converse API for multi-model support.
+        # 双路径路由：Claude 模型使用 AnthropicBedrock SDK 以获得完整
+        # 功能兼容性（提示缓存、思考预算、自适应思考）。
+        # 非 Claude 模型使用 Converse API 以支持多模型。
         _current_model = str(model_cfg.get("default") or "").strip()
         if is_anthropic_bedrock_model(_current_model):
-            # Claude on Bedrock → AnthropicBedrock SDK → anthropic_messages path
+            # Bedrock 上的 Claude → AnthropicBedrock SDK → anthropic_messages 路径
             runtime = {
                 "provider": "bedrock",
                 "api_mode": "anthropic_messages",
@@ -924,7 +920,7 @@ def resolve_runtime_provider(
                 "requested_provider": requested_provider,
             }
         else:
-            # Non-Claude (Nova, DeepSeek, Llama, etc.) → Converse API
+            # 非 Claude（Nova、DeepSeek、Llama 等） → Converse API
             runtime = {
                 "provider": "bedrock",
                 "api_mode": "bedrock_converse",
@@ -938,14 +934,14 @@ def resolve_runtime_provider(
             runtime["guardrail_config"] = guardrail_config
         return runtime
 
-    # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
+    # API 密钥提供商（z.ai/GLM、Kimi、MiniMax、MiniMax-CN）
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         creds = resolve_api_key_provider_credentials(provider)
-        # Honour model.base_url from config.yaml when the configured provider
-        # matches this provider — mirrors the Anthropic path above.  Without
-        # this, users who set model.base_url to e.g. api.minimaxi.com/anthropic
-        # (China endpoint) still get the hardcoded api.minimax.io default (#6039).
+        # 当配置的提供商与此提供商匹配时，遵循 config.yaml 中的
+        # model.base_url — 与上面 Anthropic 路径相同。没有这个设置，
+        # 将 model.base_url 设为例如 api.minimaxi.com/anthropic
+        # （中国端点）的用户仍会得到硬编码的 api.minimax.io 默认值（#6039）。
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         cfg_base_url = ""
         if cfg_provider == provider:
@@ -958,18 +954,18 @@ def resolve_runtime_provider(
             api_mode = "codex_responses"
         else:
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
-            # Only honor persisted api_mode when it belongs to the same provider family.
+            # 仅当持久化 api_mode 属于同一提供商家族时才遵循。
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
             if configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
                 api_mode = configured_mode
             elif provider in ("opencode-zen", "opencode-go"):
                 from hermes_cli.models import opencode_model_api_mode
                 api_mode = opencode_model_api_mode(provider, model_cfg.get("default", ""))
-            # Auto-detect Anthropic-compatible endpoints by URL convention
-            # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
+            # 通过 URL 约定自动检测 Anthropic 兼容端点
+            # （如 https://api.minimax.io/anthropic, https://dashscope.../anthropic）
             elif base_url.rstrip("/").endswith("/anthropic"):
                 api_mode = "anthropic_messages"
-        # Strip trailing /v1 for OpenCode Anthropic models (see comment above).
+        # 为 OpenCode Anthropic 模型剥离尾部 /v1（见上方注释）。
         if api_mode == "anthropic_messages" and provider in ("opencode-zen", "opencode-go"):
             base_url = re.sub(r"/v1/?$", "", base_url)
         return {

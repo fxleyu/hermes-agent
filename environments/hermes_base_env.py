@@ -1,19 +1,19 @@
 """
-HermesAgentBaseEnv -- Abstract Base Environment for Hermes-Agent + Atropos
+HermesAgentBaseEnv -- Hermes-Agent + Atropos 的抽象基础环境
 
-Provides the Atropos integration plumbing that all hermes-agent environments share:
-- Two-mode operation (OpenAI server for Phase 1, VLLM ManagedServer for Phase 2)
-- Per-group toolset/distribution resolution
-- Agent loop orchestration via HermesAgentLoop
-- ToolContext creation for reward functions
-- ScoredDataGroup construction from ManagedServer state
+提供所有 hermes-agent 环境共享的 Atropos 集成基础设施：
+- 双模式运行（第一阶段使用 OpenAI 服务器，第二阶段使用 VLLM ManagedServer）
+- 每组工具集/分布解析
+- 通过 HermesAgentLoop 编排智能体循环
+- 为奖励函数创建 ToolContext
+- 从 ManagedServer 状态构建 ScoredDataGroup
 
-Subclasses only need to implement:
-    setup()           -- Load dataset, initialize state
-    get_next_item()   -- Return the next item from the dataset
-    format_prompt()   -- Convert a dataset item into the user message
-    compute_reward()  -- Score the rollout (has full ToolContext access)
-    evaluate()        -- Periodic evaluation
+子类只需要实现：
+    setup()           -- 加载数据集，初始化状态
+    get_next_item()   -- 从数据集返回下一条数据
+    format_prompt()   -- 将数据集条目转换为用户消息
+    compute_reward()  -- 评分 rollout（具有完整的 ToolContext 访问权限）
+    evaluate()        -- 定期评估
 """
 
 import asyncio
@@ -26,9 +26,9 @@ from abc import abstractmethod
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-# Ensure the hermes-agent repo root is on sys.path so that imports like
-# `from model_tools import ...` and `from environments.X import ...` work
-# regardless of where the script is invoked from.
+# 确保 hermes-agent 仓库根目录在 sys.path 中，以便
+# `from model_tools import ...` 和 `from environments.X import ...` 等导入
+# 无论脚本从哪里调用都能正常工作。
 _repo_root = Path(__file__).resolve().parent.parent
 if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
@@ -36,14 +36,14 @@ if str(_repo_root) not in sys.path:
 from dotenv import load_dotenv
 from pydantic import Field
 
-# Load API keys from hermes-agent/.env so all environments can access them
+# 从 hermes-agent/.env 加载 API 密钥，使所有环境都能访问
 _env_path = _repo_root / ".env"
 if _env_path.exists():
     load_dotenv(dotenv_path=_env_path)
 
-# Apply monkey patches for async-safe tool operation inside Atropos's event loop.
-# This patches SwerexModalEnvironment to use a background thread instead of
-# asyncio.run(), which would deadlock inside Atropos. Safe for normal CLI too.
+# 应用猴子补丁以实现 Atropos 事件循环内的异步安全工具操作。
+# 这会给 SwerexModalEnvironment 打补丁，使用后台线程而非 asyncio.run()，
+# 后者会在 Atropos 内部死锁。对普通 CLI 也是安全的。
 from environments.patches import apply_patches
 apply_patches()
 
@@ -68,7 +68,7 @@ from tools.budget_config import (
     DEFAULT_PREVIEW_SIZE_CHARS,
 )
 
-# Import hermes-agent toolset infrastructure
+# 导入 hermes-agent 工具集基础设施
 from model_tools import get_tool_definitions
 from toolset_distributions import sample_toolsets_from_distribution
 
@@ -77,14 +77,14 @@ logger = logging.getLogger(__name__)
 
 class HermesAgentEnvConfig(BaseEnvConfig):
     """
-    Configuration for hermes-agent Atropos environments.
+    hermes-agent Atropos 环境的配置。
 
-    Extends BaseEnvConfig with agent-specific settings for toolsets,
-    terminal backend, dataset loading, and tool call parsing.
+    在 BaseEnvConfig 基础上扩展了工具集、终端后端、数据集加载
+    和工具调用解析的智能体特定设置。
     """
 
-    # --- Toolset configuration ---
-    # Mutually exclusive: use either enabled_toolsets OR distribution
+    # --- 工具集配置 ---
+    # 互斥：使用 enabled_toolsets 或 distribution 其中之一
     enabled_toolsets: Optional[List[str]] = Field(
         default=None,
         description="Explicit list of hermes toolsets to enable (e.g., ['terminal', 'file', 'web']). "
@@ -101,7 +101,7 @@ class HermesAgentEnvConfig(BaseEnvConfig):
         "Mutually exclusive with enabled_toolsets.",
     )
 
-    # --- Agent loop configuration ---
+    # --- 智能体循环配置 ---
     max_agent_turns: int = Field(
         default=30,
         description="Maximum number of LLM calls (tool-calling iterations) per rollout.",
@@ -116,7 +116,7 @@ class HermesAgentEnvConfig(BaseEnvConfig):
         description="Sampling temperature for agent generation during rollouts.",
     )
 
-    # --- Terminal backend ---
+    # --- 终端后端 ---
     terminal_backend: str = Field(
         default="local",
         description="Terminal backend: 'local', 'docker', 'modal', 'daytona', 'ssh', 'singularity'. "
@@ -135,11 +135,7 @@ class HermesAgentEnvConfig(BaseEnvConfig):
         "the longest gap between tool calls (e.g., waiting for LLM response).",
     )
 
-    # --- Dataset ---
-    dataset_name: Optional[str] = Field(
-        default=None,
-        description="HuggingFace dataset name. Optional if tasks are defined inline.",
-    )
+    # --- 数据集 ---
     dataset_split: str = Field(
         default="train",
         description="Dataset split to use.",
@@ -149,7 +145,7 @@ class HermesAgentEnvConfig(BaseEnvConfig):
         description="Which field in the dataset contains the prompt.",
     )
 
-    # --- Thread pool ---
+    # --- 线程池 ---
     tool_pool_size: int = Field(
         default=128,
         description="Thread pool size for tool execution. Each concurrent task needs a "
@@ -157,7 +153,7 @@ class HermesAgentEnvConfig(BaseEnvConfig):
         "Too small = thread pool starvation.",
     )
 
-    # --- Phase 2: Tool call parsing ---
+    # --- 第二阶段：工具调用解析 ---
     tool_call_parser: str = Field(
         default="hermes",
         description="Tool call parser name for Phase 2 (VLLM server type). "
@@ -165,8 +161,8 @@ class HermesAgentEnvConfig(BaseEnvConfig):
         "Options: hermes, mistral, llama3_json, qwen, deepseek_v3, etc.",
     )
 
-    # --- Tool result budget ---
-    # Defaults imported from tools.budget_config (single source of truth).
+    # --- 工具结果预算 ---
+    # 默认值从 tools.budget_config 导入（单一事实来源）。
     default_result_size_chars: int = Field(
         default=DEFAULT_RESULT_SIZE_CHARS,
         description="Default per-tool threshold (chars) for persisting large results "
@@ -191,10 +187,10 @@ class HermesAgentEnvConfig(BaseEnvConfig):
         "Note: read_file is pinned to infinity and cannot be overridden.",
     )
 
-    # --- Provider-specific parameters ---
-    # Passed as extra_body to the OpenAI client's chat.completions.create() call.
-    # Useful for OpenRouter provider preferences, transforms, route settings, etc.
-    # Example YAML:
+    # --- 提供商特定参数 ---
+    # 作为 extra_body 传递给 OpenAI 客户端的 chat.completions.create() 调用。
+    # 用于 OpenRouter 提供商偏好、转换、路由设置等。
+    # YAML 示例：
     #   extra_body:
     #     provider:
     #       ignore: ["DeepInfra", "Fireworks"]
@@ -208,7 +204,7 @@ class HermesAgentEnvConfig(BaseEnvConfig):
     )
 
     def build_budget_config(self):
-        """Build a BudgetConfig from env config fields."""
+        """从环境配置字段构建 BudgetConfig。"""
         from tools.budget_config import BudgetConfig
         return BudgetConfig(
             default_result_size=self.default_result_size_chars,
@@ -220,24 +216,24 @@ class HermesAgentEnvConfig(BaseEnvConfig):
 
 class HermesAgentBaseEnv(BaseEnv):
     """
-    Abstract base environment for hermes-agent Atropos integration.
+    hermes-agent Atropos 集成的抽象基础环境。
 
-    Handles two modes of operation:
-    - Phase 1 (OpenAI server type): Uses server.chat_completion() directly.
-      The server (VLLM, SGLang, OpenRouter, OpenAI) handles tool call parsing
-      and reasoning extraction natively. DummyManagedServer provides placeholder
-      tokens. Good for SFT data gen, verifier testing, evaluation.
+    处理两种运行模式：
+    - 第一阶段（OpenAI 服务器类型）：直接使用 server.chat_completion()。
+      服务器（VLLM、SGLang、OpenRouter、OpenAI）原生处理工具调用解析
+      和推理提取。DummyManagedServer 提供占位 token。适合 SFT 数据生成、
+      验证器测试和评估。
 
-    - Phase 2 (VLLM server type): Uses ManagedServer for exact token IDs + logprobs
-      via /generate. Client-side tool call parser reconstructs structured tool_calls
-      from raw output. Full RL training capability.
+    - 第二阶段（VLLM 服务器类型）：使用 ManagedServer 通过 /generate
+      获取精确的 token ID + logprobs。客户端工具调用解析器从原始输出
+      重建结构化的 tool_calls。具有完整的 RL 训练能力。
 
-    Subclasses must implement:
-        setup()           -- Load dataset, initialize state
-        get_next_item()   -- Return the next item to roll out
-        format_prompt()   -- Convert a dataset item into the user message string
-        compute_reward()  -- Score the rollout using ToolContext
-        evaluate()        -- Periodic evaluation
+    子类必须实现：
+        setup()           -- 加载数据集，初始化状态
+        get_next_item()   -- 返回下一个要进行 rollout 的条目
+        format_prompt()   -- 将数据集条目转换为用户消息字符串
+        compute_reward()  -- 使用 ToolContext 评分 rollout
+        evaluate()        -- 定期评估
     """
 
     name: Optional[str] = "hermes-agent"
@@ -252,9 +248,9 @@ class HermesAgentBaseEnv(BaseEnv):
     ):
         super().__init__(config, server_configs, slurm, testing)
 
-        # Set terminal environment variables so hermes tools pick them up.
-        # These can all be overridden per-environment via config fields instead
-        # of requiring users to set shell env vars.
+        # 设置终端环境变量，以便 hermes 工具能读取它们。
+        # 这些都可以通过配置字段按环境覆盖，
+        # 而不需要用户设置 shell 环境变量。
         if config.terminal_backend:
             os.environ["TERMINAL_ENV"] = config.terminal_backend
         os.environ["TERMINAL_TIMEOUT"] = str(config.terminal_timeout)
@@ -264,39 +260,39 @@ class HermesAgentBaseEnv(BaseEnv):
             f"timeout={config.terminal_timeout}s, lifetime={config.terminal_lifetime}s"
         )
 
-        # Resize the agent loop's thread pool for tool execution.
-        # This must be large enough for the number of concurrent tasks
-        # (e.g., 89 parallel TB2 eval tasks each need a thread for tool calls).
+        # 调整智能体循环的工具执行线程池大小。
+        # 必须足够大以支持并发任务数量
+        # （例如 89 个并行 TB2 评估任务每个都需要一个线程执行工具调用）。
         from environments.agent_loop import resize_tool_pool
         resize_tool_pool(config.tool_pool_size)
 
-        # Set tool_parser on the ServerManager so ManagedServer uses it
-        # for bidirectional tool call translation (raw text ↔ OpenAI tool_calls).
+        # 在 ServerManager 上设置 tool_parser，使 ManagedServer 用它
+        # 进行双向工具调用转换（原始文本 <-> OpenAI tool_calls）。
         if hasattr(self.server, 'tool_parser'):
             self.server.tool_parser = config.tool_call_parser
             print(f"🔧 Tool parser: {config.tool_call_parser}")
 
-        # Current group's resolved tools (set in collect_trajectories)
+        # 当前组已解析的工具（在 collect_trajectories 中设置）
         self._current_group_tools: Optional[Tuple[List[Dict], Set[str]]] = None
 
-        # Tool error tracking for wandb logging
+        # 工具错误跟踪，用于 wandb 日志记录
         self._tool_error_buffer: List[Dict[str, Any]] = []
 
     # =========================================================================
-    # Toolset resolution (per-group)
+    # 工具集解析（按组）
     # =========================================================================
 
     def _resolve_tools_for_group(self) -> Tuple[List[Dict[str, Any]], Set[str]]:
         """
-        Resolve toolsets for a group. Called once in collect_trajectories(),
-        then shared by all collect_trajectory() calls in the group.
+        为一个组解析工具集。在 collect_trajectories() 中调用一次，
+        然后由该组中所有 collect_trajectory() 调用共享。
 
-        If distribution is set, samples probabilistically.
-        If enabled_toolsets is set, uses that explicit list.
-        disabled_toolsets is applied as a filter on top.
+        如果设置了 distribution，则按概率采样。
+        如果设置了 enabled_toolsets，则使用该显式列表。
+        disabled_toolsets 作为过滤器应用在上面。
 
-        Returns:
-            (tool_schemas, valid_tool_names) tuple
+        返回：
+            (tool_schemas, valid_tool_names) 元组
         """
         config = self.config
 
@@ -304,7 +300,7 @@ class HermesAgentBaseEnv(BaseEnv):
             group_toolsets = sample_toolsets_from_distribution(config.distribution)
             logger.info("Sampled toolsets from '%s': %s", config.distribution, group_toolsets)
         else:
-            group_toolsets = config.enabled_toolsets  # None means "all available"
+            group_toolsets = config.enabled_toolsets  # None 表示"所有可用"
             if group_toolsets is None:
                 logger.warning(
                     "enabled_toolsets is None -- loading ALL tools including messaging. "
@@ -322,29 +318,29 @@ class HermesAgentBaseEnv(BaseEnv):
         return tools, valid_names
 
     # =========================================================================
-    # Server mode detection
+    # 服务器模式检测
     # =========================================================================
 
     def _use_managed_server(self) -> bool:
         """
-        Determine if we should use ManagedServer (Phase 2) or direct server (Phase 1).
+        判断应使用 ManagedServer（第二阶段）还是直连服务器（第一阶段）。
 
-        Phase 2 (ManagedServer) is used when the server type is 'vllm' or 'sglang',
-        which go through the /generate endpoint for exact token tracking.
+        第二阶段（ManagedServer）用于 'vllm' 或 'sglang' 服务器类型，
+        它们通过 /generate 端点实现精确的 token 跟踪。
 
-        Phase 1 (direct server) is used for 'openai' server type, which uses
-        /v1/chat/completions with native tool call parsing.
+        第一阶段（直连服务器）用于 'openai' 服务器类型，它使用
+        /v1/chat/completions 并原生解析工具调用。
         """
         if not self.server.servers:
             return False
 
         server = self.server.servers[0]
-        # If the server is an OpenAI server (not VLLM/SGLang), use direct mode
+        # 如果服务器是 OpenAI 服务器（非 VLLM/SGLang），使用直连模式
         from atroposlib.envs.server_handling.openai_server import OpenAIServer
         return not isinstance(server, OpenAIServer)
 
     # =========================================================================
-    # Core Atropos integration
+    # 核心 Atropos 集成
     # =========================================================================
 
     async def collect_trajectories(
@@ -354,30 +350,29 @@ class HermesAgentBaseEnv(BaseEnv):
         List[Item],
     ]:
         """
-        Override collect_trajectories to resolve toolsets once per group,
-        then delegate to the standard group-level collection.
+        重写 collect_trajectories 以在每组解析一次工具集，
+        然后委托给标准的组级收集。
 
-        The default BaseEnv.collect_trajectories() calls collect_trajectory()
-        group_size times in parallel. We resolve tools once here and store
-        them for all those calls to use.
+        默认的 BaseEnv.collect_trajectories() 会并行调用 collect_trajectory()
+        group_size 次。我们在这里一次性解析工具，并存储供所有调用使用。
         """
-        # Resolve toolsets for this group (shared by all rollouts in the group)
+        # 为此组解析工具集（由组中所有 rollout 共享）
         self._current_group_tools = self._resolve_tools_for_group()
 
-        # Delegate to the default implementation which calls collect_trajectory()
-        # group_size times via asyncio.gather
+        # 委托给默认实现，它会通过 asyncio.gather 调用
+        # collect_trajectory() group_size 次
         return await super().collect_trajectories(item)
 
     # =========================================================================
-    # Wandb rollout display -- format trajectories nicely
+    # Wandb rollout 显示 -- 美化格式化轨迹
     # =========================================================================
 
     @staticmethod
     def _format_trajectory_for_display(messages: List[Dict[str, Any]]) -> str:
         """
-        Format a conversation's messages into a readable trajectory string
-        for wandb rollout tables. Shows tool calls, tool results, and reasoning
-        in a structured way instead of raw token decoding.
+        将对话消息格式化为可读的轨迹字符串，用于 wandb rollout 表格。
+        以结构化方式显示工具调用、工具结果和推理，
+        而非原始 token 解码。
         """
         parts = []
         for msg in messages:
@@ -391,25 +386,25 @@ class HermesAgentBaseEnv(BaseEnv):
                 parts.append(f"[USER]\n{content}")
 
             elif role == "assistant":
-                # Show reasoning if present
+                # 如果存在推理内容则显示
                 reasoning = msg.get("reasoning_content", "")
                 if reasoning:
-                    # Truncate long reasoning for display
+                    # 截断过长的推理内容用于显示
                     if len(reasoning) > 300:
                         reasoning = reasoning[:300] + "..."
                     parts.append(f"[ASSISTANT thinking]\n{reasoning}")
 
-                # Show content
+                # 显示内容
                 if content:
                     parts.append(f"[ASSISTANT]\n{content}")
 
-                # Show tool calls
+                # 显示工具调用
                 tool_calls = msg.get("tool_calls", [])
                 for tc in tool_calls:
                     func = tc.get("function", {})
                     name = func.get("name", "?")
                     args = func.get("arguments", "{}")
-                    # Truncate long arguments for display
+                    # 截断过长的参数用于显示
                     if len(args) > 200:
                         args = args[:200] + "..."
                     parts.append(f"[TOOL CALL] {name}({args})")
@@ -417,7 +412,7 @@ class HermesAgentBaseEnv(BaseEnv):
             elif role == "tool":
                 tool_id = msg.get("tool_call_id", "")
                 result = content
-                # Truncate long tool results for display
+                # 截断过长的工具结果用于显示
                 if len(result) > 500:
                     result = result[:500] + "..."
                 parts.append(f"[TOOL RESULT] {result}")
@@ -430,8 +425,8 @@ class HermesAgentBaseEnv(BaseEnv):
         item=None,
     ):
         """
-        Override to show formatted trajectories with tool calls visible,
-        instead of raw token decoding which loses all structure.
+        重写此方法以显示格式化的带工具调用的轨迹，
+        而非丢失所有结构的原始 token 解码。
         """
         num_keep = self.config.num_rollouts_per_group_for_logging
         if num_keep == -1:
@@ -441,7 +436,7 @@ class HermesAgentBaseEnv(BaseEnv):
         for i in range(min(num_keep, len(scored_data.get("scores", [])))):
             score = scored_data["scores"][i]
 
-            # Use messages if available for rich display
+            # 如果有可用的 messages 则使用富文本显示
             messages = None
             if scored_data.get("messages") and i < len(scored_data["messages"]):
                 messages = scored_data["messages"][i]
@@ -460,15 +455,15 @@ class HermesAgentBaseEnv(BaseEnv):
             self.rollouts_for_wandb.pop(0)
 
     async def wandb_log(self, wandb_metrics: Optional[Dict] = None):
-        """Log base metrics including tool errors to wandb."""
+        """将基础指标（包括工具错误）记录到 wandb。"""
         if wandb_metrics is None:
             wandb_metrics = {}
 
-        # Log tool error stats
+        # 记录工具错误统计信息
         if self._tool_error_buffer:
             wandb_metrics["train/tool_errors_count"] = len(self._tool_error_buffer)
 
-            # Log error details as a summary string (tables can crash wandb on tmp cleanup)
+            # 将错误详情记录为摘要字符串（表格可能导致 wandb 在临时文件清理时崩溃）
             error_summaries = []
             for err in self._tool_error_buffer:
                 error_summaries.append(
@@ -476,7 +471,7 @@ class HermesAgentBaseEnv(BaseEnv):
                 )
             wandb_metrics["train/tool_error_details"] = "\n".join(error_summaries)
 
-            # Also print to stdout for immediate visibility
+            # 同时打印到标准输出以便即时可见
             for summary in error_summaries:
                 print(f"  Tool Error: {summary}")
 
@@ -490,33 +485,33 @@ class HermesAgentBaseEnv(BaseEnv):
         self, item: Item
     ) -> Tuple[Optional[Union[ScoredDataItem, Any]], List[Item]]:
         """
-        Run a single rollout: agent loop + reward computation.
+        运行单次 rollout：智能体循环 + 奖励计算。
 
-        This is called group_size times in parallel by collect_trajectories().
-        Each call gets its own task_id for terminal/browser session isolation.
+        由 collect_trajectories() 并行调用 group_size 次。
+        每次调用获得自己的 task_id 用于终端/浏览器会话隔离。
         """
         task_id = str(uuid.uuid4())
 
-        # Get group-level tools (resolved once in collect_trajectories)
+        # 获取组级别的工具（在 collect_trajectories 中一次性解析）
         if self._current_group_tools is None:
-            # Fallback: resolve per-trajectory if called outside collect_trajectories
+            # 回退：如果在 collect_trajectories 外部调用则按轨迹解析
             tools, valid_names = self._resolve_tools_for_group()
         else:
             tools, valid_names = self._current_group_tools
 
-        # Build initial messages
+        # 构建初始消息
         messages: List[Dict[str, Any]] = []
         if self.config.system_prompt:
             messages.append({"role": "system", "content": self.config.system_prompt})
         messages.append({"role": "user", "content": self.format_prompt(item)})
 
-        # Run the agent loop
+        # 运行智能体循环
         result: AgentResult
         if self._use_managed_server():
-            # Phase 2: ManagedServer with ToolCallTranslator -- exact tokens + logprobs
-            # tool_parser is set on ServerManager in __init__ and passed through
-            # to ManagedServer, which uses ToolCallTranslator for bidirectional
-            # translation between raw text and OpenAI tool_calls.
+            # 第二阶段：ManagedServer 配合 ToolCallTranslator -- 精确 tokens + logprobs
+            # tool_parser 在 __init__ 中设置在 ServerManager 上并传递到
+            # ManagedServer，后者使用 ToolCallTranslator 进行原始文本
+            # 和 OpenAI tool_calls 之间的双向转换。
             try:
                 async with self.server.managed_server(
                     tokenizer=self.tokenizer,
@@ -535,7 +530,7 @@ class HermesAgentBaseEnv(BaseEnv):
                     )
                     result = await agent.run(messages)
             except NotImplementedError:
-                # DummyManagedServer not allowed -- fall back to Phase 1
+                # DummyManagedServer 不允许 -- 回退到第一阶段
                 logger.warning(
                     "ManagedServer not available (OpenAI server?). "
                     "Falling back to direct server mode."
@@ -553,7 +548,7 @@ class HermesAgentBaseEnv(BaseEnv):
                 )
                 result = await agent.run(messages)
         else:
-            # Phase 1: OpenAI server -- native tool_calls, placeholder tokens
+            # 第一阶段：OpenAI 服务器 -- 原生 tool_calls，占位 tokens
             agent = HermesAgentLoop(
                 server=self.server,
                 tool_schemas=tools,
@@ -567,9 +562,9 @@ class HermesAgentBaseEnv(BaseEnv):
             )
             result = await agent.run(messages)
 
-        # Skip reward computation if the agent loop produced no meaningful work
-        # (e.g., API call failed on turn 1). No point spinning up a Modal sandbox
-        # just to verify files that were never created.
+        # 如果智能体循环没有产生有意义的输出则跳过奖励计算
+        # （例如第一轮 API 调用就失败了）。没必要启动 Modal 沙箱
+        # 去验证从未创建的文件。
         only_system_and_user = all(
             msg.get("role") in ("system", "user") for msg in result.messages
         )
@@ -580,7 +575,7 @@ class HermesAgentBaseEnv(BaseEnv):
             )
             reward = 0.0
         else:
-            # Compute reward using ToolContext (gives verifier full tool access)
+            # 使用 ToolContext 计算奖励（给验证器完整的工具访问权限）
             ctx = ToolContext(task_id)
             try:
                 reward = await self.compute_reward(item, result, ctx)
@@ -590,7 +585,7 @@ class HermesAgentBaseEnv(BaseEnv):
             finally:
                 ctx.cleanup()
 
-        # Track tool errors for wandb logging
+        # 跟踪工具错误用于 wandb 日志记录
         if result.tool_errors:
             for err in result.tool_errors:
                 self._tool_error_buffer.append({
@@ -601,29 +596,29 @@ class HermesAgentBaseEnv(BaseEnv):
                     "result": err.tool_result[:300],
                 })
 
-        # Build ScoredDataItem from ManagedServer state
-        # Phase 2: real tokens/masks/logprobs from SequenceNodes
-        # Phase 1: placeholder tokens (still need a valid ScoredDataItem for the pipeline)
+        # 从 ManagedServer 状态构建 ScoredDataItem
+        # 第二阶段：来自 SequenceNodes 的真实 tokens/masks/logprobs
+        # 第一阶段：占位 tokens（仍需要有效的 ScoredDataItem 供管道使用）
         nodes = (result.managed_state or {}).get("nodes", [])
 
         if nodes:
-            # Phase 2 (or DummyManagedServer): use actual node data
-            node = nodes[-1]  # Final sequence node = full trajectory
+            # 第二阶段（或 DummyManagedServer）：使用实际节点数据
+            node = nodes[-1]  # 最终序列节点 = 完整轨迹
             scored_item: Dict[str, Any] = {
                 "tokens": node.tokens,
                 "masks": node.masked_tokens,
                 "scores": reward,
             }
 
-            # Include logprobs if available (Phase 2)
+            # 包含 logprobs（如果可用，第二阶段）
             if hasattr(node, "logprobs") and node.logprobs:
-                scored_item["advantages"] = None  # Computed by trainer
+                scored_item["advantages"] = None  # 由训练器计算
                 scored_item["ref_logprobs"] = None
         else:
-            # Phase 1 with no managed state: create placeholder tokens
-            # so the data pipeline doesn't break. These are NOT suitable
-            # for training but allow process mode (SFT data gen) to work.
-            # Tokenize the full conversation to get approximate tokens.
+            # 第一阶段没有管理状态：创建占位 tokens
+            # 使数据管道不会中断。这些不适合训练，
+            # 但允许 process 模式（SFT 数据生成）正常工作。
+            # 将完整对话进行分词以获取近似 tokens。
             full_text = "\n".join(
                 msg.get("content", "") for msg in result.messages if msg.get("content")
             )
@@ -634,25 +629,25 @@ class HermesAgentBaseEnv(BaseEnv):
 
             scored_item = {
                 "tokens": tokens,
-                "masks": [-100] + tokens[1:],  # Mask first token as prompt
+                "masks": [-100] + tokens[1:],  # 将第一个 token 作为 prompt 掩码
                 "scores": reward,
             }
 
-        # Always include messages for wandb rollout display and data logging
+        # 始终包含 messages 用于 wandb rollout 显示和数据记录
         scored_item["messages"] = result.messages
 
         return scored_item, []
 
     # =========================================================================
-    # Abstract methods -- subclasses must implement
+    # 抽象方法 -- 子类必须实现
     # =========================================================================
 
     @abstractmethod
     async def setup(self):
         """
-        Load dataset, initialize state.
+        加载数据集，初始化状态。
 
-        Called once when the environment starts. Typical implementation:
+        环境启动时调用一次。典型实现：
             self.dataset = load_dataset(self.config.dataset_name, split=self.config.dataset_split)
             self.iter = 0
         """
@@ -661,23 +656,23 @@ class HermesAgentBaseEnv(BaseEnv):
     @abstractmethod
     async def get_next_item(self) -> Item:
         """
-        Return the next item from the dataset for rollout.
+        从数据集返回下一条用于 rollout 的数据。
 
-        Called by the base env's main loop to get items for workers.
-        Should cycle through the dataset.
+        由基础环境的主循环调用以为工作者获取条目。
+        应循环遍历数据集。
         """
         raise NotImplementedError
 
     @abstractmethod
     def format_prompt(self, item: Item) -> str:
         """
-        Convert a dataset item into the user message for the agent.
+        将数据集条目转换为智能体的用户消息。
 
-        Args:
-            item: Dataset item (dict, tuple, etc.)
+        参数：
+            item: 数据集条目（字典、元组等）
 
-        Returns:
-            The prompt string to send to the agent
+        返回：
+            发送给智能体的提示字符串
         """
         raise NotImplementedError
 
@@ -686,29 +681,29 @@ class HermesAgentBaseEnv(BaseEnv):
         self, item: Item, result: AgentResult, ctx: ToolContext
     ) -> float:
         """
-        Score the rollout. Has full access to:
-        - item: the original dataset item (ground truth, test commands, etc.)
-        - result: AgentResult with full messages, turn count, reasoning, etc.
-        - ctx: ToolContext -- call ANY hermes-agent tool (terminal, file, web,
-               browser, vision...) scoped to this rollout's sandbox. Nothing
-               is off-limits.
+        评分 rollout。可以完整访问：
+        - item: 原始数据集条目（真实标签、测试命令等）
+        - result: 包含完整消息、轮次数、推理等的 AgentResult
+        - ctx: ToolContext -- 调用任何 hermes-agent 工具（终端、文件、网页、
+               浏览器、视觉……），作用域限定在此 rollout 的沙箱。
+               没有任何限制。
 
-        Args:
-            item: The dataset item that was rolled out
-            result: The agent's rollout result
-            ctx: ToolContext with full tool access for verification
+        参数：
+            item: 进行 rollout 的数据集条目
+            result: 智能体的 rollout 结果
+            ctx: 具有完整工具访问权限的 ToolContext 用于验证
 
-        Returns:
-            Reward float (typically 0.0 to 1.0, but any float is valid)
+        返回：
+            奖励浮点数（通常 0.0 到 1.0，但任何浮点数都有效）
         """
         raise NotImplementedError
 
     @abstractmethod
     async def evaluate(self, *args, **kwargs):
         """
-        Periodic evaluation. Called every steps_per_eval steps.
+        定期评估。每 steps_per_eval 步调用一次。
 
-        Typical implementation runs the agent on a held-out eval set
-        and logs metrics via wandb/evaluate_log.
+        典型实现在保留的评估集上运行智能体，
+        并通过 wandb/evaluate_log 记录指标。
         """
         raise NotImplementedError

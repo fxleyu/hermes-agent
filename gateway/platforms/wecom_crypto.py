@@ -1,7 +1,7 @@
-"""WeCom BizMsgCrypt-compatible AES-CBC encryption for callback mode.
+"""企业微信 BizMsgCrypt 兼容的 AES-CBC 加解密模块（回调模式专用）。
 
-Implements the same wire format as Tencent's official ``WXBizMsgCrypt``
-SDK so that WeCom can verify, encrypt, and decrypt callback payloads.
+实现了与腾讯官方 ``WXBizMsgCrypt`` SDK 一致的数据格式，
+用于企业微信回调消息的签名验证、加密和解密。
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ def _sha1_signature(token: str, timestamp: str, nonce: str, encrypt: str) -> str
 
 
 class WXBizMsgCrypt:
-    """Minimal WeCom callback crypto helper compatible with BizMsgCrypt semantics."""
+    """最小化的企业微信回调加解密助手，兼容官方 BizMsgCrypt 语义。"""
 
     def __init__(self, token: str, encoding_aes_key: str, receive_id: str):
         if not token:
@@ -98,7 +98,7 @@ class WXBizMsgCrypt:
             decryptor = cipher.decryptor()
             padded = decryptor.update(cipher_text) + decryptor.finalize()
             plain = PKCS7Encoder.decode(padded)
-            content = plain[16:]  # skip 16-byte random prefix
+            content = plain[16:]  # 跳过 16 字节随机前缀
             xml_length = socket.ntohl(struct.unpack("I", content[:4])[0])
             xml_content = content[4:4 + xml_length]
             receive_id = content[4 + xml_length:].decode("utf-8")

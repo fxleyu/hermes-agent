@@ -1,13 +1,13 @@
-"""Simplify tracked changes by merging adjacent w:ins or w:del elements.
+"""通过合并相邻的 w:ins 或 w:del 元素来简化修订跟踪。
 
-Merges adjacent <w:ins> elements from the same author into a single element.
-Same for <w:del> elements. This makes heavily-redlined documents easier to
-work with by reducing the number of tracked change wrappers.
+将同一作者的相邻 <w:ins> 元素合并为一个元素。
+<w:del> 元素同理。这使大量修订的文档更易于处理，
+因为减少了修订跟踪包装元素的数量。
 
-Rules:
-- Only merges w:ins with w:ins, w:del with w:del (same element type)
-- Only merges if same author (ignores timestamp differences)
-- Only merges if truly adjacent (only whitespace between them)
+规则:
+- 仅合并相同类型的元素（w:ins 与 w:ins，w:del 与 w:del）
+- 仅在同一作者时合并（忽略时间戳差异）
+- 仅在真正相邻时合并（两者之间只有空白）
 """
 
 import xml.etree.ElementTree as ET

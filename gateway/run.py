@@ -1,15 +1,15 @@
 """
-Gateway runner - entry point for messaging platform integrations.
+网关运行器 - 消息平台集成的入口点。
 
-This module provides:
-- start_gateway(): Start all configured platform adapters
-- GatewayRunner: Main class managing the gateway lifecycle
+本模块提供：
+- start_gateway(): 启动所有已配置的平台适配器
+- GatewayRunner: 管理网关生命周期的主类
 
-Usage:
-    # Start the gateway
+用法：
+    # 启动网关
     python -m gateway.run
-    
-    # Or from CLI
+
+    # 或通过 CLI
     python cli.py --gateway
 """
 
@@ -30,24 +30,24 @@ from datetime import datetime
 from typing import Dict, Optional, Any, List
 
 # ---------------------------------------------------------------------------
-# SSL certificate auto-detection for NixOS and other non-standard systems.
-# Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
+# NixOS 及其他非标准系统的 SSL 证书自动检测。
+# 必须在任何 HTTP 库（discord、aiohttp 等）导入之前运行。
 # ---------------------------------------------------------------------------
 def _ensure_ssl_certs() -> None:
-    """Set SSL_CERT_FILE if the system doesn't expose CA certs to Python."""
+    """如果系统未向 Python 暴露 CA 证书，则设置 SSL_CERT_FILE。"""
     if "SSL_CERT_FILE" in os.environ:
-        return  # user already configured it
+        return  # 用户已手动配置
 
     import ssl
 
-    # 1. Python's compiled-in defaults
+    # 1. Python 编译时内置的默认路径
     paths = ssl.get_default_verify_paths()
     for candidate in (paths.cafile, paths.openssl_cafile):
         if candidate and os.path.exists(candidate):
             os.environ["SSL_CERT_FILE"] = candidate
             return
 
-    # 2. certifi (ships its own Mozilla bundle)
+    # 2. certifi（自带 Mozilla 证书包）
     try:
         import certifi
         os.environ["SSL_CERT_FILE"] = certifi.where()
@@ -55,7 +55,7 @@ def _ensure_ssl_certs() -> None:
     except ImportError:
         pass
 
-    # 3. Common distro / macOS locations
+    # 3. 常见发行版 / macOS 的证书路径
     for candidate in (
         "/etc/ssl/certs/ca-certificates.crt",               # Debian/Ubuntu/Gentoo
         "/etc/pki/tls/certs/ca-bundle.crt",                 # RHEL/CentOS 7
@@ -72,23 +72,23 @@ def _ensure_ssl_certs() -> None:
 
 _ensure_ssl_certs()
 
-# Add parent directory to path
+# 将父目录添加到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Resolve Hermes home directory (respects HERMES_HOME override)
+# 解析 Hermes 主目录（遵循 HERMES_HOME 覆盖设置）
 from hermes_constants import get_hermes_home
 from utils import atomic_yaml_write, is_truthy_value
 _hermes_home = get_hermes_home()
 
-# Load environment variables from ~/.hermes/.env first.
-# User-managed env files should override stale shell exports on restart.
+# 优先从 ~/.hermes/.env 加载环境变量。
+# 用户管理的 env 文件应在重启时覆盖过时的 shell 导出变量。
 from dotenv import load_dotenv  # backward-compat for tests that monkeypatch this symbol
 from hermes_cli.env_loader import load_hermes_dotenv
 _env_path = _hermes_home / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
 
-# Bridge config.yaml values into the environment so os.getenv() picks them up.
-# config.yaml is authoritative for terminal settings — overrides .env.
+# 将 config.yaml 的值桥接到环境变量，以便 os.getenv() 能够读取。
+# config.yaml 是终端设置的权威来源 — 覆盖 .env。
 _config_path = _hermes_home / 'config.yaml'
 if _config_path.exists():
     try:

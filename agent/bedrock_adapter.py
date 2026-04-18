@@ -1,30 +1,30 @@
-"""AWS Bedrock Converse API adapter for Hermes Agent.
+"""AWS Bedrock Converse API 适配器，用于 Hermes Agent。
 
-Provides native integration with Amazon Bedrock using the Converse API,
-bypassing the OpenAI-compatible endpoint in favor of direct AWS SDK calls.
-This enables full access to the Bedrock ecosystem:
+提供与 Amazon Bedrock 的原生集成，使用 Converse API，
+绕过 OpenAI 兼容端点，直接使用 AWS SDK 调用。
+这使得可以完全访问 Bedrock 生态系统：
 
-  - **Native Converse API**: Unified interface for all Bedrock models
-    (Claude, Nova, Llama, Mistral, etc.) with streaming support.
-  - **AWS credential chain**: IAM roles, SSO profiles, environment variables,
-    instance metadata — zero API key management for AWS-native environments.
-  - **Dynamic model discovery**: Auto-discovers available foundation models
-    and cross-region inference profiles via the Bedrock control plane.
-  - **Guardrails support**: Optional Bedrock Guardrails configuration for
-    content filtering and safety policies.
-  - **Inference profiles**: Supports cross-region inference profiles
-    (us.anthropic.claude-*, global.anthropic.claude-*) for better capacity
-    and automatic failover.
+  - **原生 Converse API**：所有 Bedrock 模型的统一接口
+    （Claude、Nova、Llama、Mistral 等），支持流式输出。
+  - **AWS 凭据链**：IAM 角色、SSO 配置文件、环境变量、
+    实例元数据 —— AWS 原生环境无需管理 API 密钥。
+  - **动态模型发现**：通过 Bedrock 控制面板自动发现可用的
+    基础模型和跨区域推理配置文件。
+  - **Guardrails 支持**：可选的 Bedrock Guardrails 配置，
+    用于内容过滤和安全策略。
+  - **推理配置文件**：支持跨区域推理配置文件
+    （us.anthropic.claude-*、global.anthropic.claude-*），
+    提供更好的容量和自动故障转移。
 
-Architecture follows the same pattern as ``anthropic_adapter.py``:
-  - All Bedrock-specific logic is isolated in this module.
-  - Messages/tools are converted between OpenAI format and Converse format.
-  - Responses are normalized back to OpenAI-compatible objects for the agent loop.
+架构遵循与 ``anthropic_adapter.py`` 相同的模式：
+  - 所有 Bedrock 特定逻辑都隔离在此模块中。
+  - 消息/工具在 OpenAI 格式和 Converse 格式之间转换。
+  - 响应被规范化为 OpenAI 兼容对象，供 agent 循环使用。
 
-Reference: OpenClaw's ``extensions/amazon-bedrock/`` plugin, which implements
-the same Converse API integration in TypeScript via ``@aws-sdk/client-bedrock``.
+参考：OpenClaw 的 ``extensions/amazon-bedrock/`` 插件，该插件通过
+``@aws-sdk/client-bedrock`` 在 TypeScript 中实现了相同的 Converse API 集成。
 
-Requires: ``boto3`` (optional dependency — only needed when using the Bedrock provider).
+依赖：``boto3``（可选依赖 —— 仅在使用 Bedrock 提供商时需要）。
 """
 
 import json
@@ -37,8 +37,8 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Lazy boto3 import — only loaded when the Bedrock provider is actually used.
-# This keeps startup fast for users who don't use Bedrock.
+# 延迟导入 boto3 —— 仅在实际使用 Bedrock 提供商时才加载。
+# 这使得不使用 Bedrock 的用户的启动速度更快。
 # ---------------------------------------------------------------------------
 
 _bedrock_runtime_client_cache: Dict[str, Any] = {}
@@ -46,7 +46,7 @@ _bedrock_control_client_cache: Dict[str, Any] = {}
 
 
 def _require_boto3():
-    """Import boto3, raising a clear error if not installed."""
+    """导入 boto3，若未安装则抛出清晰的错误信息。"""
     try:
         import boto3
         return boto3
@@ -59,9 +59,9 @@ def _require_boto3():
 
 
 def _get_bedrock_runtime_client(region: str):
-    """Get or create a cached ``bedrock-runtime`` client for the given region.
+    """获取或创建给定区域的缓存 ``bedrock-runtime`` 客户端。
 
-    Uses the default AWS credential chain (env vars → profile → instance role).
+    使用默认 AWS 凭据链（环境变量 → 配置文件 → 实例角色）。
     """
     if region not in _bedrock_runtime_client_cache:
         boto3 = _require_boto3()
@@ -72,7 +72,7 @@ def _get_bedrock_runtime_client(region: str):
 
 
 def _get_bedrock_control_client(region: str):
-    """Get or create a cached ``bedrock`` control-plane client for model discovery."""
+    """获取或创建用于模型发现的缓存 ``bedrock`` 控制面板客户端。"""
     if region not in _bedrock_control_client_cache:
         boto3 = _require_boto3()
         _bedrock_control_client_cache[region] = boto3.client(
@@ -82,60 +82,59 @@ def _get_bedrock_control_client(region: str):
 
 
 def reset_client_cache():
-    """Clear cached boto3 clients. Used in tests and profile switches."""
+    """清除缓存的 boto3 客户端。用于测试和配置文件切换。"""
     _bedrock_runtime_client_cache.clear()
     _bedrock_control_client_cache.clear()
 
 
 # ---------------------------------------------------------------------------
-# AWS credential detection
+# AWS 凭据检测
 # ---------------------------------------------------------------------------
 
-# Priority order matches OpenClaw's resolveAwsSdkEnvVarName():
-#   1. AWS_BEARER_TOKEN_BEDROCK (Bedrock-specific bearer token)
-#   2. AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY (explicit IAM credentials)
-#   3. AWS_PROFILE (named profile → SSO, assume-role, etc.)
-#   4. Implicit: instance role, ECS task role, Lambda execution role
+# 优先级顺序匹配 OpenClaw 的 resolveAwsSdkEnvVarName()：
+#   1. AWS_BEARER_TOKEN_BEDROCK（Bedrock 专用的 Bearer 令牌）
+#   2. AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY（显式 IAM 凭据）
+#   3. AWS_PROFILE（命名配置文件 → SSO、assume-role 等）
+#   4. 隐式：实例角色、ECS 任务角色、Lambda 执行角色
 _AWS_CREDENTIAL_ENV_VARS = [
     "AWS_BEARER_TOKEN_BEDROCK",
     "AWS_ACCESS_KEY_ID",
     "AWS_PROFILE",
-    # These are checked by boto3's default chain but we list them for
-    # has_aws_credentials() detection:
+    # 这些由 boto3 的默认链检查，但我们在此列出它们用于
+    # has_aws_credentials() 检测：
     "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
     "AWS_WEB_IDENTITY_TOKEN_FILE",
 ]
 
 
 def resolve_aws_auth_env_var(env: Optional[Dict[str, str]] = None) -> Optional[str]:
-    """Return the name of the AWS auth source that is active, or None.
+    """返回当前活跃的 AWS 认证源名称，如果没有则返回 None。
 
-    Checks environment variables first, then falls back to boto3's credential
-    chain for implicit sources (EC2 IMDS, ECS task role, etc.).
+    先检查环境变量，然后回退到 boto3 的凭据链以检查隐式来源
+    （EC2 IMDS、ECS 任务角色等）。
 
-    This mirrors OpenClaw's ``resolveAwsSdkEnvVarName()`` — used to detect
-    whether the user has any AWS credentials configured without actually
-    attempting to authenticate.
+    这对应 OpenClaw 的 ``resolveAwsSdkEnvVarName()`` —— 用于检测
+    用户是否配置了任何 AWS 凭据，而无需实际尝试认证。
     """
     env = env if env is not None else os.environ
-    # Bearer token takes highest priority
+    # Bearer 令牌优先级最高
     if env.get("AWS_BEARER_TOKEN_BEDROCK", "").strip():
         return "AWS_BEARER_TOKEN_BEDROCK"
-    # Explicit access key pair
+    # 显式访问密钥对
     if (env.get("AWS_ACCESS_KEY_ID", "").strip()
             and env.get("AWS_SECRET_ACCESS_KEY", "").strip()):
         return "AWS_ACCESS_KEY_ID"
-    # Named profile (SSO, assume-role, etc.)
+    # 命名配置文件（SSO、assume-role 等）
     if env.get("AWS_PROFILE", "").strip():
         return "AWS_PROFILE"
-    # Container credentials (ECS, CodeBuild)
+    # 容器凭据（ECS、CodeBuild）
     if env.get("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "").strip():
         return "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"
-    # Web identity (EKS IRSA)
+    # Web 身份（EKS IRSA）
     if env.get("AWS_WEB_IDENTITY_TOKEN_FILE", "").strip():
         return "AWS_WEB_IDENTITY_TOKEN_FILE"
-    # No env vars — check if boto3 can resolve credentials via IMDS or other
-    # implicit sources (EC2 instance role, ECS task role, Lambda, etc.)
+    # 没有环境变量 —— 检查 boto3 是否能通过 IMDS 或其他
+    # 隐式来源（EC2 实例角色、ECS 任务角色、Lambda 等）解析凭据
     try:
         import botocore.session
         session = botocore.session.get_session()
@@ -150,23 +149,21 @@ def resolve_aws_auth_env_var(env: Optional[Dict[str, str]] = None) -> Optional[s
 
 
 def has_aws_credentials(env: Optional[Dict[str, str]] = None) -> bool:
-    """Return True if any AWS credential source is detected.
+    """如果检测到任何 AWS 凭据源则返回 True。
 
-    Checks environment variables first (fast, no I/O), then falls back to
-    boto3's credential chain which covers EC2 instance roles, ECS task roles,
-    Lambda execution roles, and other IMDS-based sources that don't set
-    environment variables.
+    先检查环境变量（快速，无 I/O），然后回退到 boto3 的凭据链，
+    该凭据链覆盖不设置环境变量的 EC2 实例角色、ECS 任务角色、
+    Lambda 执行角色和其他基于 IMDS 的来源。
 
-    This two-tier approach mirrors the pattern from OpenClaw PR #62673:
-    cloud environments (EC2, ECS, Lambda) provide credentials via instance
-    metadata, not environment variables. The env-var check is a fast path
-    for local development; the boto3 fallback covers all cloud deployments.
+    这种两层方法对应 OpenClaw PR #62673 中的模式：
+    云环境（EC2、ECS、Lambda）通过实例元数据提供凭据，
+    而非环境变量。环境变量检查是本地开发的快速路径；
+    boto3 回退覆盖所有云部署。
     """
     if resolve_aws_auth_env_var(env) is not None:
         return True
-    # Fall back to boto3's credential resolver — this covers EC2 instance
-    # metadata (IMDS), ECS container credentials, and other implicit sources
-    # that don't set environment variables.
+    # 回退到 boto3 的凭据解析器 —— 这覆盖了 EC2 实例
+    # 元数据（IMDS）、ECS 容器凭据和其他不设置环境变量的隐式来源。
     try:
         import botocore.session
         session = botocore.session.get_session()
@@ -181,9 +178,9 @@ def has_aws_credentials(env: Optional[Dict[str, str]] = None) -> bool:
 
 
 def resolve_bedrock_region(env: Optional[Dict[str, str]] = None) -> str:
-    """Resolve the AWS region for Bedrock API calls.
+    """解析 Bedrock API 调用使用的 AWS 区域。
 
-    Priority: AWS_REGION → AWS_DEFAULT_REGION → us-east-1 (fallback).
+    优先级：AWS_REGION → AWS_DEFAULT_REGION → us-east-1（兜底）。
     """
     env = env if env is not None else os.environ
     return (
@@ -194,21 +191,21 @@ def resolve_bedrock_region(env: Optional[Dict[str, str]] = None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tool-calling capability detection
+# 工具调用能力检测
 # ---------------------------------------------------------------------------
-# Some Bedrock models don't support tool/function calling. Sending toolConfig
-# to these models causes ValidationException. We maintain a denylist of known
-# non-tool-calling model patterns and strip tools for them.
+# 某些 Bedrock 模型不支持工具/函数调用。向这些模型发送 toolConfig
+# 会导致 ValidationException。我们维护一个已知不支持工具调用的
+# 模型模式黑名单，并为它们剥离工具。
 #
-# This is a conservative approach: unknown models are assumed to support tools.
-# If a model fails with a tool-related ValidationException, add it here.
+# 这是保守的做法：未知模型默认假设支持工具。
+# 如果模型因工具相关的 ValidationException 失败，请将其添加到此处。
 
 _NON_TOOL_CALLING_PATTERNS = [
-    "deepseek.r1",          # DeepSeek R1 — reasoning only, no tool support
-    "deepseek-r1",          # Alternate ID format
-    "stability.",           # Image generation models
-    "cohere.embed",         # Embedding models
-    "amazon.titan-embed",   # Embedding models
+    "deepseek.r1",          # DeepSeek R1 —— 仅推理，不支持工具
+    "deepseek-r1",          # 备用 ID 格式
+    "stability.",           # 图像生成模型
+    "cohere.embed",         # 嵌入模型
+    "amazon.titan-embed",   # 嵌入模型
 ]
 
 
@@ -245,18 +242,18 @@ def is_anthropic_bedrock_model(model_id: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Message format conversion: OpenAI → Bedrock Converse
+# 消息格式转换：OpenAI → Bedrock Converse
 # ---------------------------------------------------------------------------
 
 def convert_tools_to_converse(tools: List[Dict]) -> List[Dict]:
-    """Convert OpenAI-format tool definitions to Bedrock Converse ``toolConfig``.
+    """将 OpenAI 格式的工具定义转换为 Bedrock Converse 的 ``toolConfig``。
 
-    OpenAI format::
+    OpenAI 格式::
 
         {"type": "function", "function": {"name": "...", "description": "...",
          "parameters": {"type": "object", "properties": {...}}}}
 
-    Converse format::
+    Converse 格式::
 
         {"toolSpec": {"name": "...", "description": "...",
          "inputSchema": {"json": {"type": "object", "properties": {...}}}}}
@@ -280,15 +277,15 @@ def convert_tools_to_converse(tools: List[Dict]) -> List[Dict]:
 
 
 def _convert_content_to_converse(content) -> List[Dict]:
-    """Convert OpenAI message content (string or list) to Converse content blocks.
+    """将 OpenAI 消息内容（字符串或列表）转换为 Converse 内容块。
 
-    Handles:
-      - Plain text strings → [{"text": "..."}]
-      - Content arrays with text/image_url parts → mixed text/image blocks
+    处理:
+      - 纯文本字符串 → [{"text": "..."}]
+      - 包含 text/image_url 部分的内容数组 → 混合文本/图片块
 
-    Filters out empty text blocks — Bedrock's Converse API rejects messages
-    where a text content block has an empty ``text`` field (ValidationException:
-    "text content blocks must be non-empty"). Ref: issue #9486.
+    过滤空文本块——Bedrock 的 Converse API 会拒绝文本内容块中
+    ``text`` 字段为空的消息（ValidationException:
+    "text content blocks must be non-empty"）。参考：issue #9486。
     """
     if content is None:
         return [{"text": " "}]
@@ -310,7 +307,7 @@ def _convert_content_to_converse(content) -> List[Dict]:
                 image_url = part.get("image_url", {})
                 url = image_url.get("url", "") if isinstance(image_url, dict) else ""
                 if url.startswith("data:"):
-                    # data:image/jpeg;base64,/9j/4AAQ...
+                    # data:image/jpeg;base64,/9j/4AAQ... — base64 编码的内联图片
                     header, _, data = url.partition(",")
                     media_type = "image/jpeg"
                     if header.startswith("data:"):
@@ -324,8 +321,8 @@ def _convert_content_to_converse(content) -> List[Dict]:
                         }
                     })
                 else:
-                    # Remote URL — Converse doesn't support URLs directly,
-                    # include as text reference for the model.
+                    # 远程 URL —— Converse 不支持直接使用 URL，
+                    # 作为文本引用包含给模型使用。
                     blocks.append({"text": f"[Image: {url}]"})
         return blocks if blocks else [{"text": " "}]
     return [{"text": str(content)}]
@@ -334,21 +331,21 @@ def _convert_content_to_converse(content) -> List[Dict]:
 def convert_messages_to_converse(
     messages: List[Dict],
 ) -> Tuple[Optional[List[Dict]], List[Dict]]:
-    """Convert OpenAI-format messages to Bedrock Converse format.
+    """将 OpenAI 格式的消息转换为 Bedrock Converse 格式。
 
-    Returns ``(system_prompt, converse_messages)`` where:
-      - ``system_prompt`` is a list of system content blocks (or None)
-      - ``converse_messages`` is the conversation in Converse format
+    返回 ``(system_prompt, converse_messages)``，其中：
+      - ``system_prompt`` 是系统内容块列表（或 None）
+      - ``converse_messages`` 是 Converse 格式的对话
 
-    Handles:
-      - System messages → extracted as system prompt
-      - User messages → ``{"role": "user", "content": [...]}``
-      - Assistant messages → ``{"role": "assistant", "content": [...]}``
-      - Tool calls → ``{"toolUse": {"toolUseId": ..., "name": ..., "input": ...}}``
-      - Tool results → ``{"toolResult": {"toolUseId": ..., "content": [...]}}``
+    处理:
+      - 系统消息 → 提取为系统提示词
+      - 用户消息 → ``{"role": "user", "content": [...]}``
+      - 助手消息 → ``{"role": "assistant", "content": [...]}``
+      - 工具调用 → ``{"toolUse": {"toolUseId": ..., "name": ..., "input": ...}}``
+      - 工具结果 → ``{"toolResult": {"toolUseId": ..., "content": [...]}}``
 
-    Converse requires strict user/assistant alternation. Consecutive messages
-    with the same role are merged into a single message.
+    Converse 要求严格的用户/助手交替。连续的相同角色消息
+    会被合并为单条消息。
     """
     system_blocks: List[Dict] = []
     converse_msgs: List[Dict] = []
@@ -358,7 +355,7 @@ def convert_messages_to_converse(
         content = msg.get("content")
 
         if role == "system":
-            # System messages become the system prompt
+            # 系统消息作为系统提示词
             if isinstance(content, str) and content.strip():
                 system_blocks.append({"text": content})
             elif isinstance(content, list):
@@ -370,7 +367,7 @@ def convert_messages_to_converse(
             continue
 
         if role == "tool":
-            # Tool result messages → merge into the preceding user turn
+            # 工具结果消息 → 合并到前一个用户轮次中
             tool_call_id = msg.get("tool_call_id", "")
             result_content = content if isinstance(content, str) else json.dumps(content)
             tool_result_block = {
@@ -379,7 +376,7 @@ def convert_messages_to_converse(
                     "content": [{"text": result_content}],
                 }
             }
-            # In Converse, tool results go in a "user" role message
+            # 在 Converse 中，工具结果放在 "user" 角色的消息中
             if converse_msgs and converse_msgs[-1]["role"] == "user":
                 converse_msgs[-1]["content"].append(tool_result_block)
             else:
@@ -391,13 +388,13 @@ def convert_messages_to_converse(
 
         if role == "assistant":
             content_blocks = []
-            # Convert text content
+            # 转换文本内容
             if isinstance(content, str) and content.strip():
                 content_blocks.append({"text": content})
             elif isinstance(content, list):
                 content_blocks.extend(_convert_content_to_converse(content))
 
-            # Convert tool calls
+            # 转换工具调用
             tool_calls = msg.get("tool_calls", [])
             for tc in (tool_calls or []):
                 fn = tc.get("function", {})
@@ -417,7 +414,7 @@ def convert_messages_to_converse(
             if not content_blocks:
                 content_blocks = [{"text": " "}]
 
-            # Merge with previous assistant message if needed (strict alternation)
+            # 如果需要，与前一条助手消息合并（严格交替要求）
             if converse_msgs and converse_msgs[-1]["role"] == "assistant":
                 converse_msgs[-1]["content"].extend(content_blocks)
             else:
@@ -429,7 +426,7 @@ def convert_messages_to_converse(
 
         if role == "user":
             content_blocks = _convert_content_to_converse(content)
-            # Merge with previous user message if needed (strict alternation)
+            # 如果需要，与前一条用户消息合并（严格交替要求）
             if converse_msgs and converse_msgs[-1]["role"] == "user":
                 converse_msgs[-1]["content"].extend(content_blocks)
             else:
@@ -439,11 +436,11 @@ def convert_messages_to_converse(
                 })
             continue
 
-    # Converse requires the first message to be from the user
+    # Converse 要求第一条消息来自用户
     if converse_msgs and converse_msgs[0]["role"] != "user":
         converse_msgs.insert(0, {"role": "user", "content": [{"text": " "}]})
 
-    # Converse requires the last message to be from the user
+    # Converse 要求最后一条消息来自用户
     if converse_msgs and converse_msgs[-1]["role"] != "user":
         converse_msgs.append({"role": "user", "content": [{"text": " "}]})
 
@@ -451,11 +448,11 @@ def convert_messages_to_converse(
 
 
 # ---------------------------------------------------------------------------
-# Response format conversion: Bedrock Converse → OpenAI
+# 响应格式转换：Bedrock Converse → OpenAI
 # ---------------------------------------------------------------------------
 
 def _converse_stop_reason_to_openai(stop_reason: str) -> str:
-    """Map Bedrock Converse stop reasons to OpenAI finish_reason values."""
+    """将 Bedrock Converse 停止原因映射为 OpenAI 的 finish_reason 值。"""
     mapping = {
         "end_turn": "stop",
         "stop_sequence": "stop",
@@ -468,16 +465,16 @@ def _converse_stop_reason_to_openai(stop_reason: str) -> str:
 
 
 def normalize_converse_response(response: Dict) -> SimpleNamespace:
-    """Convert a Bedrock Converse API response to an OpenAI-compatible object.
+    """将 Bedrock Converse API 响应转换为 OpenAI 兼容对象。
 
-    The agent loop in ``run_agent.py`` expects responses shaped like
-    ``openai.ChatCompletion`` — this function bridges the gap.
+    ``run_agent.py`` 中的代理循环期望响应形状类似
+    ``openai.ChatCompletion``——此函数充当桥梁。
 
-    Returns a SimpleNamespace with:
-      - ``.choices[0].message.content`` — text response
-      - ``.choices[0].message.tool_calls`` — tool call list (if any)
+    返回包含以下属性的 SimpleNamespace：
+      - ``.choices[0].message.content`` — 文本响应
+      - ``.choices[0].message.tool_calls`` — 工具调用列表（如有）
       - ``.choices[0].finish_reason`` — stop/tool_calls/length
-      - ``.usage`` — token usage stats
+      - ``.usage`` — token 使用统计
     """
     output = response.get("output", {})
     message = output.get("message", {})
@@ -501,14 +498,14 @@ def normalize_converse_response(response: Dict) -> SimpleNamespace:
                 ),
             ))
 
-    # Build the message object
+    # 构建消息对象
     msg = SimpleNamespace(
         role="assistant",
         content="\n".join(text_parts) if text_parts else None,
         tool_calls=tool_calls if tool_calls else None,
     )
 
-    # Build usage stats
+    # 构建 token 使用统计
     usage_data = response.get("usage", {})
     usage = SimpleNamespace(
         prompt_tokens=usage_data.get("inputTokens", 0),
@@ -536,21 +533,21 @@ def normalize_converse_response(response: Dict) -> SimpleNamespace:
 
 
 # ---------------------------------------------------------------------------
-# Streaming response conversion
+# 流式响应转换
 # ---------------------------------------------------------------------------
 
 def normalize_converse_stream_events(event_stream) -> SimpleNamespace:
-    """Consume a Bedrock ConverseStream event stream and build an OpenAI-compatible response.
+    """消费 Bedrock ConverseStream 事件流并构建 OpenAI 兼容响应。
 
-    Processes the stream events in order:
-      - ``messageStart`` — role info
-      - ``contentBlockStart`` — new text or toolUse block
-      - ``contentBlockDelta`` — incremental text or toolUse input
-      - ``contentBlockStop`` — block complete
-      - ``messageStop`` — stop reason
-      - ``metadata`` — usage stats
+    按顺序处理流事件：
+      - ``messageStart`` — 角色信息
+      - ``contentBlockStart`` — 新的文本或 toolUse 块
+      - ``contentBlockDelta`` — 增量文本或 toolUse 输入
+      - ``contentBlockStop`` — 块完成
+      - ``messageStop`` — 停止原因
+      - ``metadata`` — 使用统计
 
-    Returns the same shape as ``normalize_converse_response()``.
+    返回与 ``normalize_converse_response()`` 相同形状的对象。
     """
     return stream_converse_with_callbacks(event_stream)
 
@@ -562,28 +559,27 @@ def stream_converse_with_callbacks(
     on_reasoning_delta=None,
     on_interrupt_check=None,
 ) -> SimpleNamespace:
-    """Process a Bedrock ConverseStream event stream with real-time callbacks.
+    """带实时回调处理 Bedrock ConverseStream 事件流。
 
-    This is the core streaming function that powers both the CLI's live token
-    display and the gateway's progressive message updates.
+    这是核心流处理函数，同时驱动 CLI 的实时 token 显示
+    和网关的渐进式消息更新。
 
-    Args:
-        event_stream: The boto3 ``converse_stream()`` response containing a
-            ``stream`` key with an iterable of events.
-        on_text_delta: Called with each text chunk as it arrives. Only fires
-            when no tool_use blocks have been seen (same semantics as the
-            Anthropic and chat_completions streaming paths).
-        on_tool_start: Called with the tool name when a toolUse block begins.
-            Lets the TUI show a spinner while tool arguments are generated.
-        on_reasoning_delta: Called with reasoning/thinking text chunks.
-            Bedrock surfaces thinking via ``reasoning`` content block deltas
-            on supported models (Claude 4.6+).
-        on_interrupt_check: Called on each event. Should return True if the
-            agent has been interrupted and streaming should stop.
+    参数:
+        event_stream: boto3 ``converse_stream()`` 的响应，包含一个
+            ``stream`` 键，其值为可迭代的事件。
+        on_text_delta: 每个文本块到达时调用。仅在未见到 tool_use 块时触发
+            （与 Anthropic 和 chat_completions 流式路径语义一致）。
+        on_tool_start: 当 toolUse 块开始时以工具名称调用。
+            让 TUI 在生成工具参数时显示 spinner。
+        on_reasoning_delta: 推理/思考文本块的回调。
+            Bedrock 在支持的模型上通过 ``reasoning`` 内容块 delta
+            输出思考过程（Claude 4.6+）。
+        on_interrupt_check: 每个事件时调用。如果代理被中断
+            且需要停止流式传输，应返回 True。
 
-    Returns:
-        An OpenAI-compatible SimpleNamespace response, identical in shape to
-        ``normalize_converse_response()``.
+    返回:
+        OpenAI 兼容的 SimpleNamespace 响应，形状与
+        ``normalize_converse_response()`` 一致。
     """
     text_parts: List[str] = []
     tool_calls: List[SimpleNamespace] = []
@@ -594,7 +590,7 @@ def stream_converse_with_callbacks(
     usage_data: Dict[str, int] = {}
 
     for event in event_stream.get("stream", []):
-        # Check for interrupt
+        # 检查是否被中断
         if on_interrupt_check and on_interrupt_check():
             break
 
@@ -602,7 +598,7 @@ def stream_converse_with_callbacks(
             start = event["contentBlockStart"].get("start", {})
             if "toolUse" in start:
                 has_tool_use = True
-                # Flush any accumulated text
+                # 刷新已累积的文本
                 if current_text_buffer:
                     text_parts.append("".join(current_text_buffer))
                     current_text_buffer = []
@@ -619,15 +615,15 @@ def stream_converse_with_callbacks(
             if "text" in delta:
                 text = delta["text"]
                 current_text_buffer.append(text)
-                # Fire text delta callback only when no tool calls are present
-                # (same semantics as Anthropic/chat_completions streaming)
+                # 仅在没有工具调用时触发文本 delta 回调
+                # （与 Anthropic/chat_completions 流式语义一致）
                 if on_text_delta and not has_tool_use:
                     on_text_delta(text)
             elif "toolUse" in delta:
                 if current_tool is not None:
                     current_tool["input_json"] += delta["toolUse"].get("input", "")
             elif "reasoningContent" in delta:
-                # Claude 4.6+ on Bedrock surfaces thinking via reasoningContent
+                # Claude 4.6+ 在 Bedrock 上通过 reasoningContent 输出思考过程
                 reasoning = delta["reasoningContent"]
                 if isinstance(reasoning, dict):
                     thinking_text = reasoning.get("text", "")
@@ -663,7 +659,7 @@ def stream_converse_with_callbacks(
                 "outputTokens": meta_usage.get("outputTokens", 0),
             }
 
-    # Flush remaining text
+    # 刷新剩余文本
     if current_text_buffer:
         text_parts.append("".join(current_text_buffer))
 
@@ -699,7 +695,7 @@ def stream_converse_with_callbacks(
 
 
 # ---------------------------------------------------------------------------
-# High-level API: call Bedrock Converse
+# 高层 API：调用 Bedrock Converse
 # ---------------------------------------------------------------------------
 
 def build_converse_kwargs(
@@ -712,9 +708,9 @@ def build_converse_kwargs(
     stop_sequences: Optional[List[str]] = None,
     guardrail_config: Optional[Dict] = None,
 ) -> Dict[str, Any]:
-    """Build kwargs for ``bedrock-runtime.converse()`` or ``converse_stream()``.
+    """构建 ``bedrock-runtime.converse()`` 或 ``converse_stream()`` 的参数字典。
 
-    Converts OpenAI-format inputs to Converse API parameters.
+    将 OpenAI 格式的输入转换为 Converse API 参数。
     """
     system_prompt, converse_messages = convert_messages_to_converse(messages)
 
@@ -741,11 +737,11 @@ def build_converse_kwargs(
     if tools:
         converse_tools = convert_tools_to_converse(tools)
         if converse_tools:
-            # Some Bedrock models don't support tool/function calling (e.g.
-            # DeepSeek R1, reasoning-only models).  Sending toolConfig to
-            # these models causes a ValidationException → retry loop → failure.
-            # Strip tools for known non-tool-calling models and warn the user.
-            # Ref: PR #7920 feedback from @ptlally, pattern from PR #4346.
+            # 某些 Bedrock 模型不支持工具/函数调用（例如
+            # DeepSeek R1、纯推理模型）。向这些模型发送 toolConfig
+            # 会导致 ValidationException → 重试循环 → 失败。
+            # 为已知不支持工具调用的模型移除工具并警告用户。
+            # 参考：PR #7920 来自 @ptlally 的反馈，模式来自 PR #4346。
             if _model_supports_tool_use(model):
                 kwargs["toolConfig"] = {"tools": converse_tools}
             else:
@@ -771,9 +767,9 @@ def call_converse(
     stop_sequences: Optional[List[str]] = None,
     guardrail_config: Optional[Dict] = None,
 ) -> SimpleNamespace:
-    """Call Bedrock Converse API (non-streaming) and return an OpenAI-compatible response.
+    """调用 Bedrock Converse API（非流式）并返回 OpenAI 兼容响应。
 
-    This is the primary entry point for the agent loop when using the Bedrock provider.
+    这是代理循环使用 Bedrock 提供者时的主要入口点。
     """
     client = _get_bedrock_runtime_client(region)
     kwargs = build_converse_kwargs(
@@ -802,10 +798,10 @@ def call_converse_stream(
     stop_sequences: Optional[List[str]] = None,
     guardrail_config: Optional[Dict] = None,
 ) -> SimpleNamespace:
-    """Call Bedrock ConverseStream API and return an OpenAI-compatible response.
+    """调用 Bedrock ConverseStream API 并返回 OpenAI 兼容响应。
 
-    Consumes the full stream and returns the assembled response. For true
-    streaming with delta callbacks, use ``iter_converse_stream()`` instead.
+    消费完整的流并返回组装后的响应。如需带 delta 回调的
+    真正流式传输，请使用 ``iter_converse_stream()``。
     """
     client = _get_bedrock_runtime_client(region)
     kwargs = build_converse_kwargs(
@@ -824,7 +820,7 @@ def call_converse_stream(
 
 
 # ---------------------------------------------------------------------------
-# Model discovery
+# 模型发现
 # ---------------------------------------------------------------------------
 
 _discovery_cache: Dict[str, Any] = {}
@@ -832,7 +828,7 @@ _DISCOVERY_CACHE_TTL_SECONDS = 3600
 
 
 def reset_discovery_cache():
-    """Clear the model discovery cache. Used in tests."""
+    """清除模型发现缓存。用于测试。"""
     _discovery_cache.clear()
 
 
@@ -840,20 +836,20 @@ def discover_bedrock_models(
     region: str,
     provider_filter: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
-    """Discover available Bedrock foundation models and inference profiles.
+    """发现可用的 Bedrock 基础模型和推理配置文件。
 
-    Returns a list of model info dicts with keys:
-      - ``id``: Model ID (e.g. "anthropic.claude-sonnet-4-6-20250514-v1:0")
-      - ``name``: Human-readable name
-      - ``provider``: Model provider (e.g. "Anthropic", "Amazon", "Meta")
-      - ``input_modalities``: List of input types (e.g. ["TEXT", "IMAGE"])
-      - ``output_modalities``: List of output types
-      - ``streaming``: Whether streaming is supported
+    返回模型信息字典列表，包含以下键：
+      - ``id``: 模型 ID（例如 "anthropic.claude-sonnet-4-6-20250514-v1:0"）
+      - ``name``: 人类可读的名称
+      - ``provider``: 模型提供者（例如 "Anthropic"、"Amazon"、"Meta"）
+      - ``input_modalities``: 输入类型列表（例如 ["TEXT", "IMAGE"]）
+      - ``output_modalities``: 输出类型列表
+      - ``streaming``: 是否支持流式传输
 
-    Caches results for 1 hour per region to avoid repeated API calls.
+    每个区域的结果缓存 1 小时，以避免重复 API 调用。
 
-    Mirrors OpenClaw's ``discoverBedrockModels()`` in
-    ``extensions/amazon-bedrock/discovery.ts``.
+    对应 OpenClaw 中 ``extensions/amazon-bedrock/discovery.ts``
+    的 ``discoverBedrockModels()``。
     """
     import time
 
@@ -872,7 +868,7 @@ def discover_bedrock_models(
     seen_ids = set()
     filter_set = {f.lower() for f in (provider_filter or [])}
 
-    # 1. Discover foundation models
+    # 1. 发现基础模型
     try:
         response = client.list_foundation_models()
         for summary in response.get("modelSummaries", []):
@@ -880,14 +876,14 @@ def discover_bedrock_models(
             if not model_id:
                 continue
 
-            # Apply provider filter
+            # 应用提供者过滤器
             if filter_set:
                 provider_name = (summary.get("providerName") or "").lower()
                 model_prefix = model_id.split(".")[0].lower() if "." in model_id else ""
                 if provider_name not in filter_set and model_prefix not in filter_set:
                     continue
 
-            # Only include active, streaming-capable, text-output models
+            # 仅包含活跃的、支持流式传输的、文本输出模型
             lifecycle = summary.get("modelLifecycle", {})
             if lifecycle.get("status", "").upper() != "ACTIVE":
                 continue
@@ -909,7 +905,7 @@ def discover_bedrock_models(
     except Exception as e:
         logger.warning("Failed to list Bedrock foundation models: %s", e)
 
-    # 2. Discover inference profiles (cross-region, better capacity)
+    # 2. 发现推理配置文件（跨区域，更好的容量）
     try:
         profiles = []
         next_token = None
@@ -933,7 +929,7 @@ def discover_bedrock_models(
             if profile_id.lower() in seen_ids:
                 continue
 
-            # Apply provider filter to underlying models
+            # 对底层模型应用提供者过滤器
             if filter_set:
                 profile_models = profile.get("models", [])
                 matches = any(
@@ -955,7 +951,7 @@ def discover_bedrock_models(
     except Exception as e:
         logger.debug("Skipping inference profile discovery: %s", e)
 
-    # Sort: global cross-region profiles first (recommended), then alphabetical
+    # 排序：全局跨区域配置文件优先（推荐），然后按字母顺序
     models.sort(key=lambda m: (
         0 if m["id"].startswith("global.") else 1,
         m["name"].lower(),
@@ -969,9 +965,9 @@ def discover_bedrock_models(
 
 
 def _extract_provider_from_arn(arn: str) -> str:
-    """Extract the model provider from a Bedrock model ARN.
+    """从 Bedrock 模型 ARN 中提取模型提供者。
 
-    Example: "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-v2"
+    示例: "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-v2"
     → "anthropic"
     """
     match = re.search(r"foundation-model/([^.]+)", arn)
@@ -979,37 +975,36 @@ def _extract_provider_from_arn(arn: str) -> str:
 
 
 def get_bedrock_model_ids(region: str) -> List[str]:
-    """Return a flat list of available Bedrock model IDs for the given region.
+    """返回给定区域可用的 Bedrock 模型 ID 平面列表。
 
-    Convenience wrapper around ``discover_bedrock_models()`` for use in
-    the model selection UI.
+    ``discover_bedrock_models()`` 的便捷包装器，用于模型选择 UI。
     """
     models = discover_bedrock_models(region)
     return [m["id"] for m in models]
 
 
 # ---------------------------------------------------------------------------
-# Error classification — Bedrock-specific exceptions
+# 错误分类 —— Bedrock 特有的异常
 # ---------------------------------------------------------------------------
-# Mirrors OpenClaw's classifyFailoverReason() and matchesContextOverflowError()
-# in extensions/amazon-bedrock/register.sync.runtime.ts.
+# 对应 OpenClaw 中 extensions/amazon-bedrock/register.sync.runtime.ts
+# 的 classifyFailoverReason() 和 matchesContextOverflowError()。
 
-# Patterns that indicate the input context exceeded the model's token limit.
-# Used by run_agent.py to trigger context compression instead of retrying.
+# 表示输入上下文超过模型 token 限制的模式。
+# run_agent.py 使用这些模式来触发上下文压缩而非重试。
 CONTEXT_OVERFLOW_PATTERNS = [
     re.compile(r"ValidationException.*(?:input is too long|max input token|input token.*exceed)", re.IGNORECASE),
     re.compile(r"ValidationException.*(?:exceeds? the (?:maximum|max) (?:number of )?(?:input )?tokens)", re.IGNORECASE),
     re.compile(r"ModelStreamErrorException.*(?:Input is too long|too many input tokens)", re.IGNORECASE),
 ]
 
-# Patterns for throttling / rate limit errors — should trigger backoff + retry.
+# 限流/速率限制错误的模式——应触发退避+重试。
 THROTTLE_PATTERNS = [
     re.compile(r"ThrottlingException", re.IGNORECASE),
     re.compile(r"Too many concurrent requests", re.IGNORECASE),
     re.compile(r"ServiceQuotaExceededException", re.IGNORECASE),
 ]
 
-# Patterns for transient overload — model is temporarily unavailable.
+# 瞬态过载模式——模型暂时不可用。
 OVERLOAD_PATTERNS = [
     re.compile(r"ModelNotReadyException", re.IGNORECASE),
     re.compile(r"ModelTimeoutException", re.IGNORECASE),
@@ -1018,22 +1013,22 @@ OVERLOAD_PATTERNS = [
 
 
 def is_context_overflow_error(error_message: str) -> bool:
-    """Return True if the error indicates the input context was too large.
+    """如果错误表示输入上下文过大，返回 True。
 
-    When this returns True, the agent should compress context and retry
-    rather than treating it as a fatal error.
+    当返回 True 时，代理应压缩上下文后重试，
+    而非将其视为致命错误。
     """
     return any(p.search(error_message) for p in CONTEXT_OVERFLOW_PATTERNS)
 
 
 def classify_bedrock_error(error_message: str) -> str:
-    """Classify a Bedrock error for retry/failover decisions.
+    """为重试/故障转移决策对 Bedrock 错误进行分类。
 
-    Returns:
-      - ``"context_overflow"`` — input too long, compress and retry
-      - ``"rate_limit"`` — throttled, backoff and retry
-      - ``"overloaded"`` — model temporarily unavailable, retry with delay
-      - ``"unknown"`` — unclassified error
+    返回:
+      - ``"context_overflow"`` — 输入过长，压缩后重试
+      - ``"rate_limit"`` — 被限流，退避后重试
+      - ``"overloaded"`` — 模型暂时不可用，延迟后重试
+      - ``"unknown"`` — 未分类的错误
     """
     if is_context_overflow_error(error_message):
         return "context_overflow"
@@ -1045,14 +1040,13 @@ def classify_bedrock_error(error_message: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Bedrock model context lengths
+# Bedrock 模型上下文长度
 # ---------------------------------------------------------------------------
-# Static fallback table for models where the Bedrock API doesn't expose
-# context window sizes.  Used by agent/model_metadata.py when dynamic
-# detection is unavailable.
+# 当 Bedrock API 未暴露上下文窗口大小时的静态回退表。
+# 在动态检测不可用时由 agent/model_metadata.py 使用。
 
 BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
-    # Anthropic Claude models on Bedrock
+    # Anthropic Claude 在 Bedrock 上的模型
     "anthropic.claude-opus-4-6":     200_000,
     "anthropic.claude-sonnet-4-6":   200_000,
     "anthropic.claude-sonnet-4-5":   200_000,
@@ -1064,29 +1058,29 @@ BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
     "anthropic.claude-3-opus":       200_000,
     "anthropic.claude-3-sonnet":     200_000,
     "anthropic.claude-3-haiku":      200_000,
-    # Amazon Nova
+    # Amazon Nova 模型
     "amazon.nova-pro":               300_000,
     "amazon.nova-lite":              300_000,
     "amazon.nova-micro":             128_000,
-    # Meta Llama
+    # Meta Llama 模型
     "meta.llama4-maverick":          128_000,
     "meta.llama4-scout":             128_000,
     "meta.llama3-3-70b-instruct":    128_000,
-    # Mistral
+    # Mistral 模型
     "mistral.mistral-large":         128_000,
-    # DeepSeek
+    # DeepSeek 模型
     "deepseek.v3":                   128_000,
 }
 
-# Default for unknown Bedrock models
+# 未知 Bedrock 模型的默认值
 BEDROCK_DEFAULT_CONTEXT_LENGTH = 128_000
 
 
 def get_bedrock_context_length(model_id: str) -> int:
-    """Look up the context window size for a Bedrock model.
+    """查找 Bedrock 模型的上下文窗口大小。
 
-    Uses substring matching so versioned IDs like
-    ``anthropic.claude-sonnet-4-6-20250514-v1:0`` resolve correctly.
+    使用子字符串匹配，以便带版本号的 ID 如
+    ``anthropic.claude-sonnet-4-6-20250514-v1:0`` 能正确解析。
     """
     model_lower = model_id.lower()
     best_key = ""

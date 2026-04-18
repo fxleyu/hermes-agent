@@ -1,17 +1,17 @@
-"""Central registry for all hermes-agent tools.
+"""hermes-agent 所有工具的中央注册表。
 
-Each tool file calls ``registry.register()`` at module level to declare its
-schema, handler, toolset membership, and availability check.  ``model_tools.py``
-queries the registry instead of maintaining its own parallel data structures.
+每个工具文件在模块级别调用 ``registry.register()`` 来声明其
+schema、处理函数、工具集归属和可用性检查。``model_tools.py``
+查询注册表，而不是维护自己的并行数据结构。
 
-Import chain (circular-import safe):
-    tools/registry.py  (no imports from model_tools or tool files)
+导入链（循环导入安全）：
+    tools/registry.py  （不从 model_tools 或工具文件导入）
            ^
-    tools/*.py  (import from tools.registry at module level)
+    tools/*.py  （在模块级别从 tools.registry 导入）
            ^
-    model_tools.py  (imports tools.registry + all tool modules)
+    model_tools.py  （导入 tools.registry + 所有工具模块）
            ^
-    run_agent.py, cli.py, batch_runner.py, etc.
+    run_agent.py、cli.py、batch_runner.py 等。
 """
 
 import ast
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 def _is_registry_register_call(node: ast.AST) -> bool:
-    """Return True when *node* is a ``registry.register(...)`` call expression."""
+    """当 *node* 是 ``registry.register(...)`` 调用表达式时返回 True。"""
     if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
         return False
     func = node.value.func
@@ -39,10 +39,10 @@ def _is_registry_register_call(node: ast.AST) -> bool:
 
 
 def _module_registers_tools(module_path: Path) -> bool:
-    """Return True when the module contains a top-level ``registry.register(...)`` call.
+    """当模块包含顶层 ``registry.register(...)`` 调用时返回 True。
 
-    Only inspects module-body statements so that helper modules which happen
-    to call ``registry.register()`` inside a function are not picked up.
+    只检查模块体语句，这样那些恰好在函数内部调用
+    ``registry.register()`` 的辅助模块就不会被误识别。
     """
     try:
         source = module_path.read_text(encoding="utf-8")
@@ -54,7 +54,7 @@ def _module_registers_tools(module_path: Path) -> bool:
 
 
 def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
-    """Import built-in self-registering tool modules and return their module names."""
+    """导入内置的自注册工具模块并返回其模块名称列表。"""
     tools_path = Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent
     module_names = [
         f"tools.{path.stem}"
@@ -74,7 +74,7 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
 
 
 class ToolEntry:
-    """Metadata for a single registered tool."""
+    """单个已注册工具的元数据。"""
 
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
@@ -98,32 +98,31 @@ class ToolEntry:
 
 
 class ToolRegistry:
-    """Singleton registry that collects tool schemas + handlers from tool files."""
+    """收集工具文件中的 schema 和处理函数的单例注册表。"""
 
     def __init__(self):
         self._tools: Dict[str, ToolEntry] = {}
         self._toolset_checks: Dict[str, Callable] = {}
         self._toolset_aliases: Dict[str, str] = {}
-        # MCP dynamic refresh can mutate the registry while other threads are
-        # reading tool metadata, so keep mutations serialized and readers on
-        # stable snapshots.
+        # MCP 动态刷新可能在其他线程读取工具元数据时修改注册表，
+        # 因此保持写操作串行化，读操作使用稳定快照。
         self._lock = threading.RLock()
 
     def _snapshot_state(self) -> tuple[List[ToolEntry], Dict[str, Callable]]:
-        """Return a coherent snapshot of registry entries and toolset checks."""
+        """返回注册表条目和工具集检查的一致性快照。"""
         with self._lock:
             return list(self._tools.values()), dict(self._toolset_checks)
 
     def _snapshot_entries(self) -> List[ToolEntry]:
-        """Return a stable snapshot of registered tool entries."""
+        """返回已注册工具条目的稳定快照。"""
         return self._snapshot_state()[0]
 
     def _snapshot_toolset_checks(self) -> Dict[str, Callable]:
-        """Return a stable snapshot of toolset availability checks."""
+        """返回工具集可用性检查的稳定快照。"""
         return self._snapshot_state()[1]
 
     def _evaluate_toolset_check(self, toolset: str, check: Callable | None) -> bool:
-        """Run a toolset check, treating missing or failing checks as unavailable/available."""
+        """运行工具集检查，缺失或失败的检查视为不可用/可用。"""
         if not check:
             return True
         try:
@@ -133,23 +132,23 @@ class ToolRegistry:
             return False
 
     def get_entry(self, name: str) -> Optional[ToolEntry]:
-        """Return a registered tool entry by name, or None."""
+        """按名称返回已注册的工具条目，不存在则返回 None。"""
         with self._lock:
             return self._tools.get(name)
 
     def get_registered_toolset_names(self) -> List[str]:
-        """Return sorted unique toolset names present in the registry."""
+        """返回注册表中存在的已排序唯一工具集名称。"""
         return sorted({entry.toolset for entry in self._snapshot_entries()})
 
     def get_tool_names_for_toolset(self, toolset: str) -> List[str]:
-        """Return sorted tool names registered under a given toolset."""
+        """返回给定工具集下已排序的工具名称列表。"""
         return sorted(
             entry.name for entry in self._snapshot_entries()
             if entry.toolset == toolset
         )
 
     def register_toolset_alias(self, alias: str, toolset: str) -> None:
-        """Register an explicit alias for a canonical toolset name."""
+        """为规范工具集名称注册一个显式别名。"""
         with self._lock:
             existing = self._toolset_aliases.get(alias)
             if existing and existing != toolset:
@@ -160,17 +159,17 @@ class ToolRegistry:
             self._toolset_aliases[alias] = toolset
 
     def get_registered_toolset_aliases(self) -> Dict[str, str]:
-        """Return a snapshot of ``{alias: canonical_toolset}`` mappings."""
+        """返回 ``{别名: 规范工具集名称}`` 映射的快照。"""
         with self._lock:
             return dict(self._toolset_aliases)
 
     def get_toolset_alias_target(self, alias: str) -> Optional[str]:
-        """Return the canonical toolset name for an alias, or None."""
+        """返回别名对应的规范工具集名称，不存在则返回 None。"""
         with self._lock:
             return self._toolset_aliases.get(alias)
 
     # ------------------------------------------------------------------
-    # Registration
+    # 注册
     # ------------------------------------------------------------------
 
     def register(
@@ -186,12 +185,12 @@ class ToolRegistry:
         emoji: str = "",
         max_result_size_chars: int | float | None = None,
     ):
-        """Register a tool.  Called at module-import time by each tool file."""
+        """注册一个工具。在模块导入时由每个工具文件调用。"""
         with self._lock:
             existing = self._tools.get(name)
             if existing and existing.toolset != toolset:
-                # Allow MCP-to-MCP overwrites (legitimate: server refresh,
-                # or two MCP servers with overlapping tool names).
+                # 允许 MCP 之间的覆盖（合法场景：服务器刷新，
+                # 或两个 MCP 服务器工具名称重叠）。
                 both_mcp = (
                     existing.toolset.startswith("mcp-")
                     and toolset.startswith("mcp-")
@@ -202,8 +201,7 @@ class ToolRegistry:
                         name, toolset, existing.toolset,
                     )
                 else:
-                    # Reject shadowing — prevent plugins/MCP from overwriting
-                    # built-in tools or vice versa.
+                    # 拒绝遮蔽 -- 防止插件/MCP 覆盖内置工具，反之亦然。
                     logger.error(
                         "Tool registration REJECTED: '%s' (toolset '%s') would "
                         "shadow existing tool from toolset '%s'. Deregister the "
@@ -227,18 +225,17 @@ class ToolRegistry:
                 self._toolset_checks[toolset] = check_fn
 
     def deregister(self, name: str) -> None:
-        """Remove a tool from the registry.
+        """从注册表中移除一个工具。
 
-        Also cleans up the toolset check if no other tools remain in the
-        same toolset.  Used by MCP dynamic tool discovery to nuke-and-repave
-        when a server sends ``notifications/tools/list_changed``.
+        如果同一工具集中没有其他工具，同时清理工具集检查和别名。
+        用于 MCP 动态工具发现在服务器发送
+        ``notifications/tools/list_changed`` 时进行全量刷新。
         """
         with self._lock:
             entry = self._tools.pop(name, None)
             if entry is None:
                 return
-            # Drop the toolset check and aliases if this was the last tool in
-            # that toolset.
+            # 如果这是该工具集中的最后一个工具，则移除工具集检查和别名
             toolset_still_exists = any(
                 e.toolset == entry.toolset for e in self._tools.values()
             )
@@ -252,14 +249,13 @@ class ToolRegistry:
         logger.debug("Deregistered tool: %s", name)
 
     # ------------------------------------------------------------------
-    # Schema retrieval
+    # Schema 获取
     # ------------------------------------------------------------------
 
     def get_definitions(self, tool_names: Set[str], quiet: bool = False) -> List[dict]:
-        """Return OpenAI-format tool schemas for the requested tool names.
+        """返回请求工具名称的 OpenAI 格式工具 schema。
 
-        Only tools whose ``check_fn()`` returns True (or have no check_fn)
-        are included.
+        只有 ``check_fn()`` 返回 True（或没有 check_fn）的工具才会被包含。
         """
         result = []
         check_results: Dict[Callable, bool] = {}
@@ -280,21 +276,21 @@ class ToolRegistry:
                     if not quiet:
                         logger.debug("Tool %s unavailable (check failed)", name)
                     continue
-            # Ensure schema always has a "name" field — use entry.name as fallback
+            # 确保 schema 始终有 "name" 字段 -- 使用 entry.name 作为回退
             schema_with_name = {**entry.schema, "name": entry.name}
             result.append({"type": "function", "function": schema_with_name})
         return result
 
     # ------------------------------------------------------------------
-    # Dispatch
+    # 调度
     # ------------------------------------------------------------------
 
     def dispatch(self, name: str, args: dict, **kwargs) -> str:
-        """Execute a tool handler by name.
+        """按名称执行工具处理函数。
 
-        * Async handlers are bridged automatically via ``_run_async()``.
-        * All exceptions are caught and returned as ``{"error": "..."}``
-          for consistent error format.
+        * 异步处理函数通过 ``_run_async()`` 自动桥接。
+        * 所有异常被捕获并以 ``{"error": "..."}`` 格式返回，
+          确保错误格式的一致性。
         """
         entry = self.get_entry(name)
         if not entry:
@@ -309,11 +305,11 @@ class ToolRegistry:
             return json.dumps({"error": f"Tool execution failed: {type(e).__name__}: {e}"})
 
     # ------------------------------------------------------------------
-    # Query helpers  (replace redundant dicts in model_tools.py)
+    # 查询辅助方法（替代 model_tools.py 中的冗余字典）
     # ------------------------------------------------------------------
 
     def get_max_result_size(self, name: str, default: int | float | None = None) -> int | float:
-        """Return per-tool max result size, or *default* (or global default)."""
+        """返回单个工具的最大结果大小，或 *default*（或全局默认值）。"""
         entry = self.get_entry(name)
         if entry and entry.max_result_size_chars is not None:
             return entry.max_result_size_chars
@@ -323,44 +319,44 @@ class ToolRegistry:
         return DEFAULT_RESULT_SIZE_CHARS
 
     def get_all_tool_names(self) -> List[str]:
-        """Return sorted list of all registered tool names."""
+        """返回所有已注册工具名称的排序列表。"""
         return sorted(entry.name for entry in self._snapshot_entries())
 
     def get_schema(self, name: str) -> Optional[dict]:
-        """Return a tool's raw schema dict, bypassing check_fn filtering.
+        """返回工具的原始 schema 字典，绕过 check_fn 过滤。
 
-        Useful for token estimation and introspection where availability
-        doesn't matter — only the schema content does.
+        适用于 token 估算和内省场景，在这些场景中
+        可用性无关紧要 -- 只关心 schema 内容本身。
         """
         entry = self.get_entry(name)
         return entry.schema if entry else None
 
     def get_toolset_for_tool(self, name: str) -> Optional[str]:
-        """Return the toolset a tool belongs to, or None."""
+        """返回工具所属的工具集，不存在则返回 None。"""
         entry = self.get_entry(name)
         return entry.toolset if entry else None
 
     def get_emoji(self, name: str, default: str = "⚡") -> str:
-        """Return the emoji for a tool, or *default* if unset."""
+        """返回工具的 emoji，未设置则返回 *default*。"""
         entry = self.get_entry(name)
         return (entry.emoji if entry and entry.emoji else default)
 
     def get_tool_to_toolset_map(self) -> Dict[str, str]:
-        """Return ``{tool_name: toolset_name}`` for every registered tool."""
+        """返回所有已注册工具的 ``{工具名称: 工具集名称}`` 映射。"""
         return {entry.name: entry.toolset for entry in self._snapshot_entries()}
 
     def is_toolset_available(self, toolset: str) -> bool:
-        """Check if a toolset's requirements are met.
+        """检查工具集的依赖是否满足。
 
-        Returns False (rather than crashing) when the check function raises
-        an unexpected exception (e.g. network error, missing import, bad config).
+        当检查函数抛出意外异常（如网络错误、缺少导入、配置错误）时
+        返回 False（而不是崩溃）。
         """
         with self._lock:
             check = self._toolset_checks.get(toolset)
         return self._evaluate_toolset_check(toolset, check)
 
     def check_toolset_requirements(self) -> Dict[str, bool]:
-        """Return ``{toolset: available_bool}`` for every toolset."""
+        """返回所有工具集的 ``{工具集: 可用性布尔值}``。"""
         entries, toolset_checks = self._snapshot_state()
         toolsets = sorted({entry.toolset for entry in entries})
         return {
@@ -369,7 +365,7 @@ class ToolRegistry:
         }
 
     def get_available_toolsets(self) -> Dict[str, dict]:
-        """Return toolset metadata for UI display."""
+        """返回用于 UI 显示的工具集元数据。"""
         toolsets: Dict[str, dict] = {}
         entries, toolset_checks = self._snapshot_state()
         for entry in entries:
@@ -391,7 +387,7 @@ class ToolRegistry:
         return toolsets
 
     def get_toolset_requirements(self) -> Dict[str, dict]:
-        """Build a TOOLSET_REQUIREMENTS-compatible dict for backward compat."""
+        """构建与 TOOLSET_REQUIREMENTS 兼容的字典，用于向后兼容。"""
         result: Dict[str, dict] = {}
         entries, toolset_checks = self._snapshot_state()
         for entry in entries:
@@ -412,7 +408,7 @@ class ToolRegistry:
         return result
 
     def check_tool_availability(self, quiet: bool = False):
-        """Return (available_toolsets, unavailable_info) like the old function."""
+        """返回 (可用工具集, 不可用信息)，类似旧函数的功能。"""
         available = []
         unavailable = []
         seen = set()
@@ -433,28 +429,28 @@ class ToolRegistry:
         return available, unavailable
 
 
-# Module-level singleton
+# 模块级别单例
 registry = ToolRegistry()
 
 
 # ---------------------------------------------------------------------------
-# Helpers for tool response serialization
+# 工具响应序列化辅助函数
 # ---------------------------------------------------------------------------
-# Every tool handler must return a JSON string.  These helpers eliminate the
-# boilerplate ``json.dumps({"error": msg}, ensure_ascii=False)`` that appears
-# hundreds of times across tool files.
+# 每个工具处理函数必须返回一个 JSON 字符串。这些辅助函数消除了
+# 在工具文件中出现数百次的 ``json.dumps({"error": msg}, ensure_ascii=False)``
+# 样板代码。
 #
-# Usage:
+# 用法：
 #   from tools.registry import registry, tool_error, tool_result
 #
 #   return tool_error("something went wrong")
 #   return tool_error("not found", code=404)
 #   return tool_result(success=True, data=payload)
-#   return tool_result(items)            # pass a dict directly
+#   return tool_result(items)            # 直接传递字典
 
 
 def tool_error(message, **extra) -> str:
-    """Return a JSON error string for tool handlers.
+    """返回工具处理函数的 JSON 错误字符串。
 
     >>> tool_error("file not found")
     '{"error": "file not found"}'
@@ -468,9 +464,9 @@ def tool_error(message, **extra) -> str:
 
 
 def tool_result(data=None, **kwargs) -> str:
-    """Return a JSON result string for tool handlers.
+    """返回工具处理函数的 JSON 结果字符串。
 
-    Accepts a dict positional arg *or* keyword arguments (not both):
+    接受字典位置参数 *或* 关键字参数（不能同时使用）：
 
     >>> tool_result(success=True, count=42)
     '{"success": true, "count": 42}'

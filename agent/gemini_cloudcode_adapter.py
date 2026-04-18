@@ -1,29 +1,28 @@
-"""OpenAI-compatible facade that talks to Google's Cloud Code Assist backend.
+"""兼容 OpenAI 接口的门面，底层与 Google Cloud Code Assist 后端通信。
 
-This adapter lets Hermes use the ``google-gemini-cli`` provider as if it were
-a standard OpenAI-shaped chat completion endpoint, while the underlying HTTP
-traffic goes to ``cloudcode-pa.googleapis.com/v1internal:{generateContent,
-streamGenerateContent}`` with a Bearer access token obtained via OAuth PKCE.
+该适配器使 Hermes 可以像使用标准 OpenAI 风格的聊天补全端点一样使用
+``google-gemini-cli`` 提供商，而实际的 HTTP 请求发送至
+``cloudcode-pa.googleapis.com/v1internal:{generateContent,
+streamGenerateContent}``，并通过 OAuth PKCE 获取 Bearer 访问令牌。
 
-Architecture
-------------
-- ``GeminiCloudCodeClient`` exposes ``.chat.completions.create(**kwargs)``
-  mirroring the subset of the OpenAI SDK that ``run_agent.py`` uses.
-- Incoming OpenAI ``messages[]`` / ``tools[]`` / ``tool_choice`` are translated
-  to Gemini's native ``contents[]`` / ``tools[].functionDeclarations`` /
-  ``toolConfig`` / ``systemInstruction`` shape.
-- The request body is wrapped ``{project, model, user_prompt_id, request}``
-  per Code Assist API expectations.
-- Responses (``candidates[].content.parts[]``) are converted back to
-  OpenAI ``choices[0].message`` shape with ``content`` + ``tool_calls``.
-- Streaming uses SSE (``?alt=sse``) and yields OpenAI-shaped delta chunks.
+架构
+----
+- ``GeminiCloudCodeClient`` 暴露 ``.chat.completions.create(**kwargs)``
+  方法，模拟 ``run_agent.py`` 使用的 OpenAI SDK 子集。
+- 传入的 OpenAI ``messages[]`` / ``tools[]`` / ``tool_choice`` 被转换为
+  Gemini 原生的 ``contents[]`` / ``tools[].functionDeclarations`` /
+  ``toolConfig`` / ``systemInstruction`` 格式。
+- 请求体按 Code Assist API 的要求包装为
+  ``{project, model, user_prompt_id, request}``。
+- 响应（``candidates[].content.parts[]``）被转换回
+  OpenAI ``choices[0].message`` 格式，包含 ``content`` + ``tool_calls``。
+- 流式传输使用 SSE（``?alt=sse``），产出 OpenAI 格式的增量 chunk。
 
-Attribution
------------
-Translation semantics follow jenslys/opencode-gemini-auth (MIT) and the public
-Gemini API docs. Request envelope shape
-(``{project, model, user_prompt_id, request}``) is documented nowhere; it is
-reverse-engineered from the opencode-gemini-auth and clawdbot implementations.
+归属
+----
+翻译语义参照 jenslys/opencode-gemini-auth（MIT）和公开的 Gemini API 文档。
+请求信封格式（``{project, model, user_prompt_id, request}``）无公开文档；
+它是从 opencode-gemini-auth 和 clawdbot 实现中逆向工程得来的。
 """
 
 from __future__ import annotations
@@ -51,20 +50,21 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# Request translation: OpenAI → Gemini
+# 请求转换：OpenAI → Gemini
 # =============================================================================
 
+# OpenAI 角色到 Gemini 角色的映射
 _ROLE_MAP_OPENAI_TO_GEMINI = {
     "user": "user",
     "assistant": "model",
-    "system": "user",   # handled separately via systemInstruction
-    "tool": "user",     # functionResponse is wrapped in a user-role turn
+    "system": "user",   # 通过 systemInstruction 单独处理
+    "tool": "user",     # functionResponse 包装在 user 角色的 turn 中
     "function": "user",
 }
 
 
 def _coerce_content_to_text(content: Any) -> str:
-    """OpenAI content may be str or a list of parts; reduce to plain text."""
+    """OpenAI 的 content 可能是字符串或部件列表；将其归约为纯文本。"""
     if content is None:
         return ""
     if isinstance(content, str):
@@ -77,7 +77,7 @@ def _coerce_content_to_text(content: Any) -> str:
             elif isinstance(p, dict):
                 if p.get("type") == "text" and isinstance(p.get("text"), str):
                     pieces.append(p["text"])
-                # Multimodal (image_url, etc.) — stub for now; log and skip
+                # 多模态（image_url 等）——暂时跳过；记录日志
                 elif p.get("type") in ("image_url", "input_audio"):
                     logger.debug("Dropping multimodal part (not yet supported): %s", p.get("type"))
         return "\n".join(pieces)
@@ -85,7 +85,7 @@ def _coerce_content_to_text(content: Any) -> str:
 
 
 def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
-    """OpenAI tool_call -> Gemini functionCall part."""
+    """将 OpenAI tool_call 转换为 Gemini functionCall 部件。"""
     fn = tool_call.get("function") or {}
     args_raw = fn.get("arguments", "")
     try:
@@ -99,25 +99,23 @@ def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
             "name": fn.get("name") or "",
             "args": args,
         },
-        # Sentinel signature — matches opencode-gemini-auth's approach.
-        # Without this, Code Assist rejects function calls that originated
-        # outside its own chain.
+        # 哨兵签名——与 opencode-gemini-auth 的方式一致。
+        # 没有这个标记，Code Assist 会拒绝非自身链路发起的函数调用。
         "thoughtSignature": "skip_thought_signature_validator",
     }
 
 
 def _translate_tool_result_to_gemini(message: Dict[str, Any]) -> Dict[str, Any]:
-    """OpenAI tool-role message -> Gemini functionResponse part.
+    """将 OpenAI tool 角色消息转换为 Gemini functionResponse 部件。
 
-    The function name isn't in the OpenAI tool message directly; it must be
-    passed via the assistant message that issued the call. For simplicity we
-    look up ``name`` on the message (OpenAI SDK copies it there) or on the
-    ``tool_call_id`` cross-reference.
+    函数名不直接出现在 OpenAI tool 消息中；它必须通过发起调用的 assistant
+    消息传递。简化起见，我们在消息上查找 ``name``（OpenAI SDK 会复制到那里）
+    或通过 ``tool_call_id`` 交叉引用。
     """
     name = str(message.get("name") or message.get("tool_call_id") or "tool")
     content = _coerce_content_to_text(message.get("content"))
-    # Gemini expects the response as a dict under `response`. We wrap plain
-    # text in {"output": "..."}.
+    # Gemini 期望响应以 dict 形式放在 `response` 下。
+    # 纯文本包装为 {"output": "..."}。
     try:
         parsed = json.loads(content) if content.strip().startswith(("{", "[")) else None
     except json.JSONDecodeError:
@@ -134,7 +132,7 @@ def _translate_tool_result_to_gemini(message: Dict[str, Any]) -> Dict[str, Any]:
 def _build_gemini_contents(
     messages: List[Dict[str, Any]],
 ) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
-    """Convert OpenAI messages[] to Gemini contents[] + systemInstruction."""
+    """将 OpenAI messages[] 转换为 Gemini contents[] + systemInstruction。"""
     system_text_parts: List[str] = []
     contents: List[Dict[str, Any]] = []
 
@@ -147,7 +145,7 @@ def _build_gemini_contents(
             system_text_parts.append(_coerce_content_to_text(msg.get("content")))
             continue
 
-        # Tool result message — emit a user-role turn with functionResponse
+        # 工具结果消息——生成包含 functionResponse 的 user 角色 turn
         if role == "tool" or role == "function":
             contents.append({
                 "role": "user",
@@ -162,7 +160,7 @@ def _build_gemini_contents(
         if text:
             parts.append({"text": text})
 
-        # Assistant messages can carry tool_calls
+        # assistant 消息可以携带 tool_calls
         tool_calls = msg.get("tool_calls") or []
         if isinstance(tool_calls, list):
             for tc in tool_calls:
@@ -170,7 +168,7 @@ def _build_gemini_contents(
                     parts.append(_translate_tool_call_to_gemini(tc))
 
         if not parts:
-            # Gemini rejects empty parts; skip the turn entirely
+            # Gemini 拒绝空的 parts；直接跳过该 turn
             continue
 
         contents.append({"role": gemini_role, "parts": parts})
@@ -187,7 +185,7 @@ def _build_gemini_contents(
 
 
 def _translate_tools_to_gemini(tools: Any) -> List[Dict[str, Any]]:
-    """OpenAI tools[] -> Gemini tools[].functionDeclarations[]."""
+    """将 OpenAI tools[] 转换为 Gemini tools[].functionDeclarations[]。"""
     if not isinstance(tools, list) or not tools:
         return []
     declarations: List[Dict[str, Any]] = []
@@ -213,7 +211,7 @@ def _translate_tools_to_gemini(tools: Any) -> List[Dict[str, Any]]:
 
 
 def _translate_tool_choice_to_gemini(tool_choice: Any) -> Optional[Dict[str, Any]]:
-    """OpenAI tool_choice -> Gemini toolConfig.functionCallingConfig."""
+    """将 OpenAI tool_choice 转换为 Gemini toolConfig.functionCallingConfig。"""
     if tool_choice is None:
         return None
     if isinstance(tool_choice, str):
@@ -237,7 +235,7 @@ def _translate_tool_choice_to_gemini(tool_choice: Any) -> Optional[Dict[str, Any
 
 
 def _normalize_thinking_config(config: Any) -> Optional[Dict[str, Any]]:
-    """Accept thinkingBudget / thinkingLevel / includeThoughts (+ snake_case)."""
+    """接受 thinkingBudget / thinkingLevel / includeThoughts（及 snake_case 形式）。"""
     if not isinstance(config, dict) or not config:
         return None
     budget = config.get("thinkingBudget", config.get("thinking_budget"))
@@ -264,7 +262,7 @@ def build_gemini_request(
     stop: Any = None,
     thinking_config: Any = None,
 ) -> Dict[str, Any]:
-    """Build the inner Gemini request body (goes inside ``request`` wrapper)."""
+    """构建内层 Gemini 请求体（放入 ``request`` 包装器内部）。"""
     contents, system_instruction = _build_gemini_contents(messages)
 
     body: Dict[str, Any] = {"contents": contents}
@@ -305,7 +303,7 @@ def wrap_code_assist_request(
     inner_request: Dict[str, Any],
     user_prompt_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Wrap the inner Gemini request in the Code Assist envelope."""
+    """将内层 Gemini 请求包装在 Code Assist 信封中。"""
     return {
         "project": project_id,
         "model": model,
@@ -315,17 +313,17 @@ def wrap_code_assist_request(
 
 
 # =============================================================================
-# Response translation: Gemini → OpenAI
+# 响应转换：Gemini → OpenAI
 # =============================================================================
 
 def _translate_gemini_response(
     resp: Dict[str, Any],
     model: str,
 ) -> SimpleNamespace:
-    """Non-streaming Gemini response -> OpenAI-shaped SimpleNamespace.
+    """非流式 Gemini 响应 -> OpenAI 格式的 SimpleNamespace。
 
-    Code Assist wraps the actual Gemini response inside ``response``, so we
-    unwrap it first if present.
+    Code Assist 会将实际的 Gemini 响应包装在 ``response`` 中，
+    因此如果存在则先解包。
     """
     inner = resp.get("response") if isinstance(resp.get("response"), dict) else resp
 
@@ -344,8 +342,8 @@ def _translate_gemini_response(
     for i, part in enumerate(parts or []):
         if not isinstance(part, dict):
             continue
-        # Thought parts are model's internal reasoning — surface as reasoning,
-        # don't mix into content.
+        # 思考部件是模型内部推理——作为 reasoning 表面化，
+        # 不混入 content。
         if part.get("thought") is True:
             if isinstance(part.get("text"), str):
                 reasoning_pieces.append(part["text"])
@@ -435,11 +433,11 @@ def _map_gemini_finish_reason(reason: str) -> str:
 
 
 # =============================================================================
-# Streaming SSE iterator
+# 流式 SSE 迭代器
 # =============================================================================
 
 class _GeminiStreamChunk(SimpleNamespace):
-    """Mimics an OpenAI ChatCompletionChunk with .choices[0].delta."""
+    """模拟 OpenAI ChatCompletionChunk，具有 .choices[0].delta 属性。"""
     pass
 
 
@@ -480,7 +478,7 @@ def _make_stream_chunk(
 
 
 def _iter_sse_events(response: httpx.Response) -> Iterator[Dict[str, Any]]:
-    """Parse Server-Sent Events from an httpx streaming response."""
+    """从 httpx 流式响应中解析 Server-Sent Events。"""
     buffer = ""
     for chunk in response.iter_text():
         if not chunk:
@@ -506,7 +504,7 @@ def _translate_stream_event(
     model: str,
     tool_call_indices: Dict[str, int],
 ) -> List[_GeminiStreamChunk]:
-    """Unwrap Code Assist envelope and emit OpenAI-shaped chunk(s)."""
+    """解包 Code Assist 信封并产出 OpenAI 格式的 chunk。"""
     inner = event.get("response") if isinstance(event.get("response"), dict) else event
     candidates = inner.get("candidates") or []
     if not candidates:
@@ -556,7 +554,7 @@ def _translate_stream_event(
 
 
 # =============================================================================
-# GeminiCloudCodeClient — OpenAI-compatible facade
+# GeminiCloudCodeClient — 兼容 OpenAI 的门面
 # =============================================================================
 
 MARKER_BASE_URL = "cloudcode-pa://google"
@@ -576,7 +574,7 @@ class _GeminiChatNamespace:
 
 
 class GeminiCloudCodeClient:
-    """Minimal OpenAI-SDK-compatible facade over Code Assist v1internal."""
+    """基于 Code Assist v1internal 的最小化 OpenAI SDK 兼容门面。"""
 
     def __init__(
         self,
@@ -587,9 +585,9 @@ class GeminiCloudCodeClient:
         project_id: str = "",
         **_: Any,
     ):
-        # `api_key` here is a dummy — real auth is the OAuth access token
-        # fetched on every call via agent.google_oauth.get_valid_access_token().
-        # We accept the kwarg for openai.OpenAI interface parity.
+        # `api_key` 在这里是占位——真正的认证是通过
+        # agent.google_oauth.get_valid_access_token() 在每次调用时获取的 OAuth 访问令牌。
+        # 我们接受此参数是为了与 openai.OpenAI 接口保持一致。
         self.api_key = api_key or "google-oauth"
         self.base_url = base_url or MARKER_BASE_URL
         self._default_headers = dict(default_headers or {})
@@ -607,7 +605,7 @@ class GeminiCloudCodeClient:
         except Exception:
             pass
 
-    # Implement the OpenAI SDK's context-manager-ish closure check
+    # 实现 OpenAI SDK 的上下文管理器式关闭检查
     def __enter__(self):
         return self
 
@@ -615,7 +613,7 @@ class GeminiCloudCodeClient:
         self.close()
 
     def _ensure_project_context(self, access_token: str, model: str) -> ProjectContext:
-        """Lazily resolve and cache the project context for this client."""
+        """延迟解析并缓存此客户端的项目上下文。"""
         if self._project_context is not None:
             return self._project_context
 
@@ -623,7 +621,7 @@ class GeminiCloudCodeClient:
         creds = google_oauth.load_credentials()
         stored_project = creds.project_id if creds else ""
 
-        # Prefer what's already baked into the creds
+        # 优先使用已存储在凭据中的项目 ID
         if stored_project:
             self._project_context = ProjectContext(
                 project_id=stored_project,
@@ -639,8 +637,8 @@ class GeminiCloudCodeClient:
             env_project_id=env_project,
             user_agent_model=model,
         )
-        # Persist discovered project back to the creds file so the next
-        # session doesn't re-run the discovery.
+        # 将发现的项目 ID 持久化到凭据文件中，
+        # 这样下次会话就不需要重新执行发现流程。
         if ctx.project_id or ctx.managed_project_id:
             google_oauth.update_project_ids(
                 project_id=ctx.project_id,
@@ -721,7 +719,7 @@ class GeminiCloudCodeClient:
         wrapped: Dict[str, Any],
         headers: Dict[str, str],
     ) -> Iterator[_GeminiStreamChunk]:
-        """Generator that yields OpenAI-shaped streaming chunks."""
+        """生成器，产出 OpenAI 格式的流式 chunk。"""
         url = f"{CODE_ASSIST_ENDPOINT}/v1internal:streamGenerateContent?alt=sse"
         stream_headers = dict(headers)
         stream_headers["Accept"] = "text/event-stream"
@@ -730,7 +728,7 @@ class GeminiCloudCodeClient:
             try:
                 with self._http.stream("POST", url, json=wrapped, headers=stream_headers) as response:
                     if response.status_code != 200:
-                        # Materialize error body for better diagnostics
+                        # 读取完整的错误响应体以获得更好的诊断信息
                         response.read()
                         raise _gemini_http_error(response)
                     tool_call_indices: Dict[str, int] = {}
@@ -752,7 +750,7 @@ def _gemini_http_error(response: httpx.Response) -> CodeAssistError:
         body = response.text[:500]
     except Exception:
         body = ""
-    # Let run_agent's retry logic see auth errors as rotatable via `api_key`
+    # 让 run_agent 的重试逻辑将认证错误识别为可通过 `api_key` 轮换的错误
     code = f"code_assist_http_{status}"
     if status == 401:
         code = "code_assist_unauthorized"

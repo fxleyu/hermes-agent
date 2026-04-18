@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
 """
-Memory Tool Module - Persistent Curated Memory
+记忆工具模块 - 持久化精选记忆
 
-Provides bounded, file-backed memory that persists across sessions. Two stores:
-  - MEMORY.md: agent's personal notes and observations (environment facts, project
-    conventions, tool quirks, things learned)
-  - USER.md: what the agent knows about the user (preferences, communication style,
-    expectations, workflow habits)
+提供有界的、基于文件的记忆存储，可跨会话持久化。两个存储区：
+  - MEMORY.md: 代理的个人笔记和观察（环境事实、项目约定、
+    工具特性、学到的知识）
+  - USER.md: 代理对用户的了解（偏好、沟通风格、
+    期望、工作流习惯）
 
-Both are injected into the system prompt as a frozen snapshot at session start.
-Mid-session writes update files on disk immediately (durable) but do NOT change
-the system prompt -- this preserves the prefix cache for the entire session.
-The snapshot refreshes on the next session start.
+两者在会话开始时作为冻结快照注入系统提示词中。
+会话中的写入操作会立即更新磁盘文件（持久化），但不会改变
+系统提示词 -- 这保证了整个会话期间前缀缓存的稳定性。
+快照在下次会话开始时刷新。
 
-Entry delimiter: § (section sign). Entries can be multiline.
-Character limits (not tokens) because char counts are model-independent.
+条目分隔符: § (节号)。条目可以是多行的。
+字符限制（非 token），因为字符计数不依赖于模型。
 
-Design:
-- Single `memory` tool with action parameter: add, replace, remove, read
-- replace/remove use short unique substring matching (not full text or IDs)
-- Behavioral guidance lives in the tool schema description
-- Frozen snapshot pattern: system prompt is stable, tool responses show live state
+设计要点:
+- 单一 `memory` 工具，通过 action 参数区分操作: add, replace, remove, read
+- replace/remove 使用简短唯一子字符串匹配（非全文或 ID）
+- 行为指导嵌入在工具 schema 描述中
+- 冻结快照模式: 系统提示词稳定不变，工具响应显示实时状态
 """
 
 import json
@@ -33,7 +33,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
-# fcntl is Unix-only; on Windows use msvcrt for file locking
+# fcntl 仅适用于 Unix 系统；在 Windows 上使用 msvcrt 进行文件锁定
 msvcrt = None
 try:
     import fcntl
@@ -46,41 +46,40 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Where memory files live — resolved dynamically so profile overrides
-# (HERMES_HOME env var changes) are always respected.  The old module-level
-# constant was cached at import time and could go stale if a profile switch
-# happened after the first import.
+# 记忆文件存储位置 — 动态解析，以确保配置文件覆盖
+# （HERMES_HOME 环境变量变更）始终被尊重。旧的模块级常量
+# 在导入时就被缓存，如果首次导入后发生配置文件切换可能会失效。
 def get_memory_dir() -> Path:
-    """Return the profile-scoped memories directory."""
+    """返回配置文件作用域的 memories 目录。"""
     return get_hermes_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
 
 
 # ---------------------------------------------------------------------------
-# Memory content scanning — lightweight check for injection/exfiltration
-# in content that gets injected into the system prompt.
+# 记忆内容扫描 — 轻量级检查注入/数据外泄，
+# 用于防护被注入系统提示词的内容。
 # ---------------------------------------------------------------------------
 
 _MEMORY_THREAT_PATTERNS = [
-    # Prompt injection
+    # 提示词注入攻击模式
     (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
     (r'you\s+are\s+now\s+', "role_hijack"),
     (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
     (r'system\s+prompt\s+override', "sys_prompt_override"),
     (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
     (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
-    # Exfiltration via curl/wget with secrets
+    # 通过 curl/wget 外泄密钥的模式
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
     (r'wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget"),
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)', "read_secrets"),
-    # Persistence via shell rc
+    # 通过 shell rc 文件进行持久化攻击
     (r'authorized_keys', "ssh_backdoor"),
     (r'\$HOME/\.ssh|\~/\.ssh', "ssh_access"),
     (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env', "hermes_env"),
 ]
 
-# Subset of invisible chars for injection detection
+# 用于注入检测的不可见字符子集
 _INVISIBLE_CHARS = {
     '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
     '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
@@ -88,13 +87,13 @@ _INVISIBLE_CHARS = {
 
 
 def _scan_memory_content(content: str) -> Optional[str]:
-    """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
-    # Check invisible unicode
+    """扫描记忆内容中的注入/外泄模式。如果被阻止则返回错误字符串。"""
+    # 检查不可见 Unicode 字符
     for char in _INVISIBLE_CHARS:
         if char in content:
             return f"Blocked: content contains invisible unicode character U+{ord(char):04X} (possible injection)."
 
-    # Check threat patterns
+    # 检查威胁模式
     for pattern, pid in _MEMORY_THREAT_PATTERNS:
         if re.search(pattern, content, re.IGNORECASE):
             return f"Blocked: content matches threat pattern '{pid}'. Memory entries are injected into the system prompt and must not contain injection or exfiltration payloads."
@@ -104,13 +103,13 @@ def _scan_memory_content(content: str) -> Optional[str]:
 
 class MemoryStore:
     """
-    Bounded curated memory with file persistence. One instance per AIAgent.
+    有界精选记忆存储，带文件持久化。每个 AIAgent 实例一个。
 
-    Maintains two parallel states:
-      - _system_prompt_snapshot: frozen at load time, used for system prompt injection.
-        Never mutated mid-session. Keeps prefix cache stable.
-      - memory_entries / user_entries: live state, mutated by tool calls, persisted to disk.
-        Tool responses always reflect this live state.
+    维护两个并行状态:
+      - _system_prompt_snapshot: 在加载时冻结，用于系统提示词注入。
+        会话中不会被修改。保持前缀缓存稳定。
+      - memory_entries / user_entries: 实时状态，由工具调用修改，持久化到磁盘。
+        工具响应始终反映此实时状态。
     """
 
     def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
@@ -118,22 +117,22 @@ class MemoryStore:
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
-        # Frozen snapshot for system prompt -- set once at load_from_disk()
+        # 冻结快照用于系统提示词 -- 在 load_from_disk() 时设置一次
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
     def load_from_disk(self):
-        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
+        """从 MEMORY.md 和 USER.md 加载条目，捕获系统提示词快照。"""
         mem_dir = get_memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
         self.user_entries = self._read_file(mem_dir / "USER.md")
 
-        # Deduplicate entries (preserves order, keeps first occurrence)
+        # 条目去重（保持顺序，保留首次出现）
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
 
-        # Capture frozen snapshot for system prompt injection
+        # 捕获冻结快照用于系统提示词注入
         self._system_prompt_snapshot = {
             "memory": self._render_block("memory", self.memory_entries),
             "user": self._render_block("user", self.user_entries),
@@ -142,18 +141,20 @@ class MemoryStore:
     @staticmethod
     @contextmanager
     def _file_lock(path: Path):
-        """Acquire an exclusive file lock for read-modify-write safety.
+        """获取排他文件锁，用于读-修改-写操作的安全性。
 
-        Uses a separate .lock file so the memory file itself can still be
-        atomically replaced via os.replace().
+        使用单独的 .lock 文件，这样记忆文件本身仍然可以
+        通过 os.replace() 进行原子替换。
         """
         lock_path = path.with_suffix(path.suffix + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # 若 fcntl 和 msvcrt 都不可用（跳过锁定）
         if fcntl is None and msvcrt is None:
             yield
             return
 
+        # Windows 上 msvcrt.locking 要求文件非空
         if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
             lock_path.write_text(" ", encoding="utf-8")
 
@@ -184,16 +185,16 @@ class MemoryStore:
         return mem_dir / "MEMORY.md"
 
     def _reload_target(self, target: str):
-        """Re-read entries from disk into in-memory state.
+        """从磁盘重新读取条目到内存状态。
 
-        Called under file lock to get the latest state before mutating.
+        在文件锁下调用，以便在修改前获取最新状态。
         """
         fresh = self._read_file(self._path_for(target))
-        fresh = list(dict.fromkeys(fresh))  # deduplicate
+        fresh = list(dict.fromkeys(fresh))  # 去重
         self._set_entries(target, fresh)
 
     def save_to_disk(self, target: str):
-        """Persist entries to the appropriate file. Called after every mutation."""
+        """将条目持久化到对应文件。每次修改后调用。"""
         get_memory_dir().mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
 
@@ -220,28 +221,28 @@ class MemoryStore:
         return self.memory_char_limit
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
-        """Append a new entry. Returns error if it would exceed the char limit."""
+        """追加一条新条目。如果超出字符限制则返回错误。"""
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
 
-        # Scan for injection/exfiltration before accepting
+        # 在接受内容前扫描注入/外泄模式
         scan_error = _scan_memory_content(content)
         if scan_error:
             return {"success": False, "error": scan_error}
 
         with self._file_lock(self._path_for(target)):
-            # Re-read from disk under lock to pick up writes from other sessions
+            # 在锁下从磁盘重新读取，以获取其他会话的写入
             self._reload_target(target)
 
             entries = self._entries_for(target)
             limit = self._char_limit(target)
 
-            # Reject exact duplicates
+            # 拒绝完全重复的条目
             if content in entries:
                 return self._success_response(target, "Entry already exists (no duplicate added).")
 
-            # Calculate what the new total would be
+            # 计算添加后的总字符数
             new_entries = entries + [content]
             new_total = len(ENTRY_DELIMITER.join(new_entries))
 
@@ -265,7 +266,7 @@ class MemoryStore:
         return self._success_response(target, "Entry added.")
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
-        """Find entry containing old_text substring, replace it with new_content."""
+        """查找包含 old_text 子字符串的条目，替换为 new_content。"""
         old_text = old_text.strip()
         new_content = new_content.strip()
         if not old_text:
@@ -273,7 +274,7 @@ class MemoryStore:
         if not new_content:
             return {"success": False, "error": "new_content cannot be empty. Use 'remove' to delete entries."}
 
-        # Scan replacement content for injection/exfiltration
+        # 扫描替换内容中的注入/外泄模式
         scan_error = _scan_memory_content(new_content)
         if scan_error:
             return {"success": False, "error": scan_error}
@@ -288,7 +289,7 @@ class MemoryStore:
                 return {"success": False, "error": f"No entry matched '{old_text}'."}
 
             if len(matches) > 1:
-                # If all matches are identical (exact duplicates), operate on the first one
+                # 如果所有匹配项都完全相同（精确重复），只操作第一个
                 unique_texts = set(e for _, e in matches)
                 if len(unique_texts) > 1:
                     previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
@@ -297,12 +298,12 @@ class MemoryStore:
                         "error": f"Multiple entries matched '{old_text}'. Be more specific.",
                         "matches": previews,
                     }
-                # All identical -- safe to replace just the first
+                # 所有条目完全相同 -- 安全地只替换第一个
 
             idx = matches[0][0]
             limit = self._char_limit(target)
 
-            # Check that replacement doesn't blow the budget
+            # 检查替换后是否会超出预算
             test_entries = entries.copy()
             test_entries[idx] = new_content
             new_total = len(ENTRY_DELIMITER.join(test_entries))
@@ -323,7 +324,7 @@ class MemoryStore:
         return self._success_response(target, "Entry replaced.")
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
-        """Remove the entry containing old_text substring."""
+        """删除包含 old_text 子字符串的条目。"""
         old_text = old_text.strip()
         if not old_text:
             return {"success": False, "error": "old_text cannot be empty."}
@@ -338,7 +339,7 @@ class MemoryStore:
                 return {"success": False, "error": f"No entry matched '{old_text}'."}
 
             if len(matches) > 1:
-                # If all matches are identical (exact duplicates), remove the first one
+                # 如果所有匹配项都完全相同（精确重复），只删除第一个
                 unique_texts = set(e for _, e in matches)
                 if len(unique_texts) > 1:
                     previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
@@ -347,7 +348,7 @@ class MemoryStore:
                         "error": f"Multiple entries matched '{old_text}'. Be more specific.",
                         "matches": previews,
                     }
-                # All identical -- safe to remove just the first
+                # 所有条目完全相同 -- 安全地只删除第一个
 
             idx = matches[0][0]
             entries.pop(idx)
@@ -358,18 +359,18 @@ class MemoryStore:
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """
-        Return the frozen snapshot for system prompt injection.
+        返回用于系统提示词注入的冻结快照。
 
-        This returns the state captured at load_from_disk() time, NOT the live
-        state. Mid-session writes do not affect this. This keeps the system
-        prompt stable across all turns, preserving the prefix cache.
+        返回的是 load_from_disk() 时捕获的状态，而非实时状态。
+        会话中的写入不影响此快照。这保证了系统提示词
+        在所有轮次中保持稳定，从而维护前缀缓存。
 
-        Returns None if the snapshot is empty (no entries at load time).
+        如果快照为空（加载时没有条目），则返回 None。
         """
         block = self._system_prompt_snapshot.get(target, "")
         return block if block else None
 
-    # -- Internal helpers --
+    # -- 内部辅助方法 --
 
     def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
         entries = self._entries_for(target)
@@ -389,7 +390,7 @@ class MemoryStore:
         return resp
 
     def _render_block(self, target: str, entries: List[str]) -> str:
-        """Render a system prompt block with header and usage indicator."""
+        """渲染系统提示词块，包含标题和使用量指示器。"""
         if not entries:
             return ""
 
@@ -408,10 +409,10 @@ class MemoryStore:
 
     @staticmethod
     def _read_file(path: Path) -> List[str]:
-        """Read a memory file and split into entries.
+        """读取记忆文件并拆分为条目列表。
 
-        No file locking needed: _write_file uses atomic rename, so readers
-        always see either the previous complete file or the new complete file.
+        无需文件锁: _write_file 使用原子重命名，因此读取方
+        始终看到的是之前的完整文件或新的完整文件。
         """
         if not path.exists():
             return []
@@ -423,23 +424,22 @@ class MemoryStore:
         if not raw.strip():
             return []
 
-        # Use ENTRY_DELIMITER for consistency with _write_file. Splitting by "§"
-        # alone would incorrectly split entries that contain "§" in their content.
+        # 使用 ENTRY_DELIMITER 分割以保持与 _write_file 的一致性。
+        # 仅按 "§" 分割会错误地拆分内容中包含 "§" 的条目。
         entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
         return [e for e in entries if e]
 
     @staticmethod
     def _write_file(path: Path, entries: List[str]):
-        """Write entries to a memory file using atomic temp-file + rename.
+        """使用原子临时文件 + 重命名方式将条目写入记忆文件。
 
-        Previous implementation used open("w") + flock, but "w" truncates the
-        file *before* the lock is acquired, creating a race window where
-        concurrent readers see an empty file. Atomic rename avoids this:
-        readers always see either the old complete file or the new one.
+        之前的实现使用 open("w") + flock，但 "w" 模式在获取锁之前
+        就会截断文件，造成一个竞态窗口，并发读取方会看到空文件。
+        原子重命名避免了这个问题：读取方始终看到旧的完整文件或新的完整文件。
         """
         content = ENTRY_DELIMITER.join(entries) if entries else ""
         try:
-            # Write to temp file in same directory (same filesystem for atomic rename)
+            # 在同一目录下写入临时文件（同一文件系统上才能原子重命名）
             fd, tmp_path = tempfile.mkstemp(
                 dir=str(path.parent), suffix=".tmp", prefix=".mem_"
             )
@@ -448,9 +448,9 @@ class MemoryStore:
                     f.write(content)
                     f.flush()
                     os.fsync(f.fileno())
-                os.replace(tmp_path, str(path))  # Atomic on same filesystem
+                os.replace(tmp_path, str(path))  # 在同一文件系统上是原子操作
             except BaseException:
-                # Clean up temp file on any failure
+                # 失败时清理临时文件
                 try:
                     os.unlink(tmp_path)
                 except OSError:
@@ -468,9 +468,9 @@ def memory_tool(
     store: Optional[MemoryStore] = None,
 ) -> str:
     """
-    Single entry point for the memory tool. Dispatches to MemoryStore methods.
+    记忆工具的单一入口点。分发到 MemoryStore 的各个方法。
 
-    Returns JSON string with results.
+    返回包含结果的 JSON 字符串。
     """
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
@@ -502,12 +502,12 @@ def memory_tool(
 
 
 def check_memory_requirements() -> bool:
-    """Memory tool has no external requirements -- always available."""
+    """记忆工具没有外部依赖 -- 始终可用。"""
     return True
 
 
 # =============================================================================
-# OpenAI Function-Calling Schema
+# OpenAI 函数调用 Schema 定义
 # =============================================================================
 
 MEMORY_SCHEMA = {
@@ -562,7 +562,7 @@ MEMORY_SCHEMA = {
 }
 
 
-# --- Registry ---
+# --- 工具注册 ---
 from tools.registry import registry, tool_error
 
 registry.register(

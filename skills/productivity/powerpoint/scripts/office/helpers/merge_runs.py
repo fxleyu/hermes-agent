@@ -1,11 +1,11 @@
-"""Merge adjacent runs with identical formatting in DOCX.
+"""合并 DOCX 中具有相同格式的相邻 run 元素。
 
-Merges adjacent <w:r> elements that have identical <w:rPr> properties.
-Works on runs in paragraphs and inside tracked changes (<w:ins>, <w:del>).
+合并具有相同 <w:rPr> 属性的相邻 <w:r> 元素。
+适用于段落中的 run 以及修订跟踪内的 run（<w:ins>、<w:del>）。
 
-Also:
-- Removes rsid attributes from runs (revision metadata that doesn't affect rendering)
-- Removes proofErr elements (spell/grammar markers that block merging)
+同时:
+- 移除 run 中的 rsid 属性（不影响渲染的修订元数据）
+- 移除 proofErr 元素（阻碍合并的拼写/语法标记）
 """
 
 from pathlib import Path

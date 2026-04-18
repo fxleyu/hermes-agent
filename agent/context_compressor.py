@@ -1,20 +1,19 @@
-"""Automatic context window compression for long conversations.
+"""长对话的自动上下文窗口压缩。
 
-Self-contained class with its own OpenAI client for summarization.
-Uses auxiliary model (cheap/fast) to summarize middle turns while
-protecting head and tail context.
+自包含类，拥有自己的 OpenAI 客户端用于摘要生成。
+使用辅助模型（廉价/快速）来总结中间轮次，同时保护头部和尾部上下文。
 
-Improvements over v2:
-  - Structured summary template with Resolved/Pending question tracking
-  - Summarizer preamble: "Do not respond to any questions" (from OpenCode)
-  - Handoff framing: "different assistant" (from Codex) to create separation
-  - "Remaining Work" replaces "Next Steps" to avoid reading as active instructions
-  - Clear separator when summary merges into tail message
-  - Iterative summary updates (preserves info across multiple compactions)
-  - Token-budget tail protection instead of fixed message count
-  - Tool output pruning before LLM summarization (cheap pre-pass)
-  - Scaled summary budget (proportional to compressed content)
-  - Richer tool call/result detail in summarizer input
+相对于 v2 的改进：
+  - 带有已解决/待解决问题跟踪的结构化摘要模板
+  - 摘要器前导语："Do not respond to any questions"（来自 OpenCode）
+  - 交接框架："different assistant"（来自 Codex）以创建分隔
+  - "Remaining Work" 替换 "Next Steps" 以避免被解读为活跃指令
+  - 摘要合并到尾部消息时有清晰的分隔符
+  - 迭代式摘要更新（跨多次压缩保留信息）
+  - 基于令牌预算的尾部保护替代固定消息数
+  - LLM 摘要之前先修剪工具输出（廉价的预处理）
+  - 按比例缩放的摘要预算（与被压缩内容成比例）
+  - 摘要器输入中更丰富的工具调用/结果详情
 """
 
 import hashlib
@@ -48,29 +47,28 @@ SUMMARY_PREFIX = (
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
-# Minimum tokens for the summary output
+# 摘要输出的最小令牌数
 _MIN_SUMMARY_TOKENS = 2000
-# Proportion of compressed content to allocate for summary
+# 分配给摘要的被压缩内容比例
 _SUMMARY_RATIO = 0.20
-# Absolute ceiling for summary tokens (even on very large context windows)
+# 摘要令牌的绝对上限（即使在非常大的上下文窗口上）
 _SUMMARY_TOKENS_CEILING = 12_000
 
-# Placeholder used when pruning old tool results
+# 修剪旧工具结果时使用的占位符
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
-# Chars per token rough estimate
+# 每个令牌的大致字符数估算
 _CHARS_PER_TOKEN = 4
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 
 
 def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) -> str:
-    """Create an informative 1-line summary of a tool call + result.
+    """创建工具调用 + 结果的信息性单行摘要。
 
-    Used during the pre-compression pruning pass to replace large tool
-    outputs with a short but useful description of what the tool did,
-    rather than a generic placeholder that carries zero information.
+    在预压缩修剪过程中使用，将大型工具输出替换为简短但有用的描述，
+    说明工具做了什么，而不是使用不携带任何信息的通用占位符。
 
-    Returns strings like::
+    返回类似如下的字符串：
 
         [terminal] ran `npm test` -> exit 0, 47 lines output
         [read_file] read config.py from line 1 (1,200 chars)
@@ -177,7 +175,7 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         sid = args.get("session_id", "?")
         return f"[process] {action} session={sid}"
 
-    # Generic fallback
+    # 通用回退
     first_arg = ""
     for k, v in list(args.items())[:2]:
         sv = str(v)[:40]
@@ -186,14 +184,14 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
 
 
 class ContextCompressor(ContextEngine):
-    """Default context engine — compresses conversation context via lossy summarization.
+    """默认上下文引擎 — 通过有损摘要压缩对话上下文。
 
-    Algorithm:
-      1. Prune old tool results (cheap, no LLM call)
-      2. Protect head messages (system prompt + first exchange)
-      3. Protect tail messages by token budget (most recent ~20K tokens)
-      4. Summarize middle turns with structured LLM prompt
-      5. On subsequent compactions, iteratively update the previous summary
+    算法：
+      1. 修剪旧的工具结果（廉价操作，无 LLM 调用）
+      2. 保护头部消息（系统提示 + 第一次对话交换）
+      3. 通过令牌预算保护尾部消息（最近约 20K 令牌）
+      4. 用结构化 LLM 提示总结中间轮次
+      5. 在后续压缩时，迭代更新之前的摘要
     """
 
     @property
@@ -201,7 +199,7 @@ class ContextCompressor(ContextEngine):
         return "compressor"
 
     def on_session_reset(self) -> None:
-        """Reset all per-session state for /new or /reset."""
+        """重置 /new 或 /reset 的所有会话状态。"""
         super().on_session_reset()
         self._context_probed = False
         self._context_probe_persistable = False
@@ -218,7 +216,7 @@ class ContextCompressor(ContextEngine):
         provider: str = "",
         api_mode: str = "",
     ) -> None:
-        """Update model info after a model switch or fallback activation."""
+        """在模型切换或回退激活后更新模型信息。"""
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
@@ -261,17 +259,16 @@ class ContextCompressor(ContextEngine):
             config_context_length=config_context_length,
             provider=provider,
         )
-        # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even if
-        # the percentage would suggest a lower value.  This prevents premature
-        # compression on large-context models at 50% while keeping the % sane
-        # for models right at the minimum.
+        # 下限：即使百分比建议更低的值，也永远不会在低于 MINIMUM_CONTEXT_LENGTH
+        # 令牌时压缩。这防止在 50% 时对大上下文模型过早压缩，同时保持 %
+        # 对处于最低限值的模型合理。
         self.threshold_tokens = max(
             int(self.context_length * threshold_percent),
             MINIMUM_CONTEXT_LENGTH,
         )
         self.compression_count = 0
 
-        # Derive token budgets: ratio is relative to the threshold, not total context
+        # 推导令牌预算：比率相对于阈值，而非总上下文
         target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
         self.tail_token_budget = target_tokens
         self.max_summary_tokens = min(
@@ -288,36 +285,35 @@ class ContextCompressor(ContextEngine):
                 self.tail_token_budget,
                 provider or "none", base_url or "none",
             )
-        self._context_probed = False  # True after a step-down from context error
+        self._context_probed = False  # 在上下文错误降级后为 True
 
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
 
         self.summary_model = summary_model_override or ""
 
-        # Stores the previous compaction summary for iterative updates
+        # 存储之前的压缩摘要以进行迭代更新
         self._previous_summary: Optional[str] = None
-        # Anti-thrashing: track whether last compression was effective
+        # 防抖动：跟踪上次压缩是否有效
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
         self._summary_failure_cooldown_until: float = 0.0
 
     def update_from_response(self, usage: Dict[str, Any]):
-        """Update tracked token usage from API response."""
+        """从 API 响应更新跟踪的令牌使用量。"""
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
         self.last_completion_tokens = usage.get("completion_tokens", 0)
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
-        """Check if context exceeds the compression threshold.
+        """检查上下文是否超过压缩阈值。
 
-        Includes anti-thrashing protection: if the last two compressions
-        each saved less than 10%, skip compression to avoid infinite loops
-        where each pass removes only 1-2 messages.
+        包含防抖动保护：如果最近两次压缩各自节省不到 10%，
+        则跳过压缩以避免每次只移除 1-2 条消息的无限循环。
         """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
             return False
-        # Anti-thrashing: back off if recent compressions were ineffective
+        # 防抖动：如果最近的压缩无效则退避
         if self._ineffective_compression_count >= 2:
             if not self.quiet_mode:
                 logger.warning(
@@ -330,31 +326,28 @@ class ContextCompressor(ContextEngine):
         return True
 
     # ------------------------------------------------------------------
-    # Tool output pruning (cheap pre-pass, no LLM call)
+    # 工具输出修剪（廉价预处理，无 LLM 调用）
     # ------------------------------------------------------------------
 
     def _prune_old_tool_results(
         self, messages: List[Dict[str, Any]], protect_tail_count: int,
         protect_tail_tokens: int | None = None,
     ) -> tuple[List[Dict[str, Any]], int]:
-        """Replace old tool result contents with informative 1-line summaries.
+        """将旧的工具结果内容替换为信息性的单行摘要。
 
-        Instead of a generic placeholder, generates a summary like::
+        生成如下摘要而非通用占位符：
 
             [terminal] ran `npm test` -> exit 0, 47 lines output
             [read_file] read config.py from line 1 (3,400 chars)
 
-        Also deduplicates identical tool results (e.g. reading the same file
-        5x keeps only the newest full copy) and truncates large tool_call
-        arguments in assistant messages outside the protected tail.
+        还会去重相同的工具结果（例如同一文件读取 5 次只保留最新的完整副本），
+        并截断受保护尾部之外的 assistant 消息中的大型 tool_call 参数。
 
-        Walks backward from the end, protecting the most recent messages that
-        fall within ``protect_tail_tokens`` (when provided) OR the last
-        ``protect_tail_count`` messages (backward-compatible default).
-        When both are given, the token budget takes priority and the message
-        count acts as a hard minimum floor.
+        从末尾向前遍历，保护落在 ``protect_tail_tokens`` 内的最近消息
+        （当提供时），或最后 ``protect_tail_count`` 条消息（向后兼容默认值）。
+        当两者都提供时，令牌预算优先，消息数作为硬性最小下限。
 
-        Returns (pruned_messages, pruned_count).
+        返回 (pruned_messages, pruned_count)。
         """
         if not messages:
             return messages, 0
@@ -362,7 +355,7 @@ class ContextCompressor(ContextEngine):
         result = [m.copy() for m in messages]
         pruned = 0
 
-        # Build index: tool_call_id -> (tool_name, arguments_json)
+        # 构建索引：tool_call_id -> (tool_name, arguments_json)
         call_id_to_tool: Dict[str, tuple] = {}
         for msg in result:
             if msg.get("role") == "assistant":
@@ -378,9 +371,9 @@ class ContextCompressor(ContextEngine):
                         args_str = getattr(fn, "arguments", "") if fn else ""
                         call_id_to_tool[cid] = (name, args_str)
 
-        # Determine the prune boundary
+        # 确定修剪边界
         if protect_tail_tokens is not None and protect_tail_tokens > 0:
-            # Token-budget approach: walk backward accumulating tokens
+            # 令牌预算方法：向后遍历累积令牌
             accumulated = 0
             boundary = len(result)
             min_protect = min(protect_tail_count, len(result) - 1)
@@ -402,43 +395,43 @@ class ContextCompressor(ContextEngine):
         else:
             prune_boundary = len(result) - protect_tail_count
 
-        # Pass 1: Deduplicate identical tool results.
-        # When the same file is read multiple times, keep only the most recent
-        # full copy and replace older duplicates with a back-reference.
+        # 第 1 轮：去重相同的工具结果。
+        # 当同一文件被多次读取时，只保留最近的完整副本，
+        # 将较旧的重复替换为反向引用。
         content_hashes: dict = {}  # hash -> (index, tool_call_id)
         for i in range(len(result) - 1, -1, -1):
             msg = result[i]
             if msg.get("role") != "tool":
                 continue
             content = msg.get("content") or ""
-            # Skip multimodal content (list of content blocks)
+            # 跳过多模态内容（内容块列表）
             if isinstance(content, list):
                 continue
             if len(content) < 200:
                 continue
             h = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:12]
             if h in content_hashes:
-                # This is an older duplicate — replace with back-reference
+                # 这是较旧的重复 — 替换为反向引用
                 result[i] = {**msg, "content": "[Duplicate tool output — same content as a more recent call]"}
                 pruned += 1
             else:
                 content_hashes[h] = (i, msg.get("tool_call_id", "?"))
 
-        # Pass 2: Replace old tool results with informative summaries
+        # 第 2 轮：将旧的工具结果替换为信息性摘要
         for i in range(prune_boundary):
             msg = result[i]
             if msg.get("role") != "tool":
                 continue
             content = msg.get("content", "")
-            # Skip multimodal content (list of content blocks)
+            # 跳过多模态内容（内容块列表）
             if isinstance(content, list):
                 continue
             if not content or content == _PRUNED_TOOL_PLACEHOLDER:
                 continue
-            # Skip already-deduplicated or previously-summarized results
+            # 跳过已去重或之前已摘要的结果
             if content.startswith("[Duplicate tool output"):
                 continue
-            # Only prune if the content is substantial (>200 chars)
+            # 仅当内容较大（>200字符）时才修剪
             if len(content) > 200:
                 call_id = msg.get("tool_call_id", "")
                 tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
@@ -446,9 +439,8 @@ class ContextCompressor(ContextEngine):
                 result[i] = {**msg, "content": summary}
                 pruned += 1
 
-        # Pass 3: Truncate large tool_call arguments in assistant messages
-        # outside the protected tail. write_file with 50KB content, for
-        # example, survives pruning entirely without this.
+        # 第 3 轮：截断受保护尾部之外的 assistant 消息中的大型 tool_call 参数。
+        # 例如包含 50KB 内容的 write_file 如果没有这一步会完全存活。
         for i in range(prune_boundary):
             msg = result[i]
             if msg.get("role") != "assistant" or not msg.get("tool_calls"):
@@ -468,42 +460,40 @@ class ContextCompressor(ContextEngine):
         return result, pruned
 
     # ------------------------------------------------------------------
-    # Summarization
+    # 摘要生成
     # ------------------------------------------------------------------
 
     def _compute_summary_budget(self, turns_to_summarize: List[Dict[str, Any]]) -> int:
-        """Scale summary token budget with the amount of content being compressed.
+        """根据被压缩内容的量按比例缩放摘要令牌预算。
 
-        The maximum scales with the model's context window (5% of context,
-        capped at ``_SUMMARY_TOKENS_CEILING``) so large-context models get
-        richer summaries instead of being hard-capped at 8K tokens.
+        最大值随模型的上下文窗口缩放（上下文的 5%，上限为
+        ``_SUMMARY_TOKENS_CEILING``），因此大上下文模型会获得更丰富的摘要，
+        而不是被硬限制在 8K 令牌。
         """
         content_tokens = estimate_messages_tokens_rough(turns_to_summarize)
         budget = int(content_tokens * _SUMMARY_RATIO)
         return max(_MIN_SUMMARY_TOKENS, min(budget, self.max_summary_tokens))
 
-    # Truncation limits for the summarizer input.  These bound how much of
-    # each message the summary model sees — the budget is the *summary*
-    # model's context window, not the main model's.
-    _CONTENT_MAX = 6000       # total chars per message body
-    _CONTENT_HEAD = 4000      # chars kept from the start
-    _CONTENT_TAIL = 1500      # chars kept from the end
-    _TOOL_ARGS_MAX = 1500     # tool call argument chars
-    _TOOL_ARGS_HEAD = 1200    # kept from the start of tool args
+    # 摘要器输入的截断限制。这些限制了摘要模型看到的每条消息的内容量
+    # — 预算是*摘要*模型的上下文窗口，不是主模型的。
+    _CONTENT_MAX = 6000       # 每条消息体的总字符数
+    _CONTENT_HEAD = 4000      # 从开头保留的字符数
+    _CONTENT_TAIL = 1500      # 从末尾保留的字符数
+    _TOOL_ARGS_MAX = 1500     # 工具调用参数的字符数
+    _TOOL_ARGS_HEAD = 1200    # 从工具参数开头保留的字符数
 
     def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
-        """Serialize conversation turns into labeled text for the summarizer.
+        """将对话轮次序列化为标注文本，供摘要器使用。
 
-        Includes tool call arguments and result content (up to
-        ``_CONTENT_MAX`` chars per message) so the summarizer can preserve
-        specific details like file paths, commands, and outputs.
+        包含工具调用参数和结果内容（每条消息最多 ``_CONTENT_MAX`` 字符），
+        以便摘要器可以保留文件路径、命令和输出等具体细节。
         """
         parts = []
         for msg in turns:
             role = msg.get("role", "unknown")
             content = msg.get("content") or ""
 
-            # Tool results: keep enough content for the summarizer
+            # 工具结果：保留足够的内容供摘要器使用
             if role == "tool":
                 tool_id = msg.get("tool_call_id", "")
                 if len(content) > self._CONTENT_MAX:
@@ -511,7 +501,7 @@ class ContextCompressor(ContextEngine):
                 parts.append(f"[TOOL RESULT {tool_id}]: {content}")
                 continue
 
-            # Assistant messages: include tool call names AND arguments
+            # Assistant 消息：包含工具调用名称和参数
             if role == "assistant":
                 if len(content) > self._CONTENT_MAX:
                     content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
@@ -523,7 +513,7 @@ class ContextCompressor(ContextEngine):
                             fn = tc.get("function", {})
                             name = fn.get("name", "?")
                             args = fn.get("arguments", "")
-                            # Truncate long arguments but keep enough for context
+                            # 截断长参数但保留足够的上下文
                             if len(args) > self._TOOL_ARGS_MAX:
                                 args = args[:self._TOOL_ARGS_HEAD] + "..."
                             tc_parts.append(f"  {name}({args})")
@@ -535,7 +525,7 @@ class ContextCompressor(ContextEngine):
                 parts.append(f"[ASSISTANT]: {content}")
                 continue
 
-            # User and other roles
+            # User 和其他角色
             if len(content) > self._CONTENT_MAX:
                 content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
             parts.append(f"[{role.upper()}]: {content}")
@@ -543,22 +533,19 @@ class ContextCompressor(ContextEngine):
         return "\n\n".join(parts)
 
     def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None) -> Optional[str]:
-        """Generate a structured summary of conversation turns.
+        """生成对话轮次的结构化摘要。
 
-        Uses a structured template (Goal, Progress, Decisions, Resolved/Pending
-        Questions, Files, Remaining Work) with explicit preamble telling the
-        summarizer not to answer questions.  When a previous summary exists,
-        generates an iterative update instead of summarizing from scratch.
+        使用结构化模板（目标、进展、决策、已解决/待解决问题、文件、
+        剩余工作）并带有明确的前导语告诉摘要器不要回答问题。
+        当存在之前的摘要时，生成迭代更新而非从头摘要。
 
-        Args:
-            focus_topic: Optional focus string for guided compression.  When
-                provided, the summariser prioritises preserving information
-                related to this topic and is more aggressive about compressing
-                everything else.  Inspired by Claude Code's ``/compact``.
+        参数：
+            focus_topic：可选的聚焦字符串，用于引导压缩。提供时，
+                摘要器会优先保留与此主题相关的信息，并对其他内容更
+                积极地压缩。灵感来自 Claude Code 的 ``/compact``。
 
-        Returns None if all attempts fail — the caller should drop
-        the middle turns without a summary rather than inject a useless
-        placeholder.
+        如果所有尝试都失败则返回 None — 调用者应直接丢弃中间轮次
+        而不是注入无用的占位符。
         """
         now = time.monotonic()
         if now < self._summary_failure_cooldown_until:
@@ -571,9 +558,9 @@ class ContextCompressor(ContextEngine):
         summary_budget = self._compute_summary_budget(turns_to_summarize)
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
 
-        # Preamble shared by both first-compaction and iterative-update prompts.
-        # Inspired by OpenCode's "do not respond to any questions" instruction
-        # and Codex's "another language model" framing.
+        # 首次压缩和迭代更新提示共享的前导语。
+        # 灵感来自 OpenCode 的 "do not respond to any questions" 指令
+        # 和 Codex 的 "another language model" 框架。
         _summarizer_preamble = (
             "You are a summarization agent creating a context checkpoint. "
             "Your output will be injected as reference material for a DIFFERENT "
@@ -583,7 +570,7 @@ class ContextCompressor(ContextEngine):
             "Do NOT include any preamble, greeting, or prefix."
         )
 
-        # Shared structured template (used by both paths).
+        # 共享的结构化模板（两条路径都使用）。
         _template_sections = f"""## Active Task
 [THE SINGLE MOST IMPORTANT FIELD. Copy the user's most recent request or
 task assignment verbatim — the exact words they used. If multiple tasks
@@ -644,7 +631,7 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
 Write only the summary body. Do not include any preamble or prefix."""
 
         if self._previous_summary:
-            # Iterative update: preserve existing info, add new progress
+            # 迭代更新：保留已有信息，添加新进展
             prompt = f"""{_summarizer_preamble}
 
 You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.
@@ -659,7 +646,7 @@ Update the summary using this exact structure. PRESERVE all existing information
 
 {_template_sections}"""
         else:
-            # First compaction: summarize from scratch
+            # 首次压缩：从头开始摘要
             prompt = f"""{_summarizer_preamble}
 
 Create a structured handoff summary for a different assistant that will continue this conversation after earlier turns are compacted. The next assistant should be able to understand what happened without re-reading the original turns.

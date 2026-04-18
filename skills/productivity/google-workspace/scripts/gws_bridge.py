@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Bridge between Hermes OAuth token and gws CLI.
+"""Hermes OAuth 令牌与 gws CLI 之间的桥接。
 
-Refreshes the token if expired, then executes gws with the valid access token.
+如果令牌过期则刷新，然后使用有效的访问令牌执行 gws。
 """
 import json
 import os
@@ -27,7 +27,7 @@ def _normalize_authorized_user_payload(payload: dict) -> dict:
 
 
 def refresh_token(token_data: dict) -> dict:
-    """Refresh the access token using the refresh token."""
+    """使用刷新令牌来刷新访问令牌。"""
     import urllib.error
     import urllib.parse
     import urllib.request
@@ -69,7 +69,7 @@ def refresh_token(token_data: dict) -> dict:
 
 
 def get_valid_token() -> str:
-    """Return a valid access token, refreshing if needed."""
+    """返回有效的访问令牌，必要时刷新。"""
     token_path = get_token_path()
     if not token_path.exists():
         print("ERROR: No Google token found. Run setup.py --auth-url first.", file=sys.stderr)
@@ -88,7 +88,7 @@ def get_valid_token() -> str:
 
 
 def main():
-    """Refresh token if needed, then exec gws with remaining args."""
+    """如需刷新令牌，然后使用剩余参数执行 gws。"""
     if len(sys.argv) < 2:
         print("Usage: gws_bridge.py <gws args...>", file=sys.stderr)
         sys.exit(1)

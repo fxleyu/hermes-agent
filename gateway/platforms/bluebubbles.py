@@ -1,11 +1,11 @@
-"""BlueBubbles iMessage platform adapter.
+"""BlueBubbles iMessage 平台适配器。
 
-Uses the local BlueBubbles macOS server for outbound REST sends and inbound
-webhooks.  Supports text messaging, media attachments (images, voice, video,
-documents), tapback reactions, typing indicators, and read receipts.
+使用本地 BlueBubbles macOS 服务器进行出站 REST 发送和入站
+Webhook 接收。支持文本消息、媒体附件（图片、语音、视频、
+文档）、Tapback 表情回应、输入指示器和已读回执。
 
-Architecture based on PR #5869 (benjaminsehl) with inbound attachment
-downloading from PR #4588 (YuhangLin).
+架构基于 PR #5869 (benjaminsehl)，入站附件下载
+来自 PR #4588 (YuhangLin)。
 """
 
 import asyncio
@@ -35,7 +35,7 @@ from gateway.platforms.helpers import strip_markdown
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Constants
+# 常量
 # ---------------------------------------------------------------------------
 
 DEFAULT_WEBHOOK_HOST = "127.0.0.1"
@@ -43,7 +43,7 @@ DEFAULT_WEBHOOK_PORT = 8645
 DEFAULT_WEBHOOK_PATH = "/bluebubbles-webhook"
 MAX_TEXT_LENGTH = 4000
 
-# Tapback reaction codes (BlueBubbles associatedMessageType values)
+# Tapback 表情回应代码（BlueBubbles associatedMessageType 值）
 _TAPBACK_ADDED = {
     2000: "love", 2001: "like", 2002: "dislike",
     2003: "laugh", 2004: "emphasize", 2005: "question",
@@ -53,23 +53,23 @@ _TAPBACK_REMOVED = {
     3003: "laugh", 3004: "emphasize", 3005: "question",
 }
 
-# Webhook event types that carry user messages
+# 携带用户消息的 Webhook 事件类型
 _MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
 
-# Log redaction patterns
+# 日志脱敏正则表达式
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 
 
 def _redact(text: str) -> str:
-    """Redact phone numbers and emails from log output."""
+    """从日志输出中脱敏电话号码和邮箱地址。"""
     text = _PHONE_RE.sub("[REDACTED]", text)
     text = _EMAIL_RE.sub("[REDACTED]", text)
     return text
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# 辅助函数
 # ---------------------------------------------------------------------------
 
 def check_bluebubbles_requirements() -> bool:
@@ -94,7 +94,7 @@ def _normalize_server_url(raw: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Adapter
+# 适配器
 # ---------------------------------------------------------------------------
 
 class BlueBubblesAdapter(BasePlatformAdapter):
@@ -130,7 +130,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._guid_cache: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
-    # API helpers
+    # API 辅助方法
     # ------------------------------------------------------------------
 
     def _api_url(self, path: str) -> str:
@@ -150,7 +150,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return res.json()
 
     # ------------------------------------------------------------------
-    # Lifecycle
+    # 生命周期
     # ------------------------------------------------------------------
 
     async def connect(self) -> bool:
@@ -198,14 +198,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             self.webhook_path,
         )
 
-        # Register webhook with BlueBubbles server
-        # This is required for the server to know where to send events
+        # 向 BlueBubbles 服务器注册 webhook
+        # 服务器需要知道将事件发送到哪里
         await self._register_webhook()
 
         return True
 
     async def disconnect(self) -> None:
-        # Unregister webhook before cleaning up
+        # 断开连接前先注销 webhook
         await self._unregister_webhook()
 
         if self.client:
@@ -218,7 +218,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     @property
     def _webhook_url(self) -> str:
-        """Compute the external webhook URL for BlueBubbles registration."""
+        """计算用于 BlueBubbles 注册的外部 webhook URL。"""
         host = self.webhook_host
         if host in ("0.0.0.0", "127.0.0.1", "localhost", "::"):
             host = "localhost"
@@ -226,13 +226,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     @property
     def _webhook_register_url(self) -> str:
-        """Webhook URL registered with BlueBubbles, including the password as
-        a query param so inbound webhook POSTs carry credentials.
+        """向 BlueBubbles 注册的 webhook URL，包含密码作为
+        查询参数，以便入站 webhook POST 携带认证凭据。
 
-        BlueBubbles posts events to the exact URL registered via
-        ``/api/v1/webhook``. Its webhook registration API does not support
-        custom headers, so embedding the password in the URL is the only
-        way to authenticate inbound webhooks without disabling auth.
+        BlueBubbles 将事件发送到通过 ``/api/v1/webhook`` 注册的
+        确切 URL。其 webhook 注册 API 不支持自定义头部，因此
+        将密码嵌入 URL 是在不禁用认证的情况下验证入站 webhook
+        的唯一方式。
         """
         base = self._webhook_url
         if self.password:
@@ -240,7 +240,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return base
 
     async def _find_registered_webhooks(self, url: str) -> list:
-        """Return list of BB webhook entries matching *url*."""
+        """返回匹配 *url* 的 BB webhook 注册条目列表。"""
         try:
             res = await self._api_get("/api/v1/webhook")
             data = res.get("data")
@@ -251,18 +251,18 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return []
 
     async def _register_webhook(self) -> bool:
-        """Register this webhook URL with the BlueBubbles server.
+        """向 BlueBubbles 服务器注册本 webhook URL。
 
-        BlueBubbles requires webhooks to be registered via API before
-        it will send events.  Checks for an existing registration first
-        to avoid duplicates (e.g. after a crash without clean shutdown).
+        BlueBubbles 要求先通过 API 注册 webhook 才会发送事件。
+        首先检查是否已有注册记录，避免重复注册（例如崩溃后
+        未正常关闭的情况）。
         """
         if not self.client:
             return False
 
         webhook_url = self._webhook_register_url
 
-        # Crash resilience — reuse an existing registration if present
+        # 崩溃恢复 - 如果已有注册记录则复用
         existing = await self._find_registered_webhooks(webhook_url)
         if existing:
             logger.info(
@@ -299,10 +299,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return False
 
     async def _unregister_webhook(self) -> bool:
-        """Unregister this webhook URL from the BlueBubbles server.
+        """从 BlueBubbles 服务器注销本 webhook URL。
 
-        Removes *all* matching registrations to clean up any duplicates
-        left by prior crashes.
+        移除*所有*匹配的注册记录，以清理之前崩溃
+        留下的重复记录。
         """
         if not self.client:
             return False
@@ -331,21 +331,21 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return removed
 
     # ------------------------------------------------------------------
-    # Chat GUID resolution
+    # 聊天 GUID 解析
     # ------------------------------------------------------------------
 
     async def _resolve_chat_guid(self, target: str) -> Optional[str]:
-        """Resolve an email/phone to a BlueBubbles chat GUID.
+        """将邮箱/电话号码解析为 BlueBubbles 聊天 GUID。
 
-        If *target* already contains a semicolon (raw GUID format like
-        ``iMessage;-;user@example.com``), it is returned as-is.  Otherwise
-        the adapter queries the BlueBubbles chat list and matches on
-        ``chatIdentifier`` or participant address.
+        如果 *target* 已包含分号（原始 GUID 格式如
+        ``iMessage;-;user@example.com``），则直接返回。否则
+        适配器查询 BlueBubbles 聊天列表，通过
+        ``chatIdentifier`` 或参与者地址进行匹配。
         """
         target = (target or "").strip()
         if not target:
             return None
-        # Already a raw GUID
+        # 已经是原始 GUID
         if ";" in target:
             return target
         if target in self._guid_cache:
@@ -373,7 +373,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     async def _create_chat_for_handle(
         self, address: str, message: str
     ) -> SendResult:
-        """Create a new chat by sending the first message to *address*."""
+        """通过向 *address* 发送第一条消息来创建新聊天。"""
         payload = {
             "addresses": [address],
             "message": message,
@@ -388,7 +388,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     # ------------------------------------------------------------------
-    # Text sending
+    # 文本发送
     # ------------------------------------------------------------------
 
     async def send(
@@ -406,7 +406,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         for chunk in chunks:
             guid = await self._resolve_chat_guid(chat_id)
             if not guid:
-                # If the target looks like an address, try creating a new chat
+                # 如果目标看起来像一个地址，尝试创建新聊天
                 if self._private_api_enabled and (
                     "@" in chat_id or re.match(r"^\+\d+", chat_id)
                 ):
@@ -436,7 +436,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return last
 
     # ------------------------------------------------------------------
-    # Media sending (outbound)
+    # 媒体发送（出站）
     # ------------------------------------------------------------------
 
     async def _send_attachment(
@@ -447,7 +447,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         is_audio_message: bool = False,
     ) -> SendResult:
-        """Send a file attachment via BlueBubbles multipart upload."""
+        """通过 BlueBubbles 分段上传发送文件附件。"""
         if not self.client:
             return SendResult(success=False, error="Not connected")
         if not os.path.isfile(file_path):
@@ -567,7 +567,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         )
 
     # ------------------------------------------------------------------
-    # Typing indicators
+    # 输入指示器
     # ------------------------------------------------------------------
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
@@ -597,7 +597,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             pass
 
     # ------------------------------------------------------------------
-    # Read receipts
+    # 已读回执
     # ------------------------------------------------------------------
 
     async def mark_read(self, chat_id: str) -> bool:
@@ -616,11 +616,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return False
 
     # ------------------------------------------------------------------
-    # Tapback reactions
+    # Tapback 表情回应
     # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------
-    # Chat info
+    # 聊天信息
     # ------------------------------------------------------------------
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
@@ -658,15 +658,15 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return strip_markdown(content)
 
     # ------------------------------------------------------------------
-    # Inbound attachment downloading (from #4588)
+    # 入站附件下载（来自 #4588）
     # ------------------------------------------------------------------
 
     async def _download_attachment(
         self, att_guid: str, att_meta: Dict[str, Any]
     ) -> Optional[str]:
-        """Download an attachment from BlueBubbles and cache it locally.
+        """从 BlueBubbles 下载附件并缓存到本地。
 
-        Returns the local file path on success, None on failure.
+        成功时返回本地文件路径，失败时返回 None。
         """
         if not self.client:
             return None
@@ -709,7 +709,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 ext = ext_map.get(mime, ".mp3")
                 return cache_audio_from_bytes(data, ext)
 
-            # Videos, documents, and everything else
+            # 视频、文档及其他所有类型
             filename = transfer_name or f"file_{uuid.uuid4().hex[:8]}"
             return cache_document_from_bytes(data, filename)
 
@@ -722,7 +722,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return None
 
     # ------------------------------------------------------------------
-    # Webhook handling
+    # Webhook 处理
     # ------------------------------------------------------------------
 
     def _extract_payload_record(
@@ -779,7 +779,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return web.json_response({"error": "invalid payload"}, status=400)
 
         event_type = self._value(payload.get("type"), payload.get("event")) or ""
-        # Only process message events; silently acknowledge everything else
+        # 仅处理消息事件；静默确认其他所有事件
         if event_type and event_type not in _MESSAGE_EVENTS:
             return web.Response(text="ok")
 
@@ -792,7 +792,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if is_from_me:
             return web.Response(text="ok")
 
-        # Skip tapback reactions delivered as messages
+        # 跳过以消息形式投递的 Tapback 表情回应
         assoc_type = record.get("associatedMessageType")
         if isinstance(assoc_type, int) and assoc_type in {
             **_TAPBACK_ADDED,
@@ -807,7 +807,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             or ""
         )
 
-        # --- Inbound attachment handling ---
+        # --- 入站附件处理 ---
         attachments = record.get("attachments") or []
         media_urls: List[str] = []
         media_types: List[str] = []
@@ -833,7 +833,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 else:
                     msg_type = MessageType.DOCUMENT
 
-        # With multiple attachments, prefer PHOTO if any images present
+        # 多个附件时，如果有图片则优先设为 PHOTO 类型
         if len(media_urls) > 1:
             mime_prefixes = {(m or "").split("/")[0] for m in media_types}
             if "image" in mime_prefixes:
@@ -841,7 +841,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         if not text and media_urls:
             text = "(attachment)"
-        # --- End attachment handling ---
+        # --- 附件处理结束 ---
 
         chat_guid = self._value(
             record.get("chatGuid"),
@@ -850,8 +850,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             payload.get("chat_guid"),
             payload.get("guid"),
         )
-        # Fallback: BlueBubbles v1.9+ webhook payloads omit top-level chatGuid;
-        # the chat GUID is nested under data.chats[0].guid instead.
+        # 回退：BlueBubbles v1.9+ webhook 载荷中省略了顶层 chatGuid；
+        # 聊天 GUID 嵌套在 data.chats[0].guid 中。
         if not chat_guid:
             _chats = record.get("chats") or []
             if _chats and isinstance(_chats[0], dict):
@@ -910,7 +910,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
-        # Fire-and-forget read receipt
+        # 即发即忘的已读回执
         if self.send_read_receipts and session_chat_id:
             asyncio.create_task(self.mark_read(session_chat_id))
 

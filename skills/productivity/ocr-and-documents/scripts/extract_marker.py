@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Extract text from documents using marker-pdf. High-quality OCR + layout analysis.
+"""使用 marker-pdf 从文档中提取文本。高质量 OCR + 版面分析。
 
-Requires ~3-5GB disk (PyTorch + models downloaded on first use).
-Supports: PDF, DOCX, PPTX, XLSX, HTML, EPUB, images.
+需要约 3-5GB 磁盘空间（首次使用时会下载 PyTorch + 模型）。
+支持: PDF、DOCX、PPTX、XLSX、HTML、EPUB、图片。
 
-Usage:
+用法:
     python extract_marker.py document.pdf
     python extract_marker.py document.pdf --output_dir ./output
     python extract_marker.py presentation.pptx
     python extract_marker.py spreadsheet.xlsx
-    python extract_marker.py scanned_doc.pdf           # OCR works here
-    python extract_marker.py document.pdf --json        # Structured output
-    python extract_marker.py document.pdf --use_llm     # LLM-boosted accuracy
+    python extract_marker.py scanned_doc.pdf           # OCR 在此也可使用
+    python extract_marker.py document.pdf --json        # 结构化输出
+    python extract_marker.py document.pdf --use_llm     # LLM 增强精度
 """
 import sys
 import os
@@ -39,7 +39,7 @@ def convert(path, output_dir=None, output_format="markdown", use_llm=False):
     else:
         print(rendered.markdown)
 
-    # Save images if output_dir specified
+    # 如果指定了 output_dir，则保存图片
     if output_dir and hasattr(rendered, "images") and rendered.images:
         from pathlib import Path
         Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -51,7 +51,7 @@ def convert(path, output_dir=None, output_format="markdown", use_llm=False):
 
 
 def check_requirements():
-    """Check disk space before installing."""
+    """安装前检查磁盘空间。"""
     import shutil
     free_gb = shutil.disk_usage("/").free / (1024**3)
     if free_gb < 5:

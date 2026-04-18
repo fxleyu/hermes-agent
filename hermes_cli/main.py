@@ -1,46 +1,46 @@
 #!/usr/bin/env python3
 """
-Hermes CLI - Main entry point.
+Hermes CLI - 主入口点。
 
-Usage:
-    hermes                     # Interactive chat (default)
-    hermes chat                # Interactive chat
-    hermes gateway             # Run gateway in foreground
-    hermes gateway start       # Start gateway as service
-    hermes gateway stop        # Stop gateway service
-    hermes gateway status      # Show gateway status
-    hermes gateway install     # Install gateway service
-    hermes gateway uninstall   # Uninstall gateway service
-    hermes setup               # Interactive setup wizard
-    hermes logout              # Clear stored authentication
-    hermes status              # Show status of all components
-    hermes cron                # Manage cron jobs
-    hermes cron list           # List cron jobs
-    hermes cron status         # Check if cron scheduler is running
-    hermes doctor              # Check configuration and dependencies
-    hermes honcho setup                    # Configure Honcho AI memory integration
-    hermes honcho status                   # Show Honcho config and connection status
-    hermes honcho sessions                 # List directory → session name mappings
-    hermes honcho map <name>               # Map current directory to a session name
-    hermes honcho peer                     # Show peer names and dialectic settings
-    hermes honcho peer --user NAME         # Set user peer name
-    hermes honcho peer --ai NAME           # Set AI peer name
-    hermes honcho peer --reasoning LEVEL   # Set dialectic reasoning level
-    hermes honcho mode                     # Show current memory mode
-    hermes honcho mode [hybrid|honcho|local]  # Set memory mode
-    hermes honcho tokens                   # Show token budget settings
-    hermes honcho tokens --context N       # Set session.context() token cap
-    hermes honcho tokens --dialectic N     # Set dialectic result char cap
-    hermes honcho identity                 # Show AI peer identity representation
-    hermes honcho identity <file>          # Seed AI peer identity from a file (SOUL.md etc.)
-    hermes honcho migrate                  # Step-by-step migration guide: OpenClaw native → Hermes + Honcho
-    hermes version             Show version
-    hermes update              Update to latest version
-    hermes uninstall           Uninstall Hermes Agent
-    hermes acp                 Run as an ACP server for editor integration
-    hermes sessions browse     Interactive session picker with search
+用法:
+    hermes                     # 交互式对话（默认）
+    hermes chat                # 交互式对话
+    hermes gateway             # 在前台运行网关
+    hermes gateway start       # 以服务方式启动网关
+    hermes gateway stop        # 停止网关服务
+    hermes gateway status      # 显示网关状态
+    hermes gateway install     # 安装网关服务
+    hermes gateway uninstall   # 卸载网关服务
+    hermes setup               # 交互式配置向导
+    hermes logout              # 清除已存储的认证信息
+    hermes status              # 显示所有组件状态
+    hermes cron                # 管理定时任务
+    hermes cron list           # 列出定时任务
+    hermes cron status         # 检查定时调度器运行状态
+    hermes doctor              # 检查配置和依赖项
+    hermes honcho setup                    # 配置 Honcho AI 记忆集成
+    hermes honcho status                   # 显示 Honcho 配置和连接状态
+    hermes honcho sessions                 # 列出目录到会话名称的映射
+    hermes honcho map <name>               # 将当前目录映射到会话名称
+    hermes honcho peer                     # 显示对等名称和辩证设置
+    hermes honcho peer --user NAME         # 设置用户对等名称
+    hermes honcho peer --ai NAME           # 设置 AI 对等名称
+    hermes honcho peer --reasoning LEVEL   # 设置辩证推理级别
+    hermes honcho mode                     # 显示当前记忆模式
+    hermes honcho mode [hybrid|honcho|local]  # 设置记忆模式
+    hermes honcho tokens                   # 显示令牌预算设置
+    hermes honcho tokens --context N       # 设置 session.context() 令牌上限
+    hermes honcho tokens --dialectic N     # 设置辩证结果字符上限
+    hermes honcho identity                 # 显示 AI 对等身份表示
+    hermes honcho identity <file>          # 从文件注入 AI 对等身份（SOUL.md 等）
+    hermes honcho migrate                  # 逐步迁移指南：OpenClaw 原生 -> Hermes + Honcho
+    hermes version             显示版本
+    hermes update              更新到最新版本
+    hermes uninstall           卸载 Hermes Agent
+    hermes acp                 作为 ACP 服务器运行以支持编辑器集成
+    hermes sessions browse     带搜索的交互式会话选择器
 
-    hermes claw migrate --dry-run  # Preview migration without changes
+    hermes claw migrate --dry-run  # 预览迁移而不做修改
 """
 
 import argparse
@@ -51,11 +51,11 @@ from pathlib import Path
 from typing import Optional
 
 def _require_tty(command_name: str) -> None:
-    """Exit with a clear error if stdin is not a terminal.
+    """如果 stdin 不是终端，则输出明确的错误信息并退出。
 
-    Interactive TUI commands (hermes tools, hermes setup, hermes model) use
-    curses or input() prompts that spin at 100% CPU when stdin is a pipe.
-    This guard prevents accidental non-interactive invocation.
+    交互式 TUI 命令（hermes tools、hermes setup、hermes model）使用
+    curses 或 input() 提示，当 stdin 是管道时会导致 CPU 100% 占用。
+    此保护措施防止意外的非交互式调用。
     """
     if not sys.stdin.isatty():
         print(
@@ -67,26 +67,26 @@ def _require_tty(command_name: str) -> None:
         sys.exit(1)
 
 
-# Add project root to path
+# 将项目根目录添加到路径
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
 # ---------------------------------------------------------------------------
-# Profile override — MUST happen before any hermes module import.
+# 配置文件覆盖 -- 必须在任何 hermes 模块导入之前执行。
 #
-# Many modules cache HERMES_HOME at import time (module-level constants).
-# We intercept --profile/-p from sys.argv here and set the env var so that
-# every subsequent ``os.getenv("HERMES_HOME", ...)`` resolves correctly.
-# The flag is stripped from sys.argv so argparse never sees it.
-# Falls back to ~/.hermes/active_profile for sticky default.
+# 许多模块在导入时缓存 HERMES_HOME（模块级常量）。
+# 我们在此处从 sys.argv 中截取 --profile/-p 并设置环境变量，
+# 以便后续每次 ``os.getenv("HERMES_HOME", ...)`` 调用都能正确解析。
+# 该标志会从 sys.argv 中移除，这样 argparse 不会看到它。
+# 如果没有显式标志，则回退到 ~/.hermes/active_profile 作为持久默认值。
 # ---------------------------------------------------------------------------
 def _apply_profile_override() -> None:
-    """Pre-parse --profile/-p and set HERMES_HOME before module imports."""
+    """预解析 --profile/-p 并在模块导入前设置 HERMES_HOME。"""
     argv = sys.argv[1:]
     profile_name = None
     consume = 0
 
-    # 1. Check for explicit -p / --profile flag
+    # 1. 检查显式的 -p / --profile 标志
     for i, arg in enumerate(argv):
         if arg in ("--profile", "-p") and i + 1 < len(argv):
             profile_name = argv[i + 1]
@@ -97,7 +97,7 @@ def _apply_profile_override() -> None:
             consume = 1
             break
 
-    # 2. If no flag, check active_profile in the hermes root
+    # 2. 如果没有标志，检查 hermes 根目录中的 active_profile
     if profile_name is None:
         try:
             from hermes_constants import get_default_hermes_root
@@ -108,9 +108,9 @@ def _apply_profile_override() -> None:
                     profile_name = name
                     consume = 0  # don't strip anything from argv
         except (UnicodeDecodeError, OSError):
-            pass  # corrupted file, skip
+            pass  # 文件损坏，跳过
 
-    # 3. If we found a profile, resolve and set HERMES_HOME
+    # 3. 如果找到了配置文件，解析并设置 HERMES_HOME
     if profile_name is not None:
         try:
             from hermes_cli.profiles import resolve_profile_env
@@ -119,11 +119,11 @@ def _apply_profile_override() -> None:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
         except Exception as exc:
-            # A bug in profiles.py must NEVER prevent hermes from starting
+            # profiles.py 中的 bug 绝不能阻止 hermes 启动
             print(f"Warning: profile override failed ({exc}), using default", file=sys.stderr)
             return
         os.environ["HERMES_HOME"] = hermes_home
-        # Strip the flag from argv so argparse doesn't choke
+        # 从 argv 中去除该标志以免 argparse 出错
         if consume > 0:
             for i, arg in enumerate(argv):
                 if arg in ("--profile", "-p"):
@@ -137,21 +137,21 @@ def _apply_profile_override() -> None:
 
 _apply_profile_override()
 
-# Load .env from ~/.hermes/.env first, then project root as dev fallback.
-# User-managed env files should override stale shell exports on restart.
+# 先从 ~/.hermes/.env 加载环境变量，然后从项目根目录加载作为开发环境备用。
+# 用户管理的 env 文件应在重启时覆盖过期的 shell 导出值。
 from hermes_cli.config import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
 load_hermes_dotenv(project_env=PROJECT_ROOT / '.env')
 
-# Initialize centralized file logging early — all `hermes` subcommands
-# (chat, setup, gateway, config, etc.) write to agent.log + errors.log.
+# 尽早初始化集中式文件日志 -- 所有 `hermes` 子命令
+# （chat、setup、gateway、config 等）都写入 agent.log + errors.log。
 try:
     from hermes_logging import setup_logging as _setup_logging
     _setup_logging(mode="cli")
 except Exception:
-    pass  # best-effort — don't crash the CLI if logging setup fails
+    pass  # 尽力而为 -- 如果日志设置失败不要崩溃 CLI
 
-# Apply IPv4 preference early, before any HTTP clients are created.
+# 尽早应用 IPv4 优先设置，在创建任何 HTTP 客户端之前。
 try:
     from hermes_cli.config import load_config as _load_config_early
     from hermes_constants import apply_ipv4_preference as _apply_ipv4
@@ -161,7 +161,7 @@ try:
         _apply_ipv4(force=True)
     del _early_cfg, _net
 except Exception:
-    pass  # best-effort — don't crash if config isn't available yet
+    pass  # 尽力而为 -- 如果配置不可用不要崩溃
 
 import logging
 import time as _time
@@ -174,7 +174,7 @@ logger = logging.getLogger(__name__)
 
 
 def _relative_time(ts) -> str:
-    """Format a timestamp as relative time (e.g., '2h ago', 'yesterday')."""
+    """将时间戳格式化为相对时间（如 '2h ago'、'yesterday'）。"""
     if not ts:
         return "?"
     delta = _time.time() - ts
@@ -192,12 +192,12 @@ def _relative_time(ts) -> str:
 
 
 def _has_any_provider_configured() -> bool:
-    """Check if at least one inference provider is usable."""
+    """检查是否至少有一个推理提供者可用。"""
     from hermes_cli.config import get_env_path, get_hermes_home, load_config
     from hermes_cli.auth import get_auth_status
 
-    # Determine whether Hermes itself has been explicitly configured (model
-    # in config that isn't the hardcoded default). Used below to gate external
+    # 判断 Hermes 自身是否已被显式配置（config 中的 model
+    # 不是硬编码的默认值）。用于下方限制外部
     # tool credentials (Claude Code, Codex CLI) that shouldn't silently skip
     # the setup wizard on a fresh install.
     from hermes_cli.config import DEFAULT_CONFIG
@@ -212,12 +212,12 @@ def _has_any_provider_configured() -> bool:
         _model_name = ""
     _has_hermes_config = _model_name and _model_name != _DEFAULT_MODEL
 
-    # Check env vars (may be set by .env or shell).
-    # OPENAI_BASE_URL alone counts — local models (vLLM, llama.cpp, etc.)
-    # often don't require an API key.
+    # 检查环境变量（可能由 .env 或 shell 设置）。
+    # 仅 OPENAI_BASE_URL 也算 — 本地模型（vLLM、llama.cpp 等）
+    # 通常不需要 API 密钥。
     from hermes_cli.auth import PROVIDER_REGISTRY
 
-    # Collect all provider env vars
+    # 收集所有提供者环境变量
     provider_env_vars = {"OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"}
     for pconfig in PROVIDER_REGISTRY.values():
         if pconfig.auth_type == "api_key":
@@ -225,7 +225,7 @@ def _has_any_provider_configured() -> bool:
     if any(os.getenv(v) for v in provider_env_vars):
         return True
 
-    # Check .env file for keys
+    # 检查 .env 文件中的密钥
     env_file = get_env_path()
     if env_file.exists():
         try:
@@ -240,7 +240,7 @@ def _has_any_provider_configured() -> bool:
         except Exception:
             pass
 
-    # Check provider-specific auth fallbacks (for example, Copilot via gh auth).
+    # 检查提供者特定的认证回退（例如通过 gh auth 的 Copilot）。
     try:
         for provider_id, pconfig in PROVIDER_REGISTRY.items():
             if pconfig.auth_type != "api_key":
@@ -251,7 +251,7 @@ def _has_any_provider_configured() -> bool:
     except Exception:
         pass
 
-    # Check for Nous Portal OAuth credentials
+    # 检查 Nous Portal OAuth 凭证
     auth_file = get_hermes_home() / "auth.json"
     if auth_file.exists():
         try:
@@ -266,10 +266,9 @@ def _has_any_provider_configured() -> bool:
             pass
 
 
-    # Check config.yaml — if model is a dict with an explicit provider set,
-    # the user has gone through setup (fresh installs have model as a plain
-    # string).  Also covers custom endpoints that store api_key/base_url in
-    # config rather than .env.
+    # 检查 config.yaml — 如果 model 是带有显式 provider 的字典，
+    # 则用户已完成设置（全新安装的 model 是普通字符串）。
+    # 也覆盖在配置中存储 api_key/base_url 而非 .env 的自定义端点。
     if isinstance(model_cfg, dict):
         cfg_provider = (model_cfg.get("provider") or "").strip()
         cfg_base_url = (model_cfg.get("base_url") or "").strip()
@@ -277,9 +276,9 @@ def _has_any_provider_configured() -> bool:
         if cfg_provider or cfg_base_url or cfg_api_key:
             return True
 
-    # Check for Claude Code OAuth credentials (~/.claude/.credentials.json)
-    # Only count these if Hermes has been explicitly configured — Claude Code
-    # being installed doesn't mean the user wants Hermes to use their tokens.
+    # 检查 Claude Code OAuth 凭证（~/.claude/.credentials.json）
+    # 仅在 Hermes 已显式配置时才计入 — Claude Code
+    # 已安装并不意味着用户希望 Hermes 使用他们的 token。
     if _has_hermes_config:
         try:
             from agent.anthropic_adapter import read_claude_code_credentials, is_claude_code_token_valid
@@ -293,32 +292,32 @@ def _has_any_provider_configured() -> bool:
 
 
 def _session_browse_picker(sessions: list) -> Optional[str]:
-    """Interactive curses-based session browser with live search filtering.
+    """基于 curses 的交互式会话浏览器，支持实时搜索过滤。
 
-    Returns the selected session ID, or None if cancelled.
-    Uses curses (not simple_term_menu) to avoid the ghost-duplication rendering
-    bug in tmux/iTerm when arrow keys are used.
+    返回选中的会话 ID，取消时返回 None。
+    使用 curses（非 simple_term_menu）以避免 tmux/iTerm 中
+    使用方向键时的重影渲染 bug。
     """
     if not sessions:
         print("No sessions found.")
         return None
 
-    # Try curses-based picker first
+    # 首先尝试基于 curses 的选择器
     try:
         import curses
 
         result_holder = [None]
 
         def _format_row(s, max_x):
-            """Format a session row for display."""
+            """格式化会话行以供显示。"""
             title = (s.get("title") or "").strip()
             preview = (s.get("preview") or "").strip()
             source = s.get("source", "")[:6]
             last_active = _relative_time(s.get("last_active"))
             sid = s["id"][:18]
 
-            # Adaptive column widths based on terminal width
-            # Layout: [arrow 3] [title/preview flexible] [active 12] [src 6] [id 18]
+            # 根据终端宽度自适应列宽
+            # 布局：[箭头 3] [标题/预览 弹性] [活跃 12] [来源 6] [ID 18]
             fixed_cols = 3 + 12 + 6 + 18 + 6  # arrow + active + src + id + padding
             name_width = max(20, max_x - fixed_cols)
 
@@ -332,7 +331,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             return f"{name:<{name_width}}  {last_active:<10}  {source:<5} {sid}"
 
         def _match(s, query):
-            """Check if a session matches the search query (case-insensitive)."""
+            """检查会话是否匹配搜索查询（不区分大小写）。"""
             q = query.lower()
             return (
                 q in (s.get("title") or "").lower()
@@ -360,7 +359,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 stdscr.clear()
                 max_y, max_x = stdscr.getmaxyx()
                 if max_y < 5 or max_x < 40:
-                    # Terminal too small
+                    # 终端太小
                     try:
                         stdscr.addstr(0, 0, "Terminal too small")
                     except curses.error:
@@ -369,7 +368,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                     stdscr.getch()
                     return
 
-                # Header line
+                # 标题行
                 if search_text:
                     header = f"  Browse sessions — filter: {search_text}█"
                     header_attr = curses.A_BOLD
@@ -385,7 +384,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 except curses.error:
                     pass
 
-                # Column header line
+                # 列标题行
                 fixed_cols = 3 + 12 + 6 + 18 + 6
                 name_width = max(20, max_x - fixed_cols)
                 col_header = f"   {'Title / Preview':<{name_width}}  {'Active':<10}  {'Src':<5} {'ID'}"
@@ -395,7 +394,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 except curses.error:
                     pass
 
-                # Compute visible area
+                # 计算可见区域
                 visible_rows = max_y - 4  # header + col header + blank + footer
                 if visible_rows < 1:
                     visible_rows = 1
@@ -498,7 +497,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
     except Exception:
         pass
 
-    # Fallback: numbered list (Windows without curses, etc.)
+    # 回退：编号列表（Windows 无 curses 等）
     print("\n  Browse sessions  (enter number to resume, q to cancel)\n")
     for i, s in enumerate(sessions):
         title = (s.get("title") or "").strip()
@@ -527,7 +526,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
 
 
 def _resolve_last_cli_session() -> Optional[str]:
-    """Look up the most recent CLI session ID from SQLite. Returns None if unavailable."""
+    """从 SQLite 查找最近的 CLI 会话 ID。不可用时返回 None。"""
     try:
         from hermes_state import SessionDB
         db = SessionDB()
@@ -541,10 +540,10 @@ def _resolve_last_cli_session() -> Optional[str]:
 
 
 def _probe_container(cmd: list, backend: str, via_sudo: bool = False):
-    """Run a container inspect probe, returning the CompletedProcess.
+    """运行容器检查探测，返回 CompletedProcess。
 
-    Catches TimeoutExpired specifically for a human-readable message;
-    all other exceptions propagate naturally.
+    专门捕获 TimeoutExpired 以提供人类可读的消息；
+    其他所有异常自然传播。
     """
     try:
         return subprocess.run(cmd, capture_output=True, text=True, timeout=15)
@@ -559,16 +558,16 @@ def _probe_container(cmd: list, backend: str, via_sudo: bool = False):
 
 
 def _exec_in_container(container_info: dict, cli_args: list):
-    """Replace the current process with a command inside the managed container.
+    """将当前进程替换为托管容器内的命令。
 
-    Probes whether sudo is needed (rootful containers), then os.execvp
-    into the container. On success the Python process is replaced entirely
-    and the container's exit code becomes the process exit code (OS semantics).
-    On failure, OSError propagates naturally.
+    探测是否需要 sudo（root 容器），然后 os.execvp
+    进入容器。成功时 Python 进程被完全替换，
+    容器的退出代码成为进程退出代码（OS 语义）。
+    失败时 OSError 自然传播。
 
     Args:
-        container_info: dict with backend, container_name, exec_user, hermes_bin
-        cli_args: the original CLI arguments (everything after 'hermes')
+        container_info: 包含 backend、container_name、exec_user、hermes_bin 的字典
+        cli_args: 原始 CLI 参数（'hermes' 之后的所有内容）
     """
     import shutil
 
@@ -648,7 +647,7 @@ def _exec_in_container(container_info: dict, cli_args: list):
 
 
 def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
-    """Resolve a session name (title) or ID to a session ID.
+    """将会话名称（标题）或 ID 解析为会话 ID。
 
     - If it looks like a session ID (contains underscore + hex), try direct lookup first.
     - Otherwise, treat it as a title and use resolve_session_by_title (auto-latest).
@@ -674,8 +673,8 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
 
 
 def cmd_chat(args):
-    """Run interactive chat CLI."""
-    # Resolve --continue into --resume with the latest CLI session or by name
+    """运行交互式聊天 CLI。"""
+    # 将 --continue 解析为 --resume，使用最新的 CLI 会话或按名称
     continue_val = getattr(args, "continue_last", None)
     if continue_val and not getattr(args, "resume", None):
         if isinstance(continue_val, str):
@@ -705,7 +704,7 @@ def cmd_chat(args):
         # If resolution fails, keep the original value — _init_agent will
         # report "Session not found" with the original input
 
-    # First-run guard: check if any provider is configured before launching
+    # 首次运行守卫：在启动前检查是否有任何提供者已配置
     if not _has_any_provider_configured():
         print()
         print("It looks like Hermes isn't configured yet -- no API keys or providers found.")
@@ -732,14 +731,14 @@ def cmd_chat(args):
         print("You can run 'hermes setup' at any time to configure.")
         sys.exit(1)
 
-    # Start update check in background (runs while other init happens)
+    # 在后台启动更新检查（在其他初始化进行时运行）
     try:
         from hermes_cli.banner import prefetch_update_check
         prefetch_update_check()
     except Exception:
         pass
 
-    # Sync bundled skills on every CLI launch (fast -- skips unchanged skills)
+    # 每次 CLI 启动时同步内置技能（快速 — 跳过未更改的技能）
     try:
         from tools.skills_sync import sync_skills
         sync_skills(quiet=True)
@@ -754,10 +753,10 @@ def cmd_chat(args):
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
 
-    # Import and run the CLI
+    # 导入并运行 CLI
     from cli import main as cli_main
     
-    # Build kwargs from args
+    # 从 args 构建 kwargs
     kwargs = {
         "model": args.model,
         "provider": getattr(args, "provider", None),
@@ -773,7 +772,7 @@ def cmd_chat(args):
         "pass_session_id": getattr(args, "pass_session_id", False),
         "max_turns": getattr(args, "max_turns", None),
     }
-    # Filter out None values
+    # 过滤掉 None 值
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
     
     try:
@@ -784,13 +783,13 @@ def cmd_chat(args):
 
 
 def cmd_gateway(args):
-    """Gateway management commands."""
+    """网关管理命令。"""
     from hermes_cli.gateway import gateway_command
     gateway_command(args)
 
 
 def cmd_whatsapp(args):
-    """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
+    """设置 WhatsApp：选择模式、配置、安装桥接、通过 QR 配对。"""
     _require_tty("whatsapp")
     import subprocess
     from pathlib import Path
@@ -977,19 +976,19 @@ def cmd_whatsapp(args):
 
 
 def cmd_setup(args):
-    """Interactive setup wizard."""
+    """交互式设置向导。"""
     from hermes_cli.setup import run_setup_wizard
     run_setup_wizard(args)
 
 
 def cmd_model(args):
-    """Select default model — starts with provider selection, then model picker."""
+    """选择默认模型 — 从提供者选择开始，然后是模型选择器。"""
     _require_tty("model")
     select_provider_and_model(args=args)
 
 
 def select_provider_and_model(args=None):
-    """Core provider selection + model picking logic.
+    """核心提供者选择 + 模型选择逻辑。
 
     Shared by ``cmd_model`` (``hermes model``) and the setup wizard
     (``setup_model_provider`` in setup.py).  Handles the full flow:
@@ -1030,7 +1029,7 @@ def select_provider_and_model(args=None):
         except AuthError:
             active = None  # no provider yet; default to first in list
 
-    # Detect custom endpoint
+    # 检测自定义端点
     if active == "openrouter" and get_env_value("OPENAI_BASE_URL"):
         active = "custom"
 
@@ -1044,7 +1043,7 @@ def select_provider_and_model(args=None):
     print(f"  Active provider:  {active_label}")
     print()
 
-    # Step 1: Provider selection — flat list from CANONICAL_PROVIDERS
+    # 步骤 1：提供者选择 — 来自 CANONICAL_PROVIDERS 的扁平列表
     all_providers = [(p.slug, p.tui_desc) for p in CANONICAL_PROVIDERS]
 
     def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
@@ -1074,7 +1073,7 @@ def select_provider_and_model(args=None):
             }
         return custom_provider_map
 
-    # Add user-defined custom providers from config.yaml
+    # 从 config.yaml 添加用户定义的自定义提供者
     _custom_provider_map = _named_custom_provider_map(config)  # key → {name, base_url, api_key}
     for key, provider_info in _custom_provider_map.items():
         name = provider_info["name"]
@@ -1084,7 +1083,7 @@ def select_provider_and_model(args=None):
         model_hint = f" — {saved_model}" if saved_model else ""
         all_providers.append((key, f"{name} ({short_url}){model_hint}"))
 
-    # Build the menu
+    # 构建菜单
     ordered = []
     default_idx = 0
     for key, label in all_providers:
@@ -1109,7 +1108,7 @@ def select_provider_and_model(args=None):
 
     selected_provider = ordered[provider_idx][0]
 
-    # Step 2: Provider-specific setup + model selection
+    # 步骤 2：提供者特定设置 + 模型选择
     if selected_provider == "openrouter":
         _model_flow_openrouter(config, current_model)
     elif selected_provider == "nous":
@@ -1156,7 +1155,7 @@ def select_provider_and_model(args=None):
 
 
 def _clear_stale_openai_base_url():
-    """Remove OPENAI_BASE_URL from ~/.hermes/.env if the active provider is not 'custom'.
+    """当活动提供者不是 'custom' 时，从 ~/.hermes/.env 中移除 OPENAI_BASE_URL。
 
     After a provider switch, a leftover OPENAI_BASE_URL causes auxiliary
     clients (compression, vision, delegation) with provider:auto to route
@@ -1184,7 +1183,7 @@ def _clear_stale_openai_base_url():
 
 
 def _prompt_provider_choice(choices, *, default=0):
-    """Show provider selection menu with curses arrow-key navigation.
+    """使用 curses 方向键导航显示提供者选择菜单。
 
     Falls back to a numbered list when curses is unavailable (e.g. piped
     stdin, non-TTY environments).  Returns the selected index, or None
@@ -1199,7 +1198,7 @@ def _prompt_provider_choice(choices, *, default=0):
     except Exception:
         pass
 
-    # Fallback: numbered list
+    # 回退：编号列表
     print("Select provider:")
     for i, c in enumerate(choices, 1):
         marker = "→" if i - 1 == default else " "
@@ -1222,7 +1221,7 @@ def _prompt_provider_choice(choices, *, default=0):
 
 
 def _model_flow_openrouter(config, current_model=""):
-    """OpenRouter provider: ensure API key, then pick model."""
+    """OpenRouter 提供者：确保 API 密钥，然后选择模型。"""
     from hermes_cli.auth import _prompt_model_selection, _save_model_choice, deactivate_provider
     from hermes_cli.config import get_env_value, save_env_value
 
@@ -1272,7 +1271,7 @@ def _model_flow_openrouter(config, current_model=""):
 
 
 def _model_flow_nous(config, current_model="", args=None):
-    """Nous Portal provider: ensure logged in, then pick model."""
+    """Nous Portal 提供者：确保已登录，然后选择模型。"""
     from hermes_cli.auth import (
         get_provider_auth_state, _prompt_model_selection, _save_model_choice,
         _update_config_for_provider, resolve_nous_runtime_credentials,
@@ -1421,7 +1420,7 @@ def _model_flow_nous(config, current_model="", args=None):
 
 
 def _model_flow_openai_codex(config, current_model=""):
-    """OpenAI Codex provider: ensure logged in, then pick model."""
+    """OpenAI Codex 提供者：确保已登录，然后选择模型。"""
     from hermes_cli.auth import (
         get_codex_auth_status, _prompt_model_selection, _save_model_choice,
         _update_config_for_provider, _login_openai_codex,
@@ -1480,7 +1479,7 @@ _DEFAULT_QWEN_PORTAL_MODELS = [
 
 
 def _model_flow_qwen_oauth(_config, current_model=""):
-    """Qwen OAuth provider: reuse local Qwen CLI login, then pick model."""
+    """Qwen OAuth 提供者：复用本地 Qwen CLI 登录，然后选择模型。"""
     from hermes_cli.auth import (
         get_qwen_auth_status,
         resolve_qwen_runtime_credentials,
@@ -1523,7 +1522,7 @@ def _model_flow_qwen_oauth(_config, current_model=""):
 
 
 def _model_flow_google_gemini_cli(_config, current_model=""):
-    """Google Gemini OAuth (PKCE) via Cloud Code Assist — supports free AND paid tiers.
+    """Google Gemini OAuth（PKCE）通过 Cloud Code Assist — 支持免费和付费层级。
 
     Flow:
       1. Show upfront warning about Google's ToS stance (per opencode-gemini-auth).
@@ -1594,7 +1593,7 @@ def _model_flow_google_gemini_cli(_config, current_model=""):
 
 
 def _model_flow_custom(config):
-    """Custom endpoint: collect URL, API key, and model name.
+    """自定义端点：收集 URL、API 密钥和模型名称。
 
     Automatically saves the endpoint to ``custom_providers`` in config.yaml
     so it appears in the provider menu on subsequent runs.
@@ -1624,7 +1623,7 @@ def _model_flow_custom(config):
         print("No URL provided. Cancelled.")
         return
 
-    # Validate URL format
+    # 验证 URL 格式
     effective_url = base_url or current_url
     if not effective_url.startswith(("http://", "https://")):
         print(f"Invalid URL: {effective_url} (must start with http:// or https://)")
@@ -1632,7 +1631,7 @@ def _model_flow_custom(config):
 
     effective_key = api_key or current_key
 
-    # Hint: most local model servers (Ollama, vLLM, llama.cpp) require /v1
+    # 提示：大多数本地模型服务器（Ollama、vLLM、llama.cpp）需要 /v1
     # in the base URL for OpenAI-compatible chat completions.  Prompt the
     # user if the URL looks like a local server without /v1.
     _url_lower = effective_url.rstrip("/").lower()
@@ -1681,7 +1680,7 @@ def _model_flow_custom(config):
             else:
                 print(f"  If /v1 should not be in the base URL, try: {suggested}")
 
-    # Select model — use probe results when available, fall back to manual input
+    # 选择模型 — 可用时使用探测结果，否则回退到手动输入
     model_name = ""
     detected_models = probe.get("models") or []
     try:
@@ -1763,13 +1762,13 @@ def _model_flow_custom(config):
         config["model"] = _caller_model
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
 
-    # Auto-save to custom_providers so it appears in the menu next time
+    # 自动保存到 custom_providers 以便下次在菜单中显示
     _save_custom_provider(effective_url, effective_key, model_name or "",
                           context_length=context_length, name=display_name)
 
 
 def _auto_provider_name(base_url: str) -> str:
-    """Generate a display name from a custom endpoint URL.
+    """从自定义端点 URL 生成显示名称。
 
     Returns a human-friendly label like "Local (localhost:11434)" or
     "RunPod (xyz.runpod.io)".  Used as the default when prompting the
@@ -1790,7 +1789,7 @@ def _auto_provider_name(base_url: str) -> str:
 
 def _save_custom_provider(base_url, api_key="", model="", context_length=None,
                           name=None):
-    """Save a custom endpoint to custom_providers in config.yaml.
+    """将自定义端点保存到 config.yaml 的 custom_providers 中。
 
     Deduplicates by base_url — if the URL already exists, updates the
     model name and context_length but doesn't add a duplicate entry.
@@ -1803,7 +1802,7 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None,
     if not isinstance(providers, list):
         providers = []
 
-    # Check if this URL is already saved — update model/context_length if so
+    # 检查此 URL 是否已保存 — 如果是则更新 model/context_length
     for entry in providers:
         if isinstance(entry, dict) and entry.get("base_url", "").rstrip("/") == base_url.rstrip("/"):
             changed = False
@@ -1841,7 +1840,7 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None,
 
 
 def _remove_custom_provider(config):
-    """Let the user remove a saved custom provider from config.yaml."""
+    """让用户从 config.yaml custom_providers 列表中移除已保存的自定义提供者。"""
     from hermes_cli.config import load_config, save_config
 
     cfg = load_config()
@@ -1898,7 +1897,7 @@ def _remove_custom_provider(config):
 
 
 def _model_flow_named_custom(config, provider_info):
-    """Handle a named custom provider from config.yaml custom_providers list.
+    """处理 config.yaml custom_providers 列表中的命名自定义提供者。
 
     Always probes the endpoint's /models API to let the user pick a model.
     If a model was previously saved, it is pre-selected in the menu.
@@ -2056,7 +2055,7 @@ def _set_reasoning_effort(config, effort: str) -> None:
 
 
 def _prompt_reasoning_effort_selection(efforts, current_effort=""):
-    """Prompt for a reasoning effort. Returns effort, 'none', or None to keep current."""
+    """提示输入推理力度。返回 effort、'none' 或 None 以保持当前值。"""
     deduped = list(dict.fromkeys(str(effort).strip().lower() for effort in efforts if str(effort).strip()))
     canonical_order = ("minimal", "low", "medium", "high", "xhigh")
     ordered = [effort for effort in canonical_order if effort in deduped]
@@ -2139,7 +2138,7 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
 
 
 def _model_flow_copilot(config, current_model=""):
-    """GitHub Copilot flow using env vars, gh CLI, or OAuth device code."""
+    """GitHub Copilot 流程，使用环境变量、gh CLI 或 OAuth 设备代码。"""
     from hermes_cli.auth import (
         PROVIDER_REGISTRY,
         _prompt_model_selection,
@@ -2311,7 +2310,7 @@ def _model_flow_copilot(config, current_model=""):
 
 
 def _model_flow_copilot_acp(config, current_model=""):
-    """GitHub Copilot ACP flow using the local Copilot CLI."""
+    """GitHub Copilot ACP 流程，使用本地 Copilot CLI。"""
     from hermes_cli.auth import (
         PROVIDER_REGISTRY,
         _prompt_model_selection,
@@ -2412,7 +2411,7 @@ def _model_flow_copilot_acp(config, current_model=""):
 
 
 def _model_flow_kimi(config, current_model=""):
-    """Kimi / Moonshot model selection with automatic endpoint routing.
+    """Kimi / Moonshot 模型选择，带自动端点路由。
 
     - sk-kimi-* keys   → api.kimi.com/coding/v1  (Kimi Coding Plan)
     - Other keys        → api.moonshot.ai/v1      (legacy Moonshot)
@@ -2513,7 +2512,7 @@ def _model_flow_kimi(config, current_model=""):
 
 
 def _model_flow_bedrock_api_key(config, region, current_model=""):
-    """Bedrock API Key mode — uses the OpenAI-compatible bedrock-mantle endpoint.
+    """Bedrock API Key 模式 — 使用 OpenAI 兼容的 bedrock-mantle 端点。
 
     For developers who don't have an AWS account but received a Bedrock API Key
     from their AWS admin. Works like any OpenAI-compatible endpoint.
@@ -2591,7 +2590,7 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
 
 
 def _model_flow_bedrock(config, current_model=""):
-    """AWS Bedrock provider: verify credentials, pick region, discover models.
+    """AWS Bedrock 提供者：验证凭证、选择区域、发现模型。
 
     Uses the native Converse API via boto3 — not the OpenAI-compatible endpoint.
     Auth is handled by the AWS SDK default credential chain (env vars, profile,
@@ -2759,7 +2758,7 @@ def _model_flow_bedrock(config, current_model=""):
 
 
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
-    """Generic flow for API-key providers (z.ai, MiniMax, OpenCode, etc.)."""
+    """API 密钥提供者（z.ai、MiniMax、OpenCode 等）的通用流程。"""
     from hermes_cli.auth import (
         PROVIDER_REGISTRY, _prompt_model_selection, _save_model_choice,
         deactivate_provider,
@@ -2897,7 +2896,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
 
 
 def _run_anthropic_oauth_flow(save_env_value):
-    """Run the Claude OAuth setup-token flow. Returns True if credentials were saved."""
+    """运行 Claude OAuth setup-token 流程。成功保存凭证时返回 True。"""
     from agent.anthropic_adapter import (
         run_oauth_setup_token,
         read_claude_code_credentials,
@@ -2984,7 +2983,7 @@ def _run_anthropic_oauth_flow(save_env_value):
 
 
 def _model_flow_anthropic(config, current_model=""):
-    """Flow for Anthropic provider — OAuth subscription, API key, or Claude Code creds."""
+    """Anthropic 提供者流程 — OAuth 订阅、API 密钥或 Claude Code 凭证。"""
     from hermes_cli.auth import (
         _prompt_model_selection, _save_model_choice,
         deactivate_provider,
@@ -3105,67 +3104,67 @@ def _model_flow_anthropic(config, current_model=""):
 
 
 def cmd_login(args):
-    """Authenticate Hermes CLI with a provider."""
+    """向提供者认证 Hermes CLI。"""
     from hermes_cli.auth import login_command
     login_command(args)
 
 
 def cmd_logout(args):
-    """Clear provider authentication."""
+    """清除提供者认证。"""
     from hermes_cli.auth import logout_command
     logout_command(args)
 
 
 def cmd_auth(args):
-    """Manage pooled credentials."""
+    """管理池化凭证。"""
     from hermes_cli.auth_commands import auth_command
     auth_command(args)
 
 
 def cmd_status(args):
-    """Show status of all components."""
+    """显示所有组件的状态。"""
     from hermes_cli.status import show_status
     show_status(args)
 
 
 def cmd_cron(args):
-    """Cron job management."""
+    """定时任务管理。"""
     from hermes_cli.cron import cron_command
     cron_command(args)
 
 
 def cmd_webhook(args):
-    """Webhook subscription management."""
+    """Webhook 订阅管理。"""
     from hermes_cli.webhook import webhook_command
     webhook_command(args)
 
 
 def cmd_doctor(args):
-    """Check configuration and dependencies."""
+    """检查配置和依赖。"""
     from hermes_cli.doctor import run_doctor
     run_doctor(args)
 
 
 def cmd_dump(args):
-    """Dump setup summary for support/debugging."""
+    """导出设置摘要用于支持/调试。"""
     from hermes_cli.dump import run_dump
     run_dump(args)
 
 
 def cmd_debug(args):
-    """Debug tools (share report, etc.)."""
+    """调试工具（分享报告等）。"""
     from hermes_cli.debug import run_debug
     run_debug(args)
 
 
 def cmd_config(args):
-    """Configuration management."""
+    """配置管理。"""
     from hermes_cli.config import config_command
     config_command(args)
 
 
 def cmd_backup(args):
-    """Back up Hermes home directory to a zip file."""
+    """将 Hermes 主目录备份到 zip 文件。"""
     if getattr(args, "quick", False):
         from hermes_cli.backup import run_quick_backup
         run_quick_backup(args)
@@ -3175,13 +3174,13 @@ def cmd_backup(args):
 
 
 def cmd_import(args):
-    """Restore a Hermes backup from a zip file."""
+    """从 zip 文件恢复 Hermes 备份。"""
     from hermes_cli.backup import run_import
     run_import(args)
 
 
 def cmd_version(args):
-    """Show version."""
+    """显示版本。"""
     print(f"Hermes Agent v{__version__} ({__release_date__})")
     print(f"Project: {PROJECT_ROOT}")
     
@@ -3213,14 +3212,14 @@ def cmd_version(args):
 
 
 def cmd_uninstall(args):
-    """Uninstall Hermes Agent."""
+    """卸载 Hermes Agent。"""
     _require_tty("uninstall")
     from hermes_cli.uninstall import run_uninstall
     run_uninstall(args)
 
 
 def _clear_bytecode_cache(root: Path) -> int:
-    """Remove all __pycache__ directories under *root*.
+    """移除 *root* 下的所有 __pycache__ 目录。
 
     Stale .pyc files can cause ImportError after code updates when Python
     loads a cached bytecode file that references names that no longer exist
@@ -3248,7 +3247,7 @@ def _clear_bytecode_cache(root: Path) -> int:
 
 
 def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0) -> str:
-    """File-based IPC prompt for gateway mode.
+    """网关模式的基于文件的 IPC 提示。
 
     Writes a prompt marker file so the gateway can forward the question to the
     user, then polls for a response file.  Falls back to *default* on timeout.
@@ -3299,7 +3298,7 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
 
 
 def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
-    """Build the web UI frontend if npm is available.
+    """如果 npm 可用则构建 Web UI 前端。
 
     Args:
         web_dir: Path to the ``web/`` source directory.
@@ -3337,7 +3336,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
 
 
 def _update_via_zip(args):
-    """Update Hermes Agent by downloading a ZIP archive.
+    """通过下载 ZIP 归档更新 Hermes Agent。
     
     Used on Windows when git file I/O is broken (antivirus, NTFS filter 
     drivers causing 'Invalid argument' errors on file creation).
@@ -3639,7 +3638,7 @@ SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
 
 
 def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
-    """Get the URL of the origin remote, or None if not set."""
+    """获取 origin 远程的 URL，未设置时返回 None。"""
     try:
         result = subprocess.run(
             git_cmd + ["remote", "get-url", "origin"],
@@ -3655,7 +3654,7 @@ def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
 
 
 def _is_fork(origin_url: Optional[str]) -> bool:
-    """Check if the origin remote points to a fork (not the official repo)."""
+    """检查 origin 远程是否指向 fork（非官方仓库）。"""
     if not origin_url:
         return False
     # Normalize URL for comparison (strip trailing .git if present)
@@ -3672,7 +3671,7 @@ def _is_fork(origin_url: Optional[str]) -> bool:
 
 
 def _has_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
-    """Check if an 'upstream' remote already exists."""
+    """检查 'upstream' 远程是否已存在。"""
     try:
         result = subprocess.run(
             git_cmd + ["remote", "get-url", "upstream"],
@@ -3686,7 +3685,7 @@ def _has_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
 
 
 def _add_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
-    """Add the official repo as the 'upstream' remote. Returns True on success."""
+    """将官方仓库添加为 'upstream' 远程。成功时返回 True。"""
     try:
         result = subprocess.run(
             git_cmd + ["remote", "add", "upstream", OFFICIAL_REPO_URL],
@@ -3700,7 +3699,7 @@ def _add_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
 
 
 def _count_commits_between(git_cmd: list[str], cwd: Path, base: str, head: str) -> int:
-    """Count commits on `head` that are not on `base`. Returns -1 on error."""
+    """统计 `head` 上不在 `base` 上的提交数。错误时返回 -1。"""
     try:
         result = subprocess.run(
             git_cmd + ["rev-list", "--count", f"{base}..{head}"],
@@ -3716,13 +3715,13 @@ def _count_commits_between(git_cmd: list[str], cwd: Path, base: str, head: str) 
 
 
 def _should_skip_upstream_prompt() -> bool:
-    """Check if user previously declined to add upstream."""
+    """检查用户是否之前拒绝添加 upstream。"""
     from hermes_constants import get_hermes_home
     return (get_hermes_home() / SKIP_UPSTREAM_PROMPT_FILE).exists()
 
 
 def _mark_skip_upstream_prompt():
-    """Create marker file to skip future upstream prompts."""
+    """创建标记文件以跳过未来的 upstream 提示。"""
     try:
         from hermes_constants import get_hermes_home
         (get_hermes_home() / SKIP_UPSTREAM_PROMPT_FILE).touch()
@@ -3731,7 +3730,7 @@ def _mark_skip_upstream_prompt():
 
 
 def _sync_fork_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
-    """Attempt to push updated main to origin (sync fork).
+    """尝试将更新后的 main 推送到 origin（同步 fork）。
 
     Returns True if push succeeded, False otherwise.
     """
@@ -3748,7 +3747,7 @@ def _sync_fork_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
 
 
 def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
-    """Check if fork is behind upstream and sync if safe.
+    """检查 fork 是否落后于 upstream 并在安全时同步。
 
     This implements the fork upstream sync logic:
     - If upstream remote doesn't exist, ask user if they want to add it
@@ -3850,7 +3849,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
 
 
 def _invalidate_update_cache():
-    """Delete the update-check cache for ALL profiles so no banner
+    """删除所有 profile 的更新检查缓存，这样就不会有横幅
     reports a stale "commits behind" count after a successful update.
 
     The git repo is shared across profiles — when one profile runs
@@ -3877,7 +3876,7 @@ def _invalidate_update_cache():
 
 
 def _load_installable_optional_extras() -> list[str]:
-    """Return the optional extras referenced by the ``all`` group.
+    """返回 ``all`` 组引用的可选额外依赖。
 
     Only extras that ``[all]`` actually pulls in are retried individually.
     Extras outside ``[all]`` (e.g. ``rl``, ``yc-bench``) are intentionally
@@ -3914,7 +3913,7 @@ def _install_python_dependencies_with_optional_fallback(
     *,
     env: dict[str, str] | None = None,
 ) -> None:
-    """Install base deps plus as many optional extras as the environment supports."""
+    """安装基础依赖加上环境支持的尽可能多的可选额外依赖。"""
     try:
         subprocess.run(
             install_cmd_prefix + ["install", "-e", ".[all]", "--quiet"],
@@ -3954,7 +3953,7 @@ def _install_python_dependencies_with_optional_fallback(
 
 
 def cmd_update(args):
-    """Update Hermes Agent to the latest version."""
+    """将 Hermes Agent 更新到最新版本。"""
     import shutil
     from hermes_cli.config import is_managed, managed_error
 
@@ -4484,7 +4483,7 @@ def cmd_update(args):
 
 
 def _coalesce_session_name_args(argv: list) -> list:
-    """Join unquoted multi-word session names after -c/--continue and -r/--resume.
+    """合并 -c/--continue 和 -r/--resume 后未引用的多词会话名称。
 
     When a user types ``hermes -c Pokemon Agent Dev`` without quoting the
     session name, argparse sees three separate tokens.  This function merges
@@ -4525,7 +4524,7 @@ def _coalesce_session_name_args(argv: list) -> list:
 
 
 def cmd_profile(args):
-    """Profile management — create, delete, list, switch, alias."""
+    """Profile 管理 — 创建、删除、列表、切换、别名。"""
     from hermes_cli.profiles import (
         list_profiles, create_profile, delete_profile, seed_profile_skills,
         set_active_profile, get_active_profile_name,
@@ -4779,7 +4778,7 @@ def cmd_profile(args):
 
 
 def cmd_dashboard(args):
-    """Start the web UI server."""
+    """启动 Web UI 服务器。"""
     try:
         import fastapi  # noqa: F401
         import uvicorn  # noqa: F401
@@ -4801,7 +4800,7 @@ def cmd_dashboard(args):
 
 
 def cmd_completion(args, parser=None):
-    """Print shell completion script."""
+    """打印 shell 补全脚本。"""
     from hermes_cli.completion import generate_bash, generate_zsh, generate_fish
     shell = getattr(args, "shell", "bash")
     if shell == "zsh":
@@ -4813,7 +4812,7 @@ def cmd_completion(args, parser=None):
 
 
 def cmd_logs(args):
-    """View and filter Hermes log files."""
+    """查看和过滤 Hermes 日志文件。"""
     from hermes_cli.logs import tail_log, list_logs
 
     log_name = getattr(args, "log_name", "agent") or "agent"
@@ -4834,7 +4833,7 @@ def cmd_logs(args):
 
 
 def main():
-    """Main entry point for hermes CLI."""
+    """Hermes CLI 的主入口点。"""
     parser = argparse.ArgumentParser(
         prog="hermes",
         description="Hermes Agent - AI assistant with tool-calling capabilities",
@@ -5977,7 +5976,7 @@ Examples:
     sessions_browse.add_argument("--limit", type=int, default=50, help="Max sessions to load (default: 50)")
 
     def _confirm_prompt(prompt: str) -> bool:
-        """Prompt for y/N confirmation, safe against non-TTY environments."""
+        """提示 y/N 确认，在非 TTY 环境中安全。"""
         try:
             return input(prompt).strip().lower() in ("y", "yes")
         except (EOFError, KeyboardInterrupt):
@@ -6304,7 +6303,7 @@ Examples:
     )
 
     def cmd_acp(args):
-        """Launch Hermes Agent as an ACP server."""
+        """将 Hermes Agent 作为 ACP 服务器启动。"""
         try:
             from acp_adapter.entry import main as acp_main
             acp_main()

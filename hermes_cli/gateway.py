@@ -1,7 +1,7 @@
 """
-Gateway subcommand for hermes CLI.
+hermes CLI 的网关子命令。
 
-Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
+处理: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 """
 
 import asyncio
@@ -28,8 +28,8 @@ from hermes_cli.config import (
     read_raw_config,
     save_env_value,
 )
-# display_hermes_home is imported lazily at call sites to avoid ImportError
-# when hermes_constants is cached from a pre-update version during `hermes update`.
+# display_hermes_home 在调用处延迟导入，以避免在 `hermes update` 期间
+# hermes_constants 缓存了旧版本时出现 ImportError。
 from hermes_cli.setup import (
     print_header, print_info, print_success, print_warning, print_error,
     prompt, prompt_choice, prompt_yes_no,
@@ -38,20 +38,19 @@ from hermes_cli.colors import Colors, color
 
 
 # =============================================================================
-# Process Management (for manual gateway runs)
+# 进程管理（用于手动运行网关）
 # =============================================================================
 
 def _get_service_pids() -> set:
-    """Return PIDs currently managed by systemd or launchd gateway services.
+    """返回当前由 systemd 或 launchd 网关服务管理的 PID。
 
-    Used to avoid killing freshly-restarted service processes when sweeping
-    for stale manual gateway processes after a service restart.  Relies on the
-    service manager having committed the new PID before the restart command
-    returns (true for both systemd and launchd in practice).
+    用于在服务重启后清扫过期的手动网关进程时，避免误杀
+    刚重启的服务进程。依赖于服务管理器在重启命令返回前
+    已提交新的 PID（对 systemd 和 launchd 实践中都成立）。
     """
     pids: set = set()
 
-    # --- systemd (Linux): user and system scopes ---
+    # --- systemd（Linux）：用户和系统作用域 ---
     if supports_systemd_services():
         for scope_args in [["systemctl", "--user"], ["systemctl"]]:
             try:
@@ -79,7 +78,7 @@ def _get_service_pids() -> set:
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
 
-    # --- launchd (macOS) ---
+    # --- launchd（macOS）---
     if is_macos():
         try:
             label = get_launchd_label()
@@ -88,7 +87,7 @@ def _get_service_pids() -> set:
                 capture_output=True, text=True, timeout=5,
             )
             if result.returncode == 0:
-                # Output: "PID\tStatus\tLabel" header, then one data line
+                    # 输出: "PID\tStatus\tLabel" 表头，然后一行数据
                 for line in result.stdout.strip().splitlines():
                     parts = line.split()
                     if len(parts) >= 3 and parts[2] == label:
@@ -105,7 +104,7 @@ def _get_service_pids() -> set:
 
 
 def _get_parent_pid(pid: int) -> int | None:
-    """Return the parent PID for ``pid``, or ``None`` when unavailable."""
+    """返回指定 ``pid`` 的父进程 PID，不可用时返回 ``None``。"""
     if pid <= 1:
         return None
     try:
@@ -130,7 +129,7 @@ def _get_parent_pid(pid: int) -> int | None:
 
 
 def _is_pid_ancestor_of_current_process(target_pid: int) -> bool:
-    """Return True when ``target_pid`` is this process or one of its ancestors."""
+    """当 ``target_pid`` 是当前进程本身或其祖先进程时返回 True。"""
     if target_pid <= 0:
         return False
 
@@ -145,7 +144,7 @@ def _is_pid_ancestor_of_current_process(target_pid: int) -> bool:
 
 
 def _request_gateway_self_restart(pid: int) -> bool:
-    """Ask a running gateway ancestor to restart itself asynchronously."""
+    """请求一个运行中的网关祖先进程异步重启自身。"""
     if not hasattr(signal, "SIGUSR1"):
         return False
     if not _is_pid_ancestor_of_current_process(pid):
@@ -158,16 +157,15 @@ def _request_gateway_self_restart(pid: int) -> bool:
 
 
 def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = False) -> list:
-    """Find PIDs of running gateway processes.
+    """查找正在运行的网关进程 PID。
 
-    Args:
-        exclude_pids: PIDs to exclude from the result (e.g. service-managed
-            PIDs that should not be killed during a stale-process sweep).
-        all_profiles: When ``True``, return gateway PIDs across **all**
-            profiles (the pre-7923 global behaviour).  ``hermes update``
-            needs this because a code update affects every profile.
-            When ``False`` (default), only PIDs belonging to the current
-            Hermes profile are returned.
+    参数:
+        exclude_pids: 要从结果中排除的 PID（例如在清理过期进程时
+            应跳过的服务管理的 PID）。
+        all_profiles: 为 ``True`` 时，返回 **所有** 配置文件的网关 PID
+            （7923 版本前的全局行为）。``hermes update`` 需要这个，
+            因为代码更新会影响每个配置文件。
+            为 ``False``（默认）时，仅返回属于当前 Hermes 配置文件的 PID。
     """
     _exclude = exclude_pids or set()
     pids = [pid for pid in _get_service_pids() if pid not in _exclude]
@@ -263,14 +261,14 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
 
 def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None,
                            all_profiles: bool = False) -> int:
-    """Kill any running gateway processes. Returns count killed.
+    """终止所有运行中的网关进程。返回终止数量。
 
     Args:
-        force: Use the platform's force-kill mechanism instead of graceful terminate.
-        exclude_pids: PIDs to skip (e.g. service-managed PIDs that were just
-            restarted and should not be killed).
-        all_profiles: When ``True``, kill across all profiles.  Passed
-            through to :func:`find_gateway_pids`.
+        force: 使用平台的强制终止机制而非优雅终止。
+        exclude_pids: 要跳过的 PID（例如刚重启的服务管理 PID，
+            不应被终止）。
+        all_profiles: 为 ``True`` 时，跨所有 profile 终止。
+            传递给 :func:`find_gateway_pids`。
     """
     pids = find_gateway_pids(exclude_pids=exclude_pids, all_profiles=all_profiles)
     killed = 0
@@ -280,7 +278,7 @@ def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None,
             terminate_pid(pid, force=force)
             killed += 1
         except ProcessLookupError:
-            # Process already gone
+            # 进程已终止
             pass
         except PermissionError:
             print(f"⚠ Permission denied to kill PID {pid}")
@@ -291,11 +289,11 @@ def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None,
 
 
 def stop_profile_gateway() -> bool:
-    """Stop only the gateway for the current profile (HERMES_HOME-scoped).
+    """仅停止当前 profile 的网关（HERMES_HOME 范围内）。
 
-    Uses the PID file written by start_gateway(), so it only kills the
-    gateway belonging to this profile — not gateways from other profiles.
-    Returns True if a process was stopped, False if none was found.
+    使用 start_gateway() 写入的 PID 文件，因此只终止
+    属于此 profile 的网关 — 不影响其他 profile 的网关。
+    如果停止了进程返回 True，未找到则返回 False。
     """
     try:
         from gateway.status import get_running_pid, remove_pid_file
@@ -314,7 +312,7 @@ def stop_profile_gateway() -> bool:
         print(f"⚠ Permission denied to kill PID {pid}")
         return False
 
-    # Wait briefly for it to exit
+    # 短暂等待进程退出
     import time as _time
     for _ in range(20):
         try:
@@ -335,10 +333,10 @@ from hermes_constants import is_container, is_termux, is_wsl
 
 
 def _wsl_systemd_operational() -> bool:
-    """Check if systemd is actually running as PID 1 on WSL.
+    """检查 WSL 上 systemd 是否真正作为 PID 1 运行。
 
-    WSL2 with ``systemd=true`` in wsl.conf has working systemd.
-    WSL2 without it (or WSL1) does not — systemctl commands fail.
+    带有 ``systemd=true`` 的 WSL2（在 wsl.conf 中）有正常工作的 systemd。
+    没有此配置的 WSL2（或 WSL1）则没有 — systemctl 命令会失败。
     """
     try:
         result = subprocess.run(
@@ -370,7 +368,7 @@ def is_windows() -> bool:
 
 
 # =============================================================================
-# Service Configuration
+# 服务配置
 # =============================================================================
 
 _SERVICE_BASE = "hermes-gateway"
@@ -378,11 +376,11 @@ SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 
 
 def _profile_suffix() -> str:
-    """Derive a service-name suffix from the current HERMES_HOME.
+    """从当前 HERMES_HOME 派生服务名称后缀。
 
-    Returns ``""`` for the default root, the profile name for
-    ``<root>/profiles/<name>``, or a short hash for any other path.
-    Works correctly in Docker (HERMES_HOME=/opt/data) and standard deployments.
+    默认根目录返回 ``""``，``<root>/profiles/<name>`` 返回 profile 名称，
+    其他路径返回短哈希。
+    在 Docker（HERMES_HOME=/opt/data）和标准部署中都能正确工作。
     """
     import hashlib
     import re
@@ -391,7 +389,7 @@ def _profile_suffix() -> str:
     default = get_default_hermes_root().resolve()
     if home == default:
         return ""
-    # Detect <root>/profiles/<name> pattern → use the profile name
+    # 检测 <root>/profiles/<name> 模式 → 使用 profile 名称
     profiles_root = (default / "profiles").resolve()
     try:
         rel = home.relative_to(profiles_root)
@@ -400,20 +398,20 @@ def _profile_suffix() -> str:
             return parts[0]
     except ValueError:
         pass
-    # Fallback: short hash for arbitrary HERMES_HOME paths
+    # 回退：对任意 HERMES_HOME 路径使用短哈希
     return hashlib.sha256(str(home).encode()).hexdigest()[:8]
 
 
 def _profile_arg(hermes_home: str | None = None) -> str:
-    """Return ``--profile <name>`` only when HERMES_HOME is a named profile.
+    """仅当 HERMES_HOME 是命名 profile 时返回 ``--profile <name>``。
 
-    For ``~/.hermes/profiles/<name>``, returns ``"--profile <name>"``.
-    For the default profile or hash-based custom paths, returns the empty string.
+    对于 ``~/.hermes/profiles/<name>``，返回 ``"--profile <name>"``。
+    对于默认 profile 或基于哈希的自定义路径，返回空字符串。
 
     Args:
-        hermes_home: Optional explicit HERMES_HOME path. Defaults to the current
-            ``get_hermes_home()`` value. Should be passed when generating a
-            service definition for a different user (e.g. system service).
+        hermes_home: 可选的显式 HERMES_HOME 路径。默认为当前
+            ``get_hermes_home()`` 的值。在为不同用户生成服务
+            定义时（例如系统服务）应传入此参数。
     """
     import re
     from hermes_constants import get_default_hermes_root
@@ -433,11 +431,11 @@ def _profile_arg(hermes_home: str | None = None) -> str:
 
 
 def get_service_name() -> str:
-    """Derive a systemd service name scoped to this HERMES_HOME.
+    """派生限定到此 HERMES_HOME 的 systemd 服务名称。
 
-    Default ``~/.hermes`` returns ``hermes-gateway`` (backward compatible).
-    Profile ``~/.hermes/profiles/coder`` returns ``hermes-gateway-coder``.
-    Any other HERMES_HOME appends a short hash for uniqueness.
+    默认的 ``~/.hermes`` 返回 ``hermes-gateway``（向后兼容）。
+    Profile ``~/.hermes/profiles/coder`` 返回 ``hermes-gateway-coder``。
+    其他 HERMES_HOME 附加短哈希以确保唯一性。
     """
     suffix = _profile_suffix()
     if not suffix:
@@ -454,13 +452,13 @@ def get_systemd_unit_path(system: bool = False) -> Path:
 
 
 def _ensure_user_systemd_env() -> None:
-    """Ensure DBUS_SESSION_BUS_ADDRESS and XDG_RUNTIME_DIR are set for systemctl --user.
+    """确保为 systemctl --user 设置了 DBUS_SESSION_BUS_ADDRESS 和 XDG_RUNTIME_DIR。
 
-    On headless servers (SSH sessions), these env vars may be missing even when
-    the user's systemd instance is running (via linger).  Without them,
-    ``systemctl --user`` fails with "Failed to connect to bus: No medium found".
-    We detect the standard socket path and set the vars so all subsequent
-    subprocess calls inherit them.
+    在无头服务器（SSH 会话）上，即使用户的 systemd 实例正在运行
+    （通过 linger），这些环境变量也可能缺失。没有它们，
+    ``systemctl --user`` 会失败并显示 "Failed to connect to bus: No medium found"。
+    我们检测标准 socket 路径并设置变量，以便后续所有
+    子进程调用都能继承它们。
     """
     uid = os.getuid()
     if "XDG_RUNTIME_DIR" not in os.environ:
@@ -486,11 +484,11 @@ def _journalctl_cmd(system: bool = False) -> list[str]:
 
 
 def _run_systemctl(args: list[str], *, system: bool = False, **kwargs) -> subprocess.CompletedProcess:
-    """Run a systemctl command, raising RuntimeError if systemctl is missing.
+    """运行 systemctl 命令，如果 systemctl 缺失则抛出 RuntimeError。
 
-    Defense-in-depth: callers are gated by ``supports_systemd_services()``,
-    but this ensures any future caller that bypasses the gate still gets a
-    clear error instead of a raw ``FileNotFoundError`` traceback.
+    深度防御：调用者受 ``supports_systemd_services()`` 门控，
+    但这确保任何绕过门控的未来调用者仍能获得
+    清晰的错误而非原始的 ``FileNotFoundError`` 回溯。
     """
     try:
         return subprocess.run(_systemctl_cmd(system) + args, **kwargs)
@@ -627,12 +625,12 @@ def install_linux_gateway_from_setup(force: bool = False) -> tuple[str | None, b
 
 
 def get_systemd_linger_status() -> tuple[bool | None, str]:
-    """Return systemd linger status for the current user.
+    """返回当前用户的 systemd linger 状态。
 
-    Returns:
-        (True, "") when linger is enabled.
-        (False, "") when linger is disabled.
-        (None, detail) when the status could not be determined.
+    返回值：
+        (True, "") 当 linger 已启用时。
+        (False, "") 当 linger 已禁用时。
+        (None, detail) 当无法确定状态时。
     """
     if is_termux():
         return None, "not supported in Termux"
@@ -678,7 +676,7 @@ def get_systemd_linger_status() -> tuple[bool | None, str]:
 
 
 def print_systemd_linger_guidance() -> None:
-    """Print the current linger status and the fix when it is disabled."""
+    """打印当前 linger 状态及禁用时的修复方法。"""
     linger_enabled, linger_detail = get_systemd_linger_status()
     if linger_enabled is True:
         print("✓ Systemd linger is enabled (service survives logout)")
@@ -691,10 +689,10 @@ def print_systemd_linger_guidance() -> None:
         print("  sudo loginctl enable-linger $USER")
 
 def _launchd_user_home() -> Path:
-    """Return the real macOS user home for launchd artifacts.
+    """返回用于 launchd 产物的真实 macOS 用户主目录。
 
-    Profile-mode Hermes often sets ``HOME`` to a profile-scoped directory, but
-    launchd user agents still live under the actual account home.
+    Profile 模式的 Hermes 经常将 ``HOME`` 设置为 profile 范围的目录，但
+    launchd 用户代理仍位于实际账户主目录下。
     """
     import pwd
 
@@ -702,40 +700,40 @@ def _launchd_user_home() -> Path:
 
 
 def get_launchd_plist_path() -> Path:
-    """Return the launchd plist path, scoped per profile.
+    """返回按 profile 范围划分的 launchd plist 路径。
 
-    Default ``~/.hermes`` → ``ai.hermes.gateway.plist`` (backward compatible).
-    Profile ``~/.hermes/profiles/coder`` → ``ai.hermes.gateway-coder.plist``.
+    默认的 ``~/.hermes`` → ``ai.hermes.gateway.plist``（向后兼容）。
+    Profile ``~/.hermes/profiles/coder`` → ``ai.hermes.gateway-coder.plist``。
     """
     suffix = _profile_suffix()
     name = f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
     return _launchd_user_home() / "Library" / "LaunchAgents" / f"{name}.plist"
 
 def _detect_venv_dir() -> Path | None:
-    """Detect the active virtualenv directory.
+    """检测活动的虚拟环境目录。
 
-    Checks ``sys.prefix`` first (works regardless of the directory name),
-    then ``VIRTUAL_ENV`` env var (covers uv-managed environments where
-    sys.prefix == sys.base_prefix), then falls back to probing common
-    directory names under PROJECT_ROOT.
-    Returns ``None`` when no virtualenv can be found.
+    首先检查 ``sys.prefix``（无论目录名称如何都有效），
+    然后检查 ``VIRTUAL_ENV`` 环境变量（覆盖 uv 管理的环境，
+    其中 sys.prefix == sys.base_prefix），最后回退到探测
+    PROJECT_ROOT 下的常见目录名。
+    未找到虚拟环境时返回 ``None``。
     """
-    # If we're running inside a virtualenv, sys.prefix points to it.
+    # 如果在虚拟环境内运行，sys.prefix 指向它。
     if sys.prefix != sys.base_prefix:
         venv = Path(sys.prefix)
         if venv.is_dir():
             return venv
 
-    # uv and some other tools set VIRTUAL_ENV without changing sys.prefix.
-    # This catches `uv run` where sys.prefix == sys.base_prefix but the
-    # environment IS a venv.  (#8620)
+    # uv 和其他工具设置 VIRTUAL_ENV 但不更改 sys.prefix。
+    # 这捕获了 `uv run` 的场景，其中 sys.prefix == sys.base_prefix 但
+    # 环境实际上是 venv。（#8620）
     _virtual_env = os.environ.get("VIRTUAL_ENV")
     if _virtual_env:
         venv = Path(_virtual_env)
         if venv.is_dir():
             return venv
 
-    # Fallback: check common virtualenv directory names under the project root.
+    # 回退：检查项目根目录下的常见虚拟环境目录名。
     for candidate in (".venv", "venv"):
         venv = PROJECT_ROOT / candidate
         if venv.is_dir():
@@ -757,11 +755,11 @@ def get_python_path() -> str:
 
 
 # =============================================================================
-# Systemd (Linux)
+# Systemd（Linux）
 # =============================================================================
 
 def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
-    """Return user-local bin dirs that exist and aren't already in *path_entries*."""
+    """返回存在且不在 *path_entries* 中的用户本地 bin 目录。"""
     candidates = [
         str(home / ".local" / "bin"),       # uv, uvx, pip-installed CLIs
         str(home / ".cargo" / "bin"),        # Rust/cargo tools
@@ -772,21 +770,21 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
 
 
 def _remap_path_for_user(path: str, target_home_dir: str) -> str:
-    """Remap *path* from the current user's home to *target_home_dir*.
+    """将 *path* 从当前用户的主目录重映射到 *target_home_dir*。
 
-    If *path* lives under ``Path.home()`` the corresponding prefix is swapped
-    to *target_home_dir*; otherwise the path is returned unchanged.
+    如果 *path* 位于 ``Path.home()`` 下，则对应前缀被替换为
+    *target_home_dir*；否则路径保持不变。
 
       /root/.hermes/hermes-agent  -> /home/alice/.hermes/hermes-agent
-      /opt/hermes                 -> /opt/hermes  (kept as-is)
+      /opt/hermes                 -> /opt/hermes  (保持不变)
 
-    Note: this function intentionally does NOT resolve symlinks. A venv's
-    ``bin/python`` is typically a symlink to the base interpreter (e.g. a
-    uv-managed CPython at ``~/.local/share/uv/python/.../python3.11``);
-    resolving that symlink swaps the unit's ``ExecStart`` to a bare Python
-    that has none of the venv's site-packages, so the service crashes on
-    the first ``import``. Keep the symlinked path so the venv activates
-    its own environment. Lexical expansion only via ``expanduser``.
+    注意：此函数故意不解析符号链接。venv 的 ``bin/python``
+    通常是指向基础解释器的符号链接（例如 uv 管理的 CPython
+    位于 ``~/.local/share/uv/python/.../python3.11``）；
+    解析该符号链接会将 unit 的 ``ExecStart`` 替换为一个没有
+    venv site-packages 的裸 Python，导致服务在首次 ``import``
+    时崩溃。保留符号链接路径以激活 venv 自己的环境。
+    仅通过 ``expanduser`` 进行词法展开。
     """
     current_home = Path.home()
     p = Path(path).expanduser()
@@ -798,7 +796,7 @@ def _remap_path_for_user(path: str, target_home_dir: str) -> str:
 
 
 def _hermes_home_for_target_user(target_home_dir: str) -> str:
-    """Remap the current HERMES_HOME to the equivalent under a target user's home.
+    """将当前 HERMES_HOME 重映射到目标用户主目录下的等效路径。
 
     When installing a system service via sudo, get_hermes_home() resolves to
     root's home.  This translates it to the target user's equivalent path:
@@ -810,16 +808,16 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
     current_default = (Path.home() / ".hermes").resolve()
     target_default = Path(target_home_dir) / ".hermes"
 
-    # Default ~/.hermes → remap to target user's default
+    # 默认 ~/.hermes → 重映射到目标用户的默认路径
     if current_hermes == current_default:
         return str(target_default)
 
-    # Profile or subdir of ~/.hermes → preserve the relative structure
+    # ~/.hermes 的 profile 或子目录 → 保留相对结构
     try:
         relative = current_hermes.relative_to(current_default)
         return str(target_default / relative)
     except ValueError:
-        # Completely custom path (not under ~/.hermes) — keep as-is
+        # 完全自定义的路径（不在 ~/.hermes 下）— 保持不变
         return str(current_hermes)
 
 
@@ -845,7 +843,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         username, group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
         profile_arg = _profile_arg(hermes_home)
-        # Remap all paths that may resolve under the calling user's home
+        # 重映射所有可能解析到调用用户主目录下的路径
         # (e.g. /root/) to the target user's home so the service can
         # actually access them.
         python_path = _remap_path_for_user(python_path, home_dir)
@@ -927,12 +925,12 @@ def _normalize_service_definition(text: str) -> str:
 
 
 def _normalize_launchd_plist_for_comparison(text: str) -> str:
-    """Normalize launchd plist text for staleness checks.
+    """标准化 launchd plist 文本以进行过期检查。
 
-    The generated plist intentionally captures a broad PATH assembled from the
-    invoking shell so user-installed tools remain reachable under launchd.
-    That makes raw text comparison unstable across shells, so ignore the PATH
-    payload when deciding whether the installed plist is stale.
+    生成的 plist 有意从调用 shell 中捕获广泛的 PATH，
+    以便用户安装的工具在 launchd 下仍可访问。
+    这使得跨 shell 的原始文本比较不稳定，因此在判断
+    已安装的 plist 是否过期时忽略 PATH 有效负载。
     """
     import re
 
@@ -958,7 +956,7 @@ def systemd_unit_is_current(system: bool = False) -> bool:
 
 
 def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
-    """Rewrite the installed systemd unit when the generated definition has changed."""
+    """当生成的定义发生变化时重写已安装的 systemd unit。"""
     unit_path = get_systemd_unit_path(system=system)
     if not unit_path.exists() or systemd_unit_is_current(system=system):
         return False
@@ -987,7 +985,7 @@ def _print_linger_enable_warning(username: str, detail: str | None = None) -> No
 
 
 def _ensure_linger_enabled() -> None:
-    """Enable linger when possible so the user gateway survives logout."""
+    """在可能时启用 linger，以使用户网关在注销后继续运行。"""
     if is_termux() or not is_linux():
         return
 
@@ -1037,7 +1035,7 @@ def _select_systemd_scope(system: bool = False) -> bool:
 
 
 def _get_restart_drain_timeout() -> float:
-    """Return the configured gateway restart drain timeout in seconds."""
+    """返回配置的网关重启排空超时秒数。"""
     raw = os.getenv("HERMES_RESTART_DRAIN_TIMEOUT", "").strip()
     if not raw:
         cfg = read_raw_config()
@@ -1273,11 +1271,11 @@ def systemd_status(deep: bool = False, system: bool = False):
 
 
 # =============================================================================
-# Launchd (macOS)
+# Launchd（macOS）
 # =============================================================================
 
 def get_launchd_label() -> str:
-    """Return the launchd service label, scoped per profile."""
+    """返回按 profile 范围划分的 launchd 服务标签。"""
     suffix = _profile_suffix()
     return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
 
@@ -1295,16 +1293,16 @@ def generate_launchd_plist() -> str:
     log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
     profile_arg = _profile_arg(hermes_home)
-    # Build a sane PATH for the launchd plist.  launchd provides only a
-    # minimal default (/usr/bin:/bin:/usr/sbin:/sbin) which misses Homebrew,
-    # nvm, cargo, etc.  We prepend venv/bin and node_modules/.bin (matching
-    # the systemd unit), then capture the user's full shell PATH so every
-    # user-installed tool (node, ffmpeg, …) is reachable.
+    # 为 launchd plist 构建合理的 PATH。launchd 仅提供
+    # 最小默认值（/usr/bin:/bin:/usr/sbin:/sbin），缺少 Homebrew、
+    # nvm、cargo 等。我们前置 venv/bin 和 node_modules/.bin（与
+    # systemd unit 匹配），然后捕获用户的完整 shell PATH，以确保每个
+    # 用户安装的工具（node、ffmpeg 等）都可访问。
     detected_venv = _detect_venv_dir()
     venv_bin = str(detected_venv / "bin") if detected_venv else str(PROJECT_ROOT / "venv" / "bin")
     venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
     node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
-    # Resolve the directory containing the node binary (e.g. Homebrew, nvm)
+    # 解析 node 二进制文件所在目录（例如 Homebrew、nvm），
     # so it's explicitly in PATH even if the user's shell PATH changes later.
     priority_dirs = [venv_bin, node_bin]
     resolved_node = shutil.which("node")
@@ -1316,7 +1314,7 @@ def generate_launchd_plist() -> str:
         dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p])
     )
 
-    # Build ProgramArguments array, including --profile when using a named profile
+    # 构建 ProgramArguments 数组，使用命名 profile 时包含 --profile
     prog_args = [
         f"<string>{python_path}</string>",
         "<string>-m</string>",
@@ -1376,7 +1374,7 @@ def generate_launchd_plist() -> str:
 """
 
 def launchd_plist_is_current() -> bool:
-    """Check if the installed launchd plist matches the currently generated one."""
+    """检查已安装的 launchd plist 是否与当前生成的匹配。"""
     plist_path = get_launchd_plist_path()
     if not plist_path.exists():
         return False
@@ -1387,11 +1385,11 @@ def launchd_plist_is_current() -> bool:
 
 
 def refresh_launchd_plist_if_needed() -> bool:
-    """Rewrite the installed launchd plist when the generated definition has changed.
+    """当生成的定义发生变化时重写已安装的 launchd plist。
 
-    Unlike systemd, launchd picks up plist changes on the next ``launchctl kill``/
-    ``launchctl kickstart`` cycle — no daemon-reload is needed. We still bootout/
-    bootstrap to make launchd re-read the updated plist immediately.
+    与 systemd 不同，launchd 在下一个 ``launchctl kill``/
+    ``launchctl kickstart`` 周期时获取 plist 更改 — 不需要 daemon-reload。
+    我们仍然 bootout/bootstrap 以使 launchd 立即重新读取更新的 plist。
     """
     plist_path = get_launchd_plist_path()
     if not plist_path.exists() or launchd_plist_is_current():
@@ -1399,7 +1397,7 @@ def refresh_launchd_plist_if_needed() -> bool:
 
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
     label = get_launchd_label()
-    # Bootout/bootstrap so launchd picks up the new definition
+    # Bootout/bootstrap 以使 launchd 获取新定义
     subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
     subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=False, timeout=30)
     print("↻ Updated gateway launchd service definition to match the current Hermes install")
@@ -1448,7 +1446,7 @@ def launchd_start():
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
 
-    # Self-heal if the plist is missing entirely (e.g., manual cleanup, failed upgrade)
+    # 如果 plist 完全缺失则自我修复（例如手动清理、升级失败）
     if not plist_path.exists():
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1487,15 +1485,14 @@ def launchd_stop():
     print("✓ Service stopped")
 
 def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.0) -> bool:
-    """Wait for the gateway process (by saved PID) to exit.
+    """等待网关进程（通过保存的 PID）退出。
 
-    Uses the PID from the gateway.pid file — not launchd labels — so this
-    works correctly when multiple gateway instances run under separate
-    HERMES_HOME directories.
+    使用 gateway.pid 文件中的 PID — 不是 launchd 标签 — 因此
+    当多个网关实例在不同 HERMES_HOME 目录下运行时能正确工作。
 
     Args:
-        timeout: Total seconds to wait before giving up.
-        force_after: Seconds of graceful waiting before escalating to force-kill.
+        timeout: 放弃前等待的总秒数。
+        force_after: 优雅等待后升级为强制终止的秒数。
     """
     import time
     from gateway.status import get_running_pid
@@ -1510,7 +1507,7 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
             return True  # Process exited cleanly.
 
         if force_after is not None and not force_sent and time.monotonic() >= force_deadline:
-            # Grace period expired — force-kill the specific PID.
+            # 优雅期限已过 — 对特定 PID 强制终止。
             try:
                 terminate_pid(pid, force=True)
                 print(f"⚠ Gateway PID {pid} did not exit gracefully; sent SIGKILL")
@@ -1520,7 +1517,7 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
 
         time.sleep(0.3)
 
-    # Timed out even after force-kill.
+    # 强制终止后仍超时。
     remaining_pid = get_running_pid()
     if remaining_pid is not None:
         print(f"⚠ Gateway PID {remaining_pid} still running after {timeout}s — restart may fail")
@@ -1553,7 +1550,7 @@ def launchd_restart():
     except subprocess.CalledProcessError as e:
         if e.returncode not in (3, 113):
             raise
-        # Job not loaded — bootstrap and start fresh
+        # Job 未加载 — bootstrap 并重新启动
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
         subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
@@ -1600,18 +1597,17 @@ def launchd_status(deep: bool = False):
 
 
 # =============================================================================
-# Gateway Runner
+# 网关运行器
 # =============================================================================
 
 def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
-    """Run the gateway in foreground.
-    
+    """在前台运行网关。
+
     Args:
-        verbose: Stderr log verbosity count added on top of default WARNING (0=WARNING, 1=INFO, 2+=DEBUG).
-        quiet: Suppress all stderr log output.
-        replace: If True, kill any existing gateway instance before starting.
-                 This prevents systemd restart loops when the old process
-                 hasn't fully exited yet.
+        verbose: 在默认 WARNING 之上添加的 stderr 日志详细程度（0=WARNING, 1=INFO, 2+=DEBUG）。
+        quiet: 抑制所有 stderr 日志输出。
+        replace: 为 True 时，在启动前终止任何现有网关实例。
+                 这防止了旧进程尚未完全退出时 systemd 的重启循环。
     """
     sys.path.insert(0, str(PROJECT_ROOT))
     
@@ -1625,8 +1621,8 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     print("└─────────────────────────────────────────────────────────┘")
     print()
     
-    # Exit with code 1 if gateway fails to connect any platform,
-    # so systemd Restart=on-failure will retry on transient errors
+    # 如果网关连接任何平台失败则以代码 1 退出，
+    # 这样 systemd Restart=on-failure 会在临时错误时重试
     verbosity = None if quiet else verbose
     success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
     if not success:
@@ -1634,11 +1630,11 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
 
 
 # =============================================================================
-# Gateway Setup (Interactive Messaging Platform Configuration)
+# 网关设置（交互式消息平台配置）
 # =============================================================================
 
-# Per-platform config: each entry defines the env vars, setup instructions,
-# and prompts needed to configure a messaging platform.
+# 每个平台的配置：每个条目定义配置消息平台所需的
+# 环境变量、设置说明和提示。
 _PLATFORMS = [
     {
         "key": "telegram",
@@ -2006,10 +2002,10 @@ _PLATFORMS = [
 
 
 def _platform_status(platform: dict) -> str:
-    """Return a plain-text status string for a platform.
+    """返回平台的纯文本状态字符串。
 
-    Returns uncolored text so it can safely be embedded in
-    simple_term_menu items (ANSI codes break width calculation).
+    返回无颜色的文本，以便可以安全地嵌入
+    simple_term_menu 项目中（ANSI 代码会破坏宽度计算）。
     """
     token_var = platform["token_var"]
     val = get_env_value(token_var)
@@ -2059,7 +2055,7 @@ def _platform_status(platform: dict) -> str:
 
 
 def _runtime_health_lines() -> list[str]:
-    """Summarize the latest persisted gateway runtime health state."""
+    """汇总最新持久化的网关运行时健康状态。"""
     try:
         from gateway.status import read_runtime_status
     except Exception:
@@ -2094,7 +2090,7 @@ def _runtime_health_lines() -> list[str]:
 
 
 def _setup_standard_platform(platform: dict):
-    """Interactive setup for Telegram, Discord, or Slack."""
+    """Telegram、Discord 或 Slack 的交互式设置。"""
     emoji = platform["emoji"]
     label = platform["label"]
     token_var = platform["token_var"]
@@ -2102,7 +2098,7 @@ def _setup_standard_platform(platform: dict):
     print()
     print(color(f"  ─── {emoji} {label} Setup ───", Colors.CYAN))
 
-    # Show step-by-step setup instructions if this platform has them
+    # 如果此平台有分步设置说明则显示
     instructions = platform.get("setup_instructions")
     if instructions:
         print()
@@ -2192,38 +2188,38 @@ def _setup_standard_platform(platform: dict):
 
 
 def _setup_whatsapp():
-    """Delegate to the existing WhatsApp setup flow."""
+    """委托给现有的 WhatsApp 设置流程。"""
     from hermes_cli.main import cmd_whatsapp
     import argparse
     cmd_whatsapp(argparse.Namespace())
 
 
 def _setup_email():
-    """Configure Email via the standard platform setup."""
+    """通过标准平台设置流程配置 Email。"""
     email_platform = next(p for p in _PLATFORMS if p["key"] == "email")
     _setup_standard_platform(email_platform)
 
 
 def _setup_sms():
-    """Configure SMS (Twilio) via the standard platform setup."""
+    """通过标准平台设置流程配置 SMS（Twilio）。"""
     sms_platform = next(p for p in _PLATFORMS if p["key"] == "sms")
     _setup_standard_platform(sms_platform)
 
 
 def _setup_dingtalk():
-    """Configure DingTalk via the standard platform setup."""
+    """通过标准平台设置流程配置钉钉。"""
     dingtalk_platform = next(p for p in _PLATFORMS if p["key"] == "dingtalk")
     _setup_standard_platform(dingtalk_platform)
 
 
 def _setup_wecom():
-    """Configure WeCom (Enterprise WeChat) via the standard platform setup."""
+    """通过标准平台设置流程配置企业微信。"""
     wecom_platform = next(p for p in _PLATFORMS if p["key"] == "wecom")
     _setup_standard_platform(wecom_platform)
 
 
 def _is_service_installed() -> bool:
-    """Check if the gateway is installed as a system service."""
+    """检查网关是否已安装为系统服务。"""
     if supports_systemd_services():
         return get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()
     elif is_macos():
@@ -2232,7 +2228,7 @@ def _is_service_installed() -> bool:
 
 
 def _is_service_running() -> bool:
-    """Check if the gateway service is currently running."""
+    """检查网关服务当前是否正在运行。"""
     if supports_systemd_services():
         user_unit_exists = get_systemd_unit_path(system=False).exists()
         system_unit_exists = get_systemd_unit_path(system=True).exists()
@@ -2274,7 +2270,7 @@ def _is_service_running() -> bool:
 
 
 def _setup_weixin():
-    """Interactive setup for Weixin / WeChat personal accounts."""
+    """微信/WeChat 个人账号的交互式设置。"""
     print()
     print(color("  ─── 💬 Weixin / WeChat Setup ───", Colors.CYAN))
     print()
@@ -2401,7 +2397,7 @@ def _setup_weixin():
 
 
 def _setup_feishu():
-    """Interactive setup for Feishu / Lark — scan-to-create or manual credentials."""
+    """飞书/Lark 的交互式设置 — 扫码创建或手动输入凭证。"""
     print()
     print(color("  ─── 🪽 Feishu / Lark Setup ───", Colors.CYAN))
 
@@ -2573,7 +2569,7 @@ def _setup_feishu():
 
 
 def _setup_signal():
-    """Interactive setup for Signal messenger."""
+    """Signal 即时通讯的交互式设置。"""
     import shutil
 
     print()
@@ -2687,7 +2683,7 @@ def _setup_signal():
 
 
 def gateway_setup():
-    """Interactive setup for messaging platforms + gateway service."""
+    """消息平台 + 网关服务的交互式设置。"""
     if is_managed():
         managed_error("run gateway setup")
         return
@@ -2841,11 +2837,11 @@ def gateway_setup():
 
 
 # =============================================================================
-# Main Command Handler
+# 主命令处理器
 # =============================================================================
 
 def gateway_command(args):
-    """Handle gateway subcommands."""
+    """处理网关子命令。"""
     subcmd = getattr(args, 'gateway_command', None)
     
     # Default to run if no subcommand

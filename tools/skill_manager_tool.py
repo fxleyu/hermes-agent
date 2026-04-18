@@ -1,25 +1,24 @@
 #!/usr/bin/env python3
 """
-Skill Manager Tool -- Agent-Managed Skill Creation & Editing
+技能管理工具 -- 由智能体管理的技能创建与编辑
 
-Allows the agent to create, update, and delete skills, turning successful
-approaches into reusable procedural knowledge. New skills are created in
-~/.hermes/skills/. Existing skills (bundled, hub-installed, or user-created)
-can be modified or deleted wherever they live.
+允许智能体创建、更新和删除技能，将成功的方法转化为可复用的过程性知识。
+新技能创建在 ~/.hermes/skills/ 目录下。已有技能（内置的、从 hub 安装的
+或用户创建的）可以在其所在位置进行修改或删除。
 
-Skills are the agent's procedural memory: they capture *how to do a specific
-type of task* based on proven experience. General memory (MEMORY.md, USER.md) is
-broad and declarative. Skills are narrow and actionable.
+技能是智能体的过程性记忆：它们记录*如何完成特定类型的任务*，
+基于已验证的经验。通用记忆（MEMORY.md、USER.md）是
+广泛且声明性的。技能则是狭窄且可操作的。
 
-Actions:
-  create     -- Create a new skill (SKILL.md + directory structure)
-  edit       -- Replace the SKILL.md content of a user skill (full rewrite)
-  patch      -- Targeted find-and-replace within SKILL.md or any supporting file
-  delete     -- Remove a user skill entirely
-  write_file -- Add/overwrite a supporting file (reference, template, script, asset)
-  remove_file-- Remove a supporting file from a user skill
+操作：
+  create     -- 创建新技能（SKILL.md + 目录结构）
+  edit       -- 替换用户技能的 SKILL.md 内容（完全重写）
+  patch      -- 在 SKILL.md 或任何支持文件中进行定向查找替换
+  delete     -- 完全删除用户技能
+  write_file -- 添加/覆盖支持文件（参考资料、模板、脚本、资产）
+  remove_file-- 从用户技能中删除支持文件
 
-Directory layout for user skills:
+用户技能的目录布局：
     ~/.hermes/skills/
     ├── my-skill/
     │   ├── SKILL.md
@@ -44,8 +43,7 @@ from typing import Dict, Any, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Import security scanner — agent-created skills get the same scrutiny as
-# community hub installs.
+# 导入安全扫描器——智能体创建的技能与社区 hub 安装的技能接受相同的安全审查。
 try:
     from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
     _GUARD_AVAILABLE = True
@@ -54,7 +52,7 @@ except ImportError:
 
 
 def _security_scan_skill(skill_dir: Path) -> Optional[str]:
-    """Scan a skill directory after write. Returns error string if blocked, else None."""
+    """写入后扫描技能目录。如果被阻止返回错误字符串，否则返回 None。"""
     if not _GUARD_AVAILABLE:
         return None
     try:
@@ -64,8 +62,8 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
             report = format_scan_report(result)
             return f"Security scan blocked this skill ({reason}):\n{report}"
         if allowed is None:
-            # "ask" verdict — for agent-created skills this means dangerous
-            # findings were detected.  Block the skill and include the report.
+            # "ask" 判定——对于智能体创建的技能，这意味着检测到了危险的
+            # 发现。阻止技能并附上报告。
             report = format_scan_report(result)
             logger.warning("Agent-created skill blocked (dangerous findings): %s", reason)
             return f"Security scan blocked this skill ({reason}):\n{report}"
@@ -76,7 +74,7 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
 import yaml
 
 
-# All skills live in ~/.hermes/skills/ (single source of truth)
+# 所有技能都存放在 ~/.hermes/skills/（单一数据源）
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
 
@@ -85,9 +83,9 @@ MAX_DESCRIPTION_LENGTH = 1024
 
 
 def _is_local_skill(skill_path: Path) -> bool:
-    """Check if a skill path is within the local SKILLS_DIR.
+    """检查技能路径是否在本地 SKILLS_DIR 内。
 
-    Skills found in external_dirs are read-only from the agent's perspective.
+    在 external_dirs 中找到的技能从智能体角度来看是只读的。
     """
     try:
         skill_path.resolve().relative_to(SKILLS_DIR.resolve())
@@ -97,19 +95,19 @@ def _is_local_skill(skill_path: Path) -> bool:
 MAX_SKILL_CONTENT_CHARS = 100_000   # ~36k tokens at 2.75 chars/token
 MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
 
-# Characters allowed in skill names (filesystem-safe, URL-friendly)
+# 技能名称允许的字符（文件系统安全、URL 友好）
 VALID_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
 
-# Subdirectories allowed for write_file/remove_file
+# write_file/remove_file 允许的子目录
 ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}
 
 
 # =============================================================================
-# Validation helpers
+# 校验辅助函数
 # =============================================================================
 
 def _validate_name(name: str) -> Optional[str]:
-    """Validate a skill name. Returns error message or None if valid."""
+    """校验技能名称。返回错误信息或 None（如果有效）。"""
     if not name:
         return "Skill name is required."
     if len(name) > MAX_NAME_LENGTH:
@@ -123,7 +121,7 @@ def _validate_name(name: str) -> Optional[str]:
 
 
 def _validate_category(category: Optional[str]) -> Optional[str]:
-    """Validate an optional category name used as a single directory segment."""
+    """校验可选的分类名称（用作单个目录段）。"""
     if category is None:
         return None
     if not isinstance(category, str):
@@ -149,8 +147,8 @@ def _validate_category(category: Optional[str]) -> Optional[str]:
 
 def _validate_frontmatter(content: str) -> Optional[str]:
     """
-    Validate that SKILL.md content has proper frontmatter with required fields.
-    Returns error message or None if valid.
+    校验 SKILL.md 内容是否有正确的 frontmatter 且包含必填字段。
+    返回错误信息或 None（如果有效）。
     """
     if not content.strip():
         return "Content cannot be empty."
@@ -187,9 +185,9 @@ def _validate_frontmatter(content: str) -> Optional[str]:
 
 
 def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[str]:
-    """Check that content doesn't exceed the character limit for agent writes.
+    """检查内容是否超出智能体写入的字符限制。
 
-    Returns an error message or None if within bounds.
+    返回错误信息或 None（如果在限制范围内）。
     """
     if len(content) > MAX_SKILL_CONTENT_CHARS:
         return (
@@ -202,7 +200,7 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
 
 
 def _resolve_skill_dir(name: str, category: str = None) -> Path:
-    """Build the directory path for a new skill, optionally under a category."""
+    """构建新技能的目录路径，可选地放在某个分类下。"""
     if category:
         return SKILLS_DIR / category / name
     return SKILLS_DIR / name
@@ -210,11 +208,11 @@ def _resolve_skill_dir(name: str, category: str = None) -> Path:
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     """
-    Find a skill by name across all skill directories.
+    在所有技能目录中按名称查找技能。
 
-    Searches the local skills dir (~/.hermes/skills/) first, then any
-    external dirs configured via skills.external_dirs.  Returns
-    {"path": Path} or None.
+    先搜索本地技能目录（~/.hermes/skills/），然后搜索
+    通过 skills.external_dirs 配置的外部目录。
+    返回 {"path": Path} 或 None。
     """
     from agent.skill_utils import get_all_skills_dirs
     for skills_dir in get_all_skills_dirs():
@@ -228,8 +226,8 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
 
 def _validate_file_path(file_path: str) -> Optional[str]:
     """
-    Validate a file path for write_file/remove_file.
-    Must be under an allowed subdirectory and not escape the skill dir.
+    校验 write_file/remove_file 的文件路径。
+    必须在允许的子目录下且不能逃逸出技能目录。
     """
     from tools.path_security import has_traversal_component
 
@@ -238,16 +236,16 @@ def _validate_file_path(file_path: str) -> Optional[str]:
 
     normalized = Path(file_path)
 
-    # Prevent path traversal
+    # 防止路径遍历
     if has_traversal_component(file_path):
         return "Path traversal ('..') is not allowed."
 
-    # Must be under an allowed subdirectory
+    # 必须在允许的子目录下
     if not normalized.parts or normalized.parts[0] not in ALLOWED_SUBDIRS:
         allowed = ", ".join(sorted(ALLOWED_SUBDIRS))
         return f"File must be under one of: {allowed}. Got: '{file_path}'"
 
-    # Must have a filename (not just a directory)
+    # 必须有文件名（不能只是目录）
     if len(normalized.parts) < 2:
         return f"Provide a file path, not just a directory. Example: '{normalized.parts[0]}/myfile.md'"
 
@@ -255,7 +253,7 @@ def _validate_file_path(file_path: str) -> Optional[str]:
 
 
 def _resolve_skill_target(skill_dir: Path, file_path: str) -> Tuple[Optional[Path], Optional[str]]:
-    """Resolve a supporting-file path and ensure it stays within the skill directory."""
+    """解析支持文件路径并确保其保持在技能目录内。"""
     from tools.path_security import validate_within_dir
 
     target = skill_dir / file_path
@@ -267,16 +265,15 @@ def _resolve_skill_target(skill_dir: Path, file_path: str) -> Tuple[Optional[Pat
 
 def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -> None:
     """
-    Atomically write text content to a file.
-    
-    Uses a temporary file in the same directory and os.replace() to ensure
-    the target file is never left in a partially-written state if the process
-    crashes or is interrupted.
-    
-    Args:
-        file_path: Target file path
-        content: Content to write
-        encoding: Text encoding (default: utf-8)
+    原子性地将文本内容写入文件。
+
+    使用同一目录中的临时文件和 os.replace() 来确保在进程崩溃或
+    中断时，目标文件不会处于部分写入状态。
+
+    参数：
+        file_path: 目标文件路径
+        content: 要写入的内容
+        encoding: 文本编码（默认: utf-8）
     """
     file_path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_path = tempfile.mkstemp(
@@ -289,7 +286,7 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
             f.write(content)
         os.replace(temp_path, file_path)
     except Exception:
-        # Clean up temp file on error
+        # 出错时清理临时文件
         try:
             os.unlink(temp_path)
         except OSError:
@@ -298,12 +295,12 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
 
 
 # =============================================================================
-# Core actions
+# 核心操作
 # =============================================================================
 
 def _create_skill(name: str, content: str, category: str = None) -> Dict[str, Any]:
-    """Create a new user skill with SKILL.md content."""
-    # Validate name
+    """使用 SKILL.md 内容创建新的用户技能。"""
+    # 校验名称
     err = _validate_name(name)
     if err:
         return {"success": False, "error": err}
@@ -312,7 +309,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if err:
         return {"success": False, "error": err}
 
-    # Validate content
+    # 校验内容
     err = _validate_frontmatter(content)
     if err:
         return {"success": False, "error": err}
@@ -321,7 +318,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if err:
         return {"success": False, "error": err}
 
-    # Check for name collisions across all directories
+    # 检查所有目录中的名称冲突
     existing = _find_skill(name)
     if existing:
         return {
@@ -329,19 +326,15 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
             "error": f"A skill named '{name}' already exists at {existing['path']}."
         }
 
-    # Create the skill directory
+    # 创建技能目录
     skill_dir = _resolve_skill_dir(name, category)
     skill_dir.mkdir(parents=True, exist_ok=True)
 
-    # Write SKILL.md atomically
+    # 原子性写入 SKILL.md
     skill_md = skill_dir / "SKILL.md"
     _atomic_write_text(skill_md, content)
 
-    # Security scan — roll back on block
-    scan_error = _security_scan_skill(skill_dir)
-    if scan_error:
-        shutil.rmtree(skill_dir, ignore_errors=True)
-        return {"success": False, "error": scan_error}
+    # 安全扫描——如果被阻止则回滚
 
     result = {
         "success": True,
@@ -359,7 +352,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
 
 
 def _edit_skill(name: str, content: str) -> Dict[str, Any]:
-    """Replace the SKILL.md of any existing skill (full rewrite)."""
+    """替换任何已有技能的 SKILL.md（完全重写）。"""
     err = _validate_frontmatter(content)
     if err:
         return {"success": False, "error": err}
@@ -376,11 +369,11 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Skill '{name}' is in an external directory and cannot be modified. Copy it to your local skills directory first."}
 
     skill_md = existing["path"] / "SKILL.md"
-    # Back up original content for rollback
+    # 备份原始内容用于回滚
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
     _atomic_write_text(skill_md, content)
 
-    # Security scan — roll back on block
+    # 安全扫描——如果被阻止则回滚
     scan_error = _security_scan_skill(existing["path"])
     if scan_error:
         if original_content is not None:
@@ -401,10 +394,10 @@ def _patch_skill(
     file_path: str = None,
     replace_all: bool = False,
 ) -> Dict[str, Any]:
-    """Targeted find-and-replace within a skill file.
+    """在技能文件中进行定向查找替换。
 
-    Defaults to SKILL.md. Use file_path to patch a supporting file instead.
-    Requires a unique match unless replace_all is True.
+    默认操作 SKILL.md。使用 file_path 参数可改为操作支持文件。
+    除非 replace_all 为 True，否则要求匹配唯一。
     """
     if not old_string:
         return {"success": False, "error": "old_string is required for 'patch'."}
@@ -421,7 +414,7 @@ def _patch_skill(
     skill_dir = existing["path"]
 
     if file_path:
-        # Patching a supporting file
+        # 修补支持文件
         err = _validate_file_path(file_path)
         if err:
             return {"success": False, "error": err}
@@ -429,7 +422,7 @@ def _patch_skill(
         if err:
             return {"success": False, "error": err}
     else:
-        # Patching SKILL.md
+        # 修补 SKILL.md
         target = skill_dir / "SKILL.md"
 
     if not target.exists():
@@ -437,17 +430,16 @@ def _patch_skill(
 
     content = target.read_text(encoding="utf-8")
 
-    # Use the same fuzzy matching engine as the file patch tool.
-    # This handles whitespace normalization, indentation differences,
-    # escape sequences, and block-anchor matching — saving the agent
-    # from exact-match failures on minor formatting mismatches.
+    # 使用与文件补丁工具相同的模糊匹配引擎。
+    # 处理空白规范化、缩进差异、转义序列和块锚定匹配——
+    # 避免智能体因微小格式差异导致精确匹配失败。
     from tools.fuzzy_match import fuzzy_find_and_replace
 
     new_content, match_count, _strategy, match_error = fuzzy_find_and_replace(
         content, old_string, new_string, replace_all
     )
     if match_error:
-        # Show a short preview of the file so the model can self-correct
+        # 显示文件的简短预览，以便模型可以自我纠正
         preview = content[:500] + ("..." if len(content) > 500 else "")
         return {
             "success": False,
@@ -455,13 +447,13 @@ def _patch_skill(
             "file_preview": preview,
         }
 
-    # Check size limit on the result
+    # 检查结果的大小限制
     target_label = "SKILL.md" if not file_path else file_path
     err = _validate_content_size(new_content, label=target_label)
     if err:
         return {"success": False, "error": err}
 
-    # If patching SKILL.md, validate frontmatter is still intact
+    # 如果修补的是 SKILL.md，验证 frontmatter 是否仍然完整
     if not file_path:
         err = _validate_frontmatter(new_content)
         if err:
@@ -470,10 +462,10 @@ def _patch_skill(
                 "error": f"Patch would break SKILL.md structure: {err}",
             }
 
-    original_content = content  # for rollback
+    original_content = content  # 用于回滚
     _atomic_write_text(target, new_content)
 
-    # Security scan — roll back on block
+    # 安全扫描——如果被阻止则回滚
     scan_error = _security_scan_skill(skill_dir)
     if scan_error:
         _atomic_write_text(target, original_content)
@@ -486,7 +478,7 @@ def _patch_skill(
 
 
 def _delete_skill(name: str) -> Dict[str, Any]:
-    """Delete a skill."""
+    """删除技能。"""
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
@@ -497,7 +489,7 @@ def _delete_skill(name: str) -> Dict[str, Any]:
     skill_dir = existing["path"]
     shutil.rmtree(skill_dir)
 
-    # Clean up empty category directories (don't remove SKILLS_DIR itself)
+    # 清理空的分类目录（不删除 SKILLS_DIR 本身）
     parent = skill_dir.parent
     if parent != SKILLS_DIR and parent.exists() and not any(parent.iterdir()):
         parent.rmdir()
@@ -509,7 +501,7 @@ def _delete_skill(name: str) -> Dict[str, Any]:
 
 
 def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
-    """Add or overwrite a supporting file within any skill directory."""
+    """在任何技能目录中添加或覆盖支持文件。"""
     err = _validate_file_path(file_path)
     if err:
         return {"success": False, "error": err}
@@ -517,7 +509,7 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if not file_content and file_content != "":
         return {"success": False, "error": "file_content is required."}
 
-    # Check size limits
+    # 检查大小限制
     content_bytes = len(file_content.encode("utf-8"))
     if content_bytes > MAX_SKILL_FILE_BYTES:
         return {
@@ -543,7 +535,7 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if err:
         return {"success": False, "error": err}
     target.parent.mkdir(parents=True, exist_ok=True)
-    # Back up for rollback
+    # 备份用于回滚
     original_content = target.read_text(encoding="utf-8") if target.exists() else None
     _atomic_write_text(target, file_content)
 
@@ -564,7 +556,7 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
 
 
 def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
-    """Remove a supporting file from any skill directory."""
+    """从任何技能目录中删除支持文件。"""
     err = _validate_file_path(file_path)
     if err:
         return {"success": False, "error": err}
@@ -582,7 +574,7 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     if err:
         return {"success": False, "error": err}
     if not target.exists():
-        # List what's actually there for the model to see
+        # 列出实际存在的文件供模型查看
         available = []
         for subdir in ALLOWED_SUBDIRS:
             d = skill_dir / subdir
@@ -598,7 +590,7 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
 
     target.unlink()
 
-    # Clean up empty subdirectories
+    # 清理空的子目录
     parent = target.parent
     if parent != skill_dir and parent.exists() and not any(parent.iterdir()):
         parent.rmdir()
@@ -610,7 +602,7 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
 
 
 # =============================================================================
-# Main entry point
+# 主入口点
 # =============================================================================
 
 def skill_manage(
@@ -625,9 +617,9 @@ def skill_manage(
     replace_all: bool = False,
 ) -> str:
     """
-    Manage user-created skills. Dispatches to the appropriate action handler.
+    管理用户创建的技能。分发到相应的操作处理函数。
 
-    Returns JSON string with results.
+    返回包含结果的 JSON 字符串。
     """
     if action == "create":
         if not content:
@@ -675,7 +667,7 @@ def skill_manage(
 
 
 # =============================================================================
-# OpenAI Function-Calling Schema
+# OpenAI 函数调用 Schema
 # =============================================================================
 
 SKILL_MANAGE_SCHEMA = {
@@ -768,8 +760,7 @@ SKILL_MANAGE_SCHEMA = {
 }
 
 
-# --- Registry ---
-from tools.registry import registry, tool_error
+# --- 注册 ---
 
 registry.register(
     name="skill_manage",

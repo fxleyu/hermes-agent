@@ -1,8 +1,7 @@
-"""Docker execution environment for sandboxed command execution.
+"""Docker 沙箱执行环境，用于隔离命令执行。
 
-Security hardened (cap-drop ALL, no-new-privileges, PID limits),
-configurable resource limits (CPU, memory, disk), and optional filesystem
-persistence via bind mounts.
+安全加固（丢弃所有权限、禁止权限提升、PID 限制），
+可配置资源限制（CPU、内存、磁盘），并支持通过 bind mount 实现可选的文件系统持久化。
 """
 
 import logging
@@ -20,21 +19,21 @@ from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
 logger = logging.getLogger(__name__)
 
 
-# Common Docker Desktop install paths checked when 'docker' is not in PATH.
+# 当 'docker' 不在 PATH 中时检查的常见 Docker Desktop 安装路径。
 # macOS Intel: /usr/local/bin, macOS Apple Silicon (Homebrew): /opt/homebrew/bin,
-# Docker Desktop app bundle: /Applications/Docker.app/Contents/Resources/bin
+# Docker Desktop 应用程序包: /Applications/Docker.app/Contents/Resources/bin
 _DOCKER_SEARCH_PATHS = [
     "/usr/local/bin/docker",
     "/opt/homebrew/bin/docker",
     "/Applications/Docker.app/Contents/Resources/bin/docker",
 ]
 
-_docker_executable: Optional[str] = None  # resolved once, cached
+_docker_executable: Optional[str] = None  # 解析一次后缓存
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
-    """Return a deduplicated list of valid environment variable names."""
+    """返回去重后的有效环境变量名称列表。"""
     normalized: list[str] = []
     seen: set[str] = set()
 
@@ -59,9 +58,9 @@ def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
 
 
 def _normalize_env_dict(env: dict | None) -> dict[str, str]:
-    """Validate and normalize a docker_env dict to {str: str}.
+    """验证并规范化 docker_env 字典为 {str: str} 格式。
 
-    Filters out entries with invalid variable names or non-string values.
+    过滤掉变量名无效或值为非字符串类型的条目。
     """
     if not env:
         return {}
@@ -76,8 +75,8 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
             continue
         key = key.strip()
         if not isinstance(value, str):
-            # Coerce simple scalar types (int, bool, float) to string;
-            # reject complex types.
+            # 将简单标量类型（int、bool、float）强制转为字符串；
+            # 拒绝复杂类型。
             if isinstance(value, (int, float, bool)):
                 value = str(value)
             else:
@@ -89,7 +88,7 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
 
 
 def _load_hermes_env_vars() -> dict[str, str]:
-    """Load ~/.hermes/.env values without failing Docker command execution."""
+    """加载 ~/.hermes/.env 的值，不影响 Docker 命令的执行。"""
     try:
         from hermes_cli.config import load_env
 
@@ -99,41 +98,41 @@ def _load_hermes_env_vars() -> dict[str, str]:
 
 
 def find_docker() -> Optional[str]:
-    """Locate the docker (or podman) CLI binary.
+    """查找 docker（或 podman）CLI 二进制文件。
 
-    Resolution order:
-    1. ``HERMES_DOCKER_BINARY`` env var — explicit override (e.g. ``/usr/bin/podman``)
-    2. ``docker`` on PATH via ``shutil.which``
-    3. ``podman`` on PATH via ``shutil.which``
-    4. Well-known macOS Docker Desktop install locations
+    查找顺序：
+    1. ``HERMES_DOCKER_BINARY`` 环境变量 - 显式覆盖（例如 ``/usr/bin/podman``）
+    2. 通过 ``shutil.which`` 在 PATH 中查找 ``docker``
+    3. 通过 ``shutil.which`` 在 PATH 中查找 ``podman``
+    4. macOS Docker Desktop 的常见安装位置
 
-    Returns the absolute path, or ``None`` if neither runtime can be found.
+    返回绝对路径，如果两个运行时都找不到则返回 ``None``。
     """
     global _docker_executable
     if _docker_executable is not None:
         return _docker_executable
 
-    # 1. Explicit override via env var (e.g. for Podman on immutable distros)
+    # 1. 通过环境变量显式覆盖（例如用于不可变发行版上的 Podman）
     override = os.getenv("HERMES_DOCKER_BINARY")
     if override and os.path.isfile(override) and os.access(override, os.X_OK):
         _docker_executable = override
         logger.info("Using HERMES_DOCKER_BINARY override: %s", override)
         return override
 
-    # 2. docker on PATH
+    # 2. 在 PATH 中查找 docker
     found = shutil.which("docker")
     if found:
         _docker_executable = found
         return found
 
-    # 3. podman on PATH (drop-in compatible for our use case)
+    # 3. 在 PATH 中查找 podman（对我们的用例来说是兼容替代品）
     found = shutil.which("podman")
     if found:
         _docker_executable = found
         logger.info("Using podman as container runtime: %s", found)
         return found
 
-    # 4. Well-known macOS Docker Desktop locations
+    # 4. macOS Docker Desktop 的常见安装位置
     for path in _DOCKER_SEARCH_PATHS:
         if os.path.isfile(path) and os.access(path, os.X_OK):
             _docker_executable = path
@@ -143,13 +142,13 @@ def find_docker() -> Optional[str]:
     return None
 
 
-# Security flags applied to every container.
-# The container itself is the security boundary (isolated from host).
-# We drop all capabilities then add back the minimum needed:
-#   DAC_OVERRIDE - root can write to bind-mounted dirs owned by host user
-#   CHOWN/FOWNER - package managers (pip, npm, apt) need to set file ownership
-# Block privilege escalation and limit PIDs.
-# /tmp is size-limited and nosuid but allows exec (needed by pip/npm builds).
+# 应用于每个容器的安全标志。
+# 容器本身是安全边界（与宿主机隔离）。
+# 我们丢弃所有权限，然后添加回所需的最低权限：
+#   DAC_OVERRIDE - root 可以写入由宿主机用户拥有的 bind mount 目录
+#   CHOWN/FOWNER - 包管理器（pip、npm、apt）需要设置文件所有权
+# 阻止权限提升并限制 PID 数量。
+# /tmp 设有大小限制和 nosuid，但允许 exec（pip/npm 构建需要）。
 _SECURITY_ARGS = [
     "--cap-drop", "ALL",
     "--cap-add", "DAC_OVERRIDE",
@@ -163,14 +162,14 @@ _SECURITY_ARGS = [
 ]
 
 
-_storage_opt_ok: Optional[bool] = None  # cached result across instances
+_storage_opt_ok: Optional[bool] = None  # 跨实例缓存的结果
 
 
 def _ensure_docker_available() -> None:
-    """Best-effort check that the docker CLI is available before use.
+    """尽力检查 docker CLI 在使用前是否可用。
 
-    Reuses ``find_docker()`` so this preflight stays consistent with the rest of
-    the Docker backend, including known non-PATH Docker Desktop locations.
+    复用 ``find_docker()``，使此预检与 Docker 后端的其余部分保持一致，
+    包括已知的非 PATH Docker Desktop 安装位置。
     """
     docker_exe = find_docker()
     if not docker_exe:
@@ -233,15 +232,13 @@ def _ensure_docker_available() -> None:
 
 
 class DockerEnvironment(BaseEnvironment):
-    """Hardened Docker container execution with resource limits and persistence.
+    """安全加固的 Docker 容器执行环境，支持资源限制和持久化。
 
-    Security: all capabilities dropped, no privilege escalation, PID limits,
-    size-limited tmpfs for scratch dirs. The container itself is the security
-    boundary — the filesystem inside is writable so agents can install packages
-    (pip, npm, apt) as needed. Writable workspace via tmpfs or bind mounts.
+    安全性：丢弃所有权限、禁止权限提升、PID 限制、大小受限的 tmpfs 用于临时目录。
+    容器本身是安全边界 - 内部文件系统可写，便于代理安装软件包
+    （pip、npm、apt）。通过 tmpfs 或 bind mount 实现可写工作空间。
 
-    Persistence: when enabled, bind mounts preserve /workspace and /root
-    across container restarts.
+    持久化：启用时，bind mount 会在容器重启后保留 /workspace 和 /root 的内容。
     """
 
     def __init__(
@@ -270,15 +267,15 @@ class DockerEnvironment(BaseEnvironment):
         self._env = _normalize_env_dict(env)
         self._container_id: Optional[str] = None
         logger.info(f"DockerEnvironment volumes: {volumes}")
-        # Ensure volumes is a list (config.yaml could be malformed)
+        # 确保 volumes 是列表（config.yaml 可能格式错误）
         if volumes is not None and not isinstance(volumes, list):
             logger.warning(f"docker_volumes config is not a list: {volumes!r}")
             volumes = []
 
-        # Fail fast if Docker is not available.
+        # 如果 Docker 不可用，立即失败。
         _ensure_docker_available()
 
-        # Build resource limit args
+        # 构建资源限制参数
         resource_args = []
         if cpu > 0:
             resource_args.extend(["--cpus", str(cpu)])
@@ -295,12 +292,12 @@ class DockerEnvironment(BaseEnvironment):
         if not network:
             resource_args.append("--network=none")
 
-        # Persistent workspace via bind mounts from a configurable host directory
-        # (TERMINAL_SANDBOX_DIR, default ~/.hermes/sandboxes/). Non-persistent
-        # mode uses tmpfs (ephemeral, fast, gone on cleanup).
+        # 通过 bind mount 实现持久化工作空间，挂载到可配置的宿主机目录
+        # （TERMINAL_SANDBOX_DIR，默认 ~/.hermes/sandboxes/）。非持久化模式
+        # 使用 tmpfs（临时性的、速度快、清理后即消失）。
         from tools.environments.base import get_sandbox_dir
 
-        # User-configured volume mounts (from config.yaml docker_volumes)
+        # 用户配置的卷挂载（来自 config.yaml 的 docker_volumes）
         volume_args = []
         workspace_explicitly_mounted = False
         for vol in (volumes or []):
@@ -359,8 +356,8 @@ class DockerEnvironment(BaseEnvironment):
         elif workspace_explicitly_mounted:
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
 
-        # Mount credential files (OAuth tokens, etc.) declared by skills.
-        # Read-only so the container can authenticate but not modify host creds.
+        # 挂载由技能（skills）声明的凭证文件（OAuth 令牌等）。
+        # 以只读方式挂载，容器可以进行认证但不能修改宿主机凭证。
         try:
             from tools.credential_files import (
                 get_credential_file_mounts,
@@ -379,8 +376,7 @@ class DockerEnvironment(BaseEnvironment):
                     mount_entry["container_path"],
                 )
 
-            # Mount skill directories (local + external) so skill
-            # scripts/templates are available inside the container.
+            # 挂载技能目录（本地 + 外部），使技能脚本/模板在容器内可用。
             for skills_mount in get_skills_directory_mount():
                 volume_args.extend([
                     "-v",
@@ -392,10 +388,9 @@ class DockerEnvironment(BaseEnvironment):
                     skills_mount["container_path"],
                 )
 
-            # Mount host-side cache directories (documents, images, audio,
-            # screenshots) so the agent can access uploaded files and other
-            # cached media from inside the container.  Read-only — the
-            # container reads these but the host gateway manages writes.
+            # 挂载宿主机侧的缓存目录（文档、图片、音频、截图），
+            # 使代理能从容器内部访问上传的文件和其他缓存媒体。
+            # 只读 - 容器读取这些内容，但宿主机网关管理写入。
             for cache_mount in get_cache_directory_mounts():
                 volume_args.extend([
                     "-v",
@@ -409,8 +404,8 @@ class DockerEnvironment(BaseEnvironment):
         except Exception as e:
             logger.debug("Docker: could not load credential file mounts: %s", e)
 
-        # Explicit environment variables (docker_env config) — set at container
-        # creation so they're available to all processes (including entrypoint).
+        # 显式环境变量（docker_env 配置）- 在容器创建时设置，
+        # 以便所有进程（包括入口点）都能使用。
         env_args = []
         for key in sorted(self._env):
             env_args.extend(["-e", f"{key}={self._env[key]}"])
@@ -419,45 +414,44 @@ class DockerEnvironment(BaseEnvironment):
         all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args + env_args
         logger.info(f"Docker run_args: {all_run_args}")
 
-        # Resolve the docker executable once so it works even when
-        # /usr/local/bin is not in PATH (common on macOS gateway/service).
+        # 只解析一次 docker 可执行文件，即使 /usr/local/bin 不在 PATH 中
+        # 也能正常工作（在 macOS 网关/服务中很常见）。
         self._docker_exe = find_docker() or "docker"
 
-        # Start the container directly via `docker run -d`.
+        # 通过 `docker run -d` 直接启动容器。
         container_name = f"hermes-{uuid.uuid4().hex[:8]}"
         run_cmd = [
             self._docker_exe, "run", "-d",
-            "--init",           # tini/catatonit as PID 1 — reaps zombie children
+            "--init",           # tini/catatonit 作为 PID 1 - 回收僵尸子进程
             "--name", container_name,
             "-w", cwd,
             *all_run_args,
             image,
-            "sleep", "infinity",  # no fixed lifetime — idle reaper handles cleanup
+            "sleep", "infinity",  # 无固定生命周期 - 由空闲回收器处理清理
         ]
         logger.debug(f"Starting container: {' '.join(run_cmd)}")
         result = subprocess.run(
             run_cmd,
             capture_output=True,
             text=True,
-            timeout=120,  # image pull may take a while
+            timeout=120,  # 镜像拉取可能需要较长时间
             check=True,
         )
         self._container_id = result.stdout.strip()
         logger.info(f"Started container {container_name} ({self._container_id[:12]})")
 
-        # Build the init-time env forwarding args (used only by init_session
-        # to inject host env vars into the snapshot; subsequent commands get
-        # them from the snapshot file).
+        # 构建初始化时的环境变量转发参数（仅在 init_session 中使用，
+        # 用于将宿主机环境变量注入到快照中；后续命令从快照文件获取这些变量）。
         self._init_env_args = self._build_init_env_args()
 
-        # Initialize session snapshot inside the container
+        # 在容器内初始化会话快照
         self.init_session()
 
     def _build_init_env_args(self) -> list[str]:
-        """Build -e KEY=VALUE args for injecting host env vars into init_session.
+        """构建 -e KEY=VALUE 参数，用于在 init_session 中注入宿主机环境变量。
 
-        These are used once during init_session() so that export -p captures
-        them into the snapshot.  Subsequent execute() calls don't need -e flags.
+        这些参数仅在 init_session() 期间使用一次，以便 export -p 能将它们
+        捕获到快照中。后续的 execute() 调用不需要 -e 标志。
         """
         exec_env: dict[str, str] = dict(self._env)
 
@@ -468,9 +462,8 @@ class DockerEnvironment(BaseEnvironment):
             passthrough_keys = set(get_all_passthrough())
         except Exception:
             pass
-        # Explicit docker_forward_env entries are an intentional opt-in and must
-        # win over the generic Hermes secret blocklist. Only implicit passthrough
-        # keys are filtered.
+        # 显式的 docker_forward_env 条目是用户有意选择的，必须优先于通用的
+        # Hermes 密钥黑名单。只有隐式的 passthrough 键才会被过滤。
         forward_keys = explicit_forward_keys | (passthrough_keys - _HERMES_PROVIDER_ENV_BLOCKLIST)
         hermes_env = _load_hermes_env_vars() if forward_keys else {}
         for key in sorted(forward_keys):
@@ -488,14 +481,14 @@ class DockerEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
-        """Spawn a bash process inside the Docker container."""
+        """在 Docker 容器内启动一个 bash 进程。"""
         assert self._container_id, "Container not started"
         cmd = [self._docker_exe, "exec"]
         if stdin_data is not None:
             cmd.append("-i")
 
-        # Only inject -e env args during init_session (login=True).
-        # Subsequent commands get env vars from the snapshot.
+        # 仅在 init_session 期间（login=True）注入 -e 环境变量参数。
+        # 后续命令从快照获取环境变量。
         if login:
             cmd.extend(self._init_env_args)
 
@@ -510,10 +503,10 @@ class DockerEnvironment(BaseEnvironment):
 
     @staticmethod
     def _storage_opt_supported() -> bool:
-        """Check if Docker's storage driver supports --storage-opt size=.
-        
-        Only overlay2 on XFS with pquota supports per-container disk quotas.
-        Ubuntu (and most distros) default to ext4, where this flag errors out.
+        """检查 Docker 的存储驱动是否支持 --storage-opt size= 选项。
+
+        只有在 XFS 文件系统上使用 pquota 的 overlay2 驱动才支持按容器的磁盘配额。
+        Ubuntu（及大多数发行版）默认使用 ext4，该标志会导致错误。
         """
         global _storage_opt_ok
         if _storage_opt_ok is not None:
@@ -528,14 +521,14 @@ class DockerEnvironment(BaseEnvironment):
             if driver != "overlay2":
                 _storage_opt_ok = False
                 return False
-            # overlay2 only supports storage-opt on XFS with pquota.
-            # Probe by attempting a dry-ish run — the fastest reliable check.
+            # overlay2 仅在 XFS + pquota 上支持 storage-opt。
+            # 通过尝试运行来探测 - 这是最快的可靠检查方式。
             probe = subprocess.run(
                 [docker, "create", "--storage-opt", "size=1m", "hello-world"],
                 capture_output=True, text=True, timeout=15,
             )
             if probe.returncode == 0:
-                # Clean up the created container
+                # 清理创建的容器
                 container_id = probe.stdout.strip()
                 if container_id:
                     subprocess.run([docker, "rm", container_id],
@@ -549,10 +542,10 @@ class DockerEnvironment(BaseEnvironment):
         return _storage_opt_ok
 
     def cleanup(self):
-        """Stop and remove the container. Bind-mount dirs persist if persistent=True."""
+        """停止并移除容器。persistent=True 时 bind mount 目录会保留。"""
         if self._container_id:
             try:
-                # Stop in background so cleanup doesn't block
+                # 在后台停止，避免清理时阻塞
                 stop_cmd = (
                     f"(timeout 60 {self._docker_exe} stop {self._container_id} || "
                     f"{self._docker_exe} rm -f {self._container_id}) >/dev/null 2>&1 &"
@@ -562,7 +555,7 @@ class DockerEnvironment(BaseEnvironment):
                 logger.warning("Failed to stop container %s: %s", self._container_id, e)
 
             if not self._persistent:
-                # Also schedule removal (stop only leaves it as stopped)
+                # 同时安排移除操作（stop 只是停止，不会删除容器）
                 try:
                     subprocess.Popen(
                         f"sleep 3 && {self._docker_exe} rm -f {self._container_id} >/dev/null 2>&1 &",

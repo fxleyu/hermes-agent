@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """
-Session Search Tool - Long-Term Conversation Recall
+会话搜索工具 - 长期对话回忆
 
-Searches past session transcripts in SQLite via FTS5, then summarizes the top
-matching sessions using a cheap/fast model (same pattern as web_extract).
-Returns focused summaries of past conversations rather than raw transcripts,
-keeping the main model's context window clean.
+通过 FTS5 在 SQLite 中搜索过往会话记录，然后使用低成本/高速模型
+（与 web_extract 相同的模式）对匹配的顶部会话进行摘要。
+返回的是过往对话的聚焦摘要而非原始记录，保持主模型的上下文窗口整洁。
 
-Flow:
-  1. FTS5 search finds matching messages ranked by relevance
-  2. Groups by session, takes the top N unique sessions (default 3)
-  3. Loads each session's conversation, truncates to ~100k chars centered on matches
-  4. Sends to Gemini Flash with a focused summarization prompt
-  5. Returns per-session summaries with metadata
+流程：
+  1. FTS5 搜索按相关性排名查找匹配消息
+  2. 按会话分组，取前 N 个唯一会话（默认 3 个）
+  3. 加载每个会话的对话，截断至匹配位置附近约 10 万字符
+  4. 发送给 Gemini Flash 进行聚焦摘要
+  5. 返回带有元数据的逐会话摘要
 """
 
 import asyncio
@@ -28,9 +27,9 @@ MAX_SUMMARY_TOKENS = 10000
 
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
-    """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
+    """将 Unix 时间戳（float/int）或 ISO 字符串转换为人类可读的日期。
 
-    Returns "unknown" for None, str(ts) if conversion fails.
+    对于 None 返回 "unknown"，转换失败时返回 str(ts)。
     """
     if ts is None:
         return "unknown"
@@ -46,7 +45,7 @@ def _format_timestamp(ts: Union[int, float, str, None]) -> str:
                 return dt.strftime("%B %d, %Y at %I:%M %p")
             return ts
     except (ValueError, OSError, OverflowError) as e:
-        # Log specific errors for debugging while gracefully handling edge cases
+        # 记录特定错误用于调试，同时优雅处理边界情况
         logging.debug("Failed to format timestamp %s: %s", ts, e, exc_info=True)
     except Exception as e:
         logging.debug("Unexpected error formatting timestamp %s: %s", ts, e, exc_info=True)
@@ -54,7 +53,7 @@ def _format_timestamp(ts: Union[int, float, str, None]) -> str:
 
 
 def _format_conversation(messages: List[Dict[str, Any]]) -> str:
-    """Format session messages into a readable transcript for summarization."""
+    """将会话消息格式化为可读的记录文本，用于摘要生成。"""
     parts = []
     for msg in messages:
         role = msg.get("role", "unknown").upper()
@@ -62,12 +61,12 @@ def _format_conversation(messages: List[Dict[str, Any]]) -> str:
         tool_name = msg.get("tool_name")
 
         if role == "TOOL" and tool_name:
-            # Truncate long tool outputs
+            # 截断过长的工具输出
             if len(content) > 500:
                 content = content[:250] + "\n...[truncated]...\n" + content[-250:]
             parts.append(f"[TOOL:{tool_name}]: {content}")
         elif role == "ASSISTANT":
-            # Include tool call names if present
+            # 如果存在工具调用则包含工具调用名称
             tool_calls = msg.get("tool_calls")
             if tool_calls and isinstance(tool_calls, list):
                 tc_names = []
@@ -91,17 +90,16 @@ def _truncate_around_matches(
     full_text: str, query: str, max_chars: int = MAX_SESSION_CHARS
 ) -> str:
     """
-    Truncate a conversation transcript to *max_chars*, choosing a window
-    that maximises coverage of positions where the *query* actually appears.
+    将对话记录截断至 *max_chars*，选择一个最大化覆盖 *query*
+    实际出现位置的窗口。
 
-    Strategy (in priority order):
-    1. Try to find the full query as a phrase (case-insensitive).
-    2. If no phrase hit, look for positions where all query terms appear
-       within a 200-char proximity window (co-occurrence).
-    3. Fall back to individual term positions.
+    策略（按优先级）：
+    1. 尝试以完整短语（不区分大小写）查找。
+    2. 如果没有短语命中，查找所有查询词在 200 字符近邻窗口内
+       共同出现的位置（共现）。
+    3. 回退到单个词的位置。
 
-    Once candidate positions are collected the function picks the window
-    start that covers the most of them.
+    收集候选位置后，函数选择覆盖最多匹配位置的窗口起始点。
     """
     if len(full_text) <= max_chars:
         return full_text
@@ -110,21 +108,21 @@ def _truncate_around_matches(
     query_lower = query.lower().strip()
     match_positions: list[int] = []
 
-    # --- 1. Full-phrase search ------------------------------------------------
+    # --- 1. 完整短语搜索 ------------------------------------------------
     phrase_pat = re.compile(re.escape(query_lower))
     match_positions = [m.start() for m in phrase_pat.finditer(text_lower)]
 
-    # --- 2. Proximity co-occurrence of all terms (within 200 chars) -----------
+    # --- 2. 所有词的近邻共现（200 字符内）-----------
     if not match_positions:
         terms = query_lower.split()
         if len(terms) > 1:
-            # Collect every occurrence of each term
+            # 收集每个词的所有出现位置
             term_positions: dict[str, list[int]] = {}
             for t in terms:
                 term_positions[t] = [
                     m.start() for m in re.finditer(re.escape(t), text_lower)
                 ]
-            # Slide through positions of the rarest term and check proximity
+            # 遍历最稀有词的位置并检查近邻性
             rarest = min(terms, key=lambda t: len(term_positions.get(t, [])))
             for pos in term_positions.get(rarest, []):
                 if all(
@@ -134,7 +132,7 @@ def _truncate_around_matches(
                 ):
                     match_positions.append(pos)
 
-    # --- 3. Individual term positions (last resort) ---------------------------
+    # --- 3. 单个词位置（最后手段）---------------------------
     if not match_positions:
         terms = query_lower.split()
         for t in terms:
@@ -142,12 +140,12 @@ def _truncate_around_matches(
                 match_positions.append(m.start())
 
     if not match_positions:
-        # Nothing at all — take from the start
+        # 完全没找到 — 从开头取
         truncated = full_text[:max_chars]
         suffix = "\n\n...[later conversation truncated]..." if max_chars < len(full_text) else ""
         return truncated + suffix
 
-    # --- Pick window that covers the most match positions ---------------------
+    # --- 选择覆盖最多匹配位置的窗口 ---------------------
     match_positions.sort()
 
     best_start = 0
@@ -175,7 +173,7 @@ def _truncate_around_matches(
 async def _summarize_session(
     conversation_text: str, query: str, session_meta: Dict[str, Any]
 ) -> Optional[str]:
-    """Summarize a single session conversation focused on the search query."""
+    """基于搜索查询对单个会话对话进行摘要。"""
     system_prompt = (
         "You are reviewing a past conversation transcript to help recall what happened. "
         "Summarize the conversation with a focus on the search topic. Include:\n"
@@ -214,7 +212,7 @@ async def _summarize_session(
             content = extract_content_or_reasoning(response)
             if content:
                 return content
-            # Reasoning-only / empty — let the retry loop handle it
+            # 仅返回推理内容/为空 — 让重试循环处理
             logging.warning("Session search LLM returned empty content (attempt %d/%d)", attempt + 1, max_retries)
             if attempt < max_retries - 1:
                 await asyncio.sleep(1 * (attempt + 1))
@@ -236,18 +234,18 @@ async def _summarize_session(
                 return None
 
 
-# Sources that are excluded from session browsing/searching by default.
-# Third-party integrations (Paperclip agents, etc.) tag their sessions with
-# HERMES_SESSION_SOURCE=tool so they don't clutter the user's session history.
+# 默认从会话浏览/搜索中排除的来源。
+# 第三方集成（Paperclip 智能体等）使用 HERMES_SESSION_SOURCE=tool
+# 标记其会话，以免干扰用户的会话历史。
 _HIDDEN_SESSION_SOURCES = ("tool",)
 
 
 def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
-    """Return metadata for the most recent sessions (no LLM calls)."""
+    """返回最近会话的元数据（不调用 LLM）。"""
     try:
-        sessions = db.list_sessions_rich(limit=limit + 5, exclude_sources=list(_HIDDEN_SESSION_SOURCES))  # fetch extra to skip current
+        sessions = db.list_sessions_rich(limit=limit + 5, exclude_sources=list(_HIDDEN_SESSION_SOURCES))  # 多取一些以跳过当前会话
 
-        # Resolve current session lineage to exclude it
+        # 解析当前会话的血缘关系以排除它
         current_root = None
         if current_session_id:
             try:
@@ -267,7 +265,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             sid = s.get("id", "")
             if current_root and (sid == current_root or sid == current_session_id):
                 continue
-            # Skip child/delegation sessions (they have parent_session_id)
+            # 跳过子/委托会话（它们有 parent_session_id）
             if s.get("parent_session_id"):
                 continue
             results.append({
@@ -302,43 +300,43 @@ def session_search(
     current_session_id: str = None,
 ) -> str:
     """
-    Search past sessions and return focused summaries of matching conversations.
+    搜索过往会话并返回匹配对话的聚焦摘要。
 
-    Uses FTS5 to find matches, then summarizes the top sessions with Gemini Flash.
-    The current session is excluded from results since the agent already has that context.
+    使用 FTS5 查找匹配项，然后用 Gemini Flash 对顶部会话进行摘要。
+    当前会话被排除在结果之外，因为智能体已经拥有该上下文。
     """
     if db is None:
         return tool_error("Session database not available.", success=False)
 
-    # Defensive: models (especially open-source) may send non-int limit values
-    # (None when JSON null, string "int", or even a type object).  Coerce to a
-    # safe integer before any arithmetic/comparison to prevent TypeError.
+    # 防御性处理：模型（尤其是开源模型）可能发送非整数的 limit 值
+    #（JSON null 时为 None，字符串 "int"，甚至是类型对象）。在任何
+    # 算术/比较之前强制转换为安全整数以防止 TypeError。
     if not isinstance(limit, int):
         try:
             limit = int(limit)
         except (TypeError, ValueError):
             limit = 3
-    limit = max(1, min(limit, 5))  # Clamp to [1, 5]
+    limit = max(1, min(limit, 5))  # 限制在 [1, 5] 范围内
 
-    # Recent sessions mode: when query is empty, return metadata for recent sessions.
-    # No LLM calls — just DB queries for titles, previews, timestamps.
+    # 最近会话模式：当查询为空时，返回最近会话的元数据。
+    # 不调用 LLM — 只查询数据库获取标题、预览和时间戳。
     if not query or not query.strip():
         return _list_recent_sessions(db, limit, current_session_id)
 
     query = query.strip()
 
     try:
-        # Parse role filter
+        # 解析角色过滤器
         role_list = None
         if role_filter and role_filter.strip():
             role_list = [r.strip() for r in role_filter.split(",") if r.strip()]
 
-        # FTS5 search -- get matches ranked by relevance
+        # FTS5 搜索 -- 按相关性排名获取匹配结果
         raw_results = db.search_messages(
             query=query,
             role_filter=role_list,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
-            limit=50,  # Get more matches to find unique sessions
+            limit=50,  # 获取更多匹配结果以找到唯一会话
             offset=0,
         )
 
@@ -351,10 +349,10 @@ def session_search(
                 "message": "No matching sessions found.",
             }, ensure_ascii=False)
 
-        # Resolve child sessions to their parent — delegation stores detailed
-        # content in child sessions, but the user's conversation is the parent.
+        # 将子会话解析到其父会话 — 委托模式将详细内容
+        # 存储在子会话中，但用户的对话在父会话中。
         def _resolve_to_parent(session_id: str) -> str:
-            """Walk delegation chain to find the root parent session ID."""
+            """沿委托链向上查找根父会话 ID。"""
             visited = set()
             sid = session_id
             while sid and sid not in visited:
@@ -382,15 +380,14 @@ def session_search(
             _resolve_to_parent(current_session_id) if current_session_id else None
         )
 
-        # Group by resolved (parent) session_id, dedup, skip the current
-        # session lineage. Compression and delegation create child sessions
-        # that still belong to the same active conversation.
+        # 按解析后的（父）session_id 分组，去重，跳过当前
+        # 会话血缘。压缩和委托创建的子会话仍属于同一个活跃对话。
         seen_sessions = {}
         for result in raw_results:
             raw_sid = result["session_id"]
             resolved_sid = _resolve_to_parent(raw_sid)
-            # Skip the current session lineage — the agent already has that
-            # context, even if older turns live in parent fragments.
+            # 跳过当前会话血缘 — 智能体已经拥有该上下文，
+            # 即使较早的轮次存在于父片段中。
             if current_lineage_root and resolved_sid == current_lineage_root:
                 continue
             if current_session_id and raw_sid == current_session_id:
@@ -402,7 +399,7 @@ def session_search(
             if len(seen_sessions) >= limit:
                 break
 
-        # Prepare all sessions for parallel summarization
+        # 准备所有会话进行并行摘要
         tasks = []
         for session_id, match_info in seen_sessions.items():
             try:
@@ -421,9 +418,9 @@ def session_search(
                     exc_info=True,
                 )
 
-        # Summarize all sessions in parallel
+        # 并行摘要所有会话
         async def _summarize_all() -> List[Union[str, Exception]]:
-            """Summarize all sessions in parallel."""
+            """并行摘要所有会话。"""
             coros = [
                 _summarize_session(text, query, meta)
                 for _, _, text, meta in tasks
@@ -431,12 +428,12 @@ def session_search(
             return await asyncio.gather(*coros, return_exceptions=True)
 
         try:
-            # Use _run_async() which properly manages event loops across
-            # CLI, gateway, and worker-thread contexts.  The previous
-            # pattern (asyncio.run() in a ThreadPoolExecutor) created a
-            # disposable event loop that conflicted with cached
-            # AsyncOpenAI/httpx clients bound to a different loop,
-            # causing deadlocks in gateway mode (#2681).
+            # 使用 _run_async()，它能正确管理 CLI、网关和
+            # 工作线程上下文中的事件循环。之前的模式
+            #（在 ThreadPoolExecutor 中使用 asyncio.run()）创建了一个
+            # 一次性事件循环，与绑定到不同循环的缓存
+            # AsyncOpenAI/httpx 客户端冲突，
+            # 导致网关模式下的死锁（#2681）。
             from model_tools import _run_async
             results = _run_async(_summarize_all())
         except concurrent.futures.TimeoutError:
@@ -468,8 +465,8 @@ def session_search(
             if result:
                 entry["summary"] = result
             else:
-                # Fallback: raw preview so matched sessions aren't silently
-                # dropped when the summarizer is unavailable (fixes #3409).
+                # 回退：提供原始预览，这样匹配到的会话在摘要器不可用时
+                # 不会被静默丢弃（修复 #3409）。
                 preview = (conversation_text[:500] + "\n…[truncated]") if conversation_text else "No preview available."
                 entry["summary"] = f"[Raw preview — summarization unavailable]\n{preview}"
 
@@ -489,7 +486,7 @@ def session_search(
 
 
 def check_session_search_requirements() -> bool:
-    """Requires SQLite state database and an auxiliary text model."""
+    """需要 SQLite 状态数据库和辅助文本模型。"""
     try:
         from hermes_state import DEFAULT_DB_PATH
         return DEFAULT_DB_PATH.parent.exists()
@@ -544,7 +541,7 @@ SESSION_SEARCH_SCHEMA = {
 }
 
 
-# --- Registry ---
+# --- 注册到工具注册表 ---
 from tools.registry import registry, tool_error
 
 registry.register(

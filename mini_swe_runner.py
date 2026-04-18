@@ -1,28 +1,27 @@
 #!/usr/bin/env python3
 """
-SWE Runner with Hermes Trajectory Format
+使用 Hermes 轨迹格式的 SWE 运行器
 
-A runner that uses Hermes-Agent's built-in execution environments
-(local, docker, modal) and outputs trajectories in the Hermes-Agent format
-compatible with batch_runner.py and trajectory_compressor.py.
+一个使用 Hermes-Agent 内置执行环境（本地、Docker、Modal）的运行器，
+输出与 batch_runner.py 和 trajectory_compressor.py 兼容的 Hermes-Agent 格式轨迹。
 
-Features:
-- Uses Hermes-Agent's Docker, Modal, or Local environments for command execution
-- Outputs trajectories in Hermes format (from/value pairs with <tool_call>/<tool_response> XML)
-- Compatible with the trajectory compression pipeline
-- Supports batch processing from JSONL prompt files
+功能特性:
+- 使用 Hermes-Agent 的 Docker、Modal 或本地环境执行命令
+- 以 Hermes 格式输出轨迹（from/value 键值对，包含 <tool_call>/<tool_response> XML）
+- 与轨迹压缩管道兼容
+- 支持从 JSONL 提示词文件进行批量处理
 
-Usage:
-    # Run a single task with local environment
+用法:
+    # 使用本地环境运行单个任务
     python mini_swe_runner.py --task "Create a hello world Python script" --env local
-    
-    # Run with Docker
+
+    # 使用 Docker 运行
     python mini_swe_runner.py --task "List files in /tmp" --env docker --image python:3.11-slim
-    
-    # Run with Modal (cloud)
+
+    # 使用 Modal（云端）运行
     python mini_swe_runner.py --task "Install numpy and test it" --env modal --image python:3.11-slim
-    
-    # Batch mode from JSONL file
+
+    # 从 JSONL 文件进行批量模式
     python mini_swe_runner.py --prompts_file prompts.jsonl --output_file trajectories.jsonl --env docker
 """
 
@@ -39,14 +38,14 @@ from typing import List, Dict, Any, Optional, Literal
 import fire
 from dotenv import load_dotenv
 
-# Load environment variables
+# 加载环境变量
 load_dotenv()
 
 
 
 
 # ============================================================================
-# Terminal Tool Definition (matches Hermes-Agent format)
+# 终端工具定义（匹配 Hermes-Agent 格式）
 # ============================================================================
 
 TERMINAL_TOOL_DEFINITION = {
@@ -95,7 +94,7 @@ TERMINAL_TOOL_DEFINITION = {
 
 
 # ============================================================================
-# Environment Factory
+# 环境工厂
 # ============================================================================
 
 def create_environment(
@@ -106,17 +105,17 @@ def create_environment(
     **kwargs
 ):
     """
-    Create an execution environment using Hermes-Agent's built-in backends.
-    
-    Args:
-        env_type: One of "local", "docker", "modal"
-        image: Docker/Modal image name (ignored for local)
-        cwd: Working directory
-        timeout: Default command timeout
-        **kwargs: Additional environment-specific options
-        
-    Returns:
-        Environment instance with execute() and cleanup() methods
+    使用 Hermes-Agent 内置后端创建执行环境。
+
+    参数:
+        env_type: "local"、"docker" 或 "modal" 之一
+        image: Docker/Modal 镜像名称（本地模式时忽略）
+        cwd: 工作目录
+        timeout: 默认命令超时时间
+        **kwargs: 其他环境特定选项
+
+    返回:
+        具有 execute() 和 cleanup() 方法的环境实例
     """
     if env_type == "local":
         from tools.environments.local import LocalEnvironment
@@ -135,13 +134,12 @@ def create_environment(
 
 
 # ============================================================================
-# Mini-SWE Runner with Hermes Trajectory Format
+# 使用 Hermes 轨迹格式的 Mini-SWE 运行器
 # ============================================================================
 
 class MiniSWERunner:
     """
-    Agent runner that uses Hermes-Agent's built-in execution environments
-    and outputs trajectories in Hermes-Agent format.
+    使用 Hermes-Agent 内置执行环境并以 Hermes-Agent 格式输出轨迹的 Agent 运行器。
     """
     
     def __init__(
@@ -157,18 +155,18 @@ class MiniSWERunner:
         verbose: bool = False,
     ):
         """
-        Initialize the Mini-SWE Runner.
-        
-        Args:
-            model: Model name for OpenAI-compatible API
-            base_url: API base URL (optional, uses env vars if not provided)
-            api_key: API key (optional, uses env vars if not provided)
-            env_type: Environment type - "local", "docker", or "modal"
-            image: Docker/Modal image (ignored for local)
-            cwd: Working directory for commands
-            max_iterations: Maximum tool-calling iterations
-            command_timeout: Default timeout for commands
-            verbose: Enable verbose logging
+        初始化 Mini-SWE 运行器。
+
+        参数:
+            model: OpenAI 兼容 API 的模型名称
+            base_url: API 基础 URL（可选，不提供时使用环境变量）
+            api_key: API 密钥（可选，不提供时使用环境变量）
+            env_type: 环境类型 - "local"、"docker" 或 "modal"
+            image: Docker/Modal 镜像（本地模式时忽略）
+            cwd: 命令的工作目录
+            max_iterations: 最大工具调用迭代次数
+            command_timeout: 命令的默认超时时间
+            verbose: 启用详细日志
         """
         self.model = model
         self.max_iterations = max_iterations
@@ -178,7 +176,7 @@ class MiniSWERunner:
         self.image = image
         self.cwd = cwd
         
-        # Setup logging
+        # 设置日志
         logging.basicConfig(
             level=logging.DEBUG if verbose else logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
@@ -186,9 +184,9 @@ class MiniSWERunner:
         )
         self.logger = logging.getLogger(__name__)
         
-        # Initialize LLM client via centralized provider router.
-        # If explicit api_key/base_url are provided (e.g. from CLI args),
-        # construct directly.  Otherwise use the router for OpenRouter.
+        # 通过集中式提供商路由器初始化 LLM 客户端。
+        # 如果提供了显式的 api_key/base_url（例如来自 CLI 参数），
+        # 则直接构造。否则使用路由器连接 OpenRouter。
         if api_key or base_url:
             from openai import OpenAI
             client_kwargs = {
@@ -203,7 +201,7 @@ class MiniSWERunner:
             from agent.auxiliary_client import resolve_provider_client
             self.client, _ = resolve_provider_client("openrouter", model=model)
             if self.client is None:
-                # Fallback: try auto-detection
+                # 回退: 尝试自动检测
                 self.client, _ = resolve_provider_client("auto", model=model)
             if self.client is None:
                 from openai import OpenAI
@@ -211,10 +209,10 @@ class MiniSWERunner:
                     base_url="https://openrouter.ai/api/v1",
                     api_key=os.getenv("OPENROUTER_API_KEY", ""))
         
-        # Environment will be created per-task
+        # 每个任务创建环境
         self.env = None
-        
-        # Tool definition
+
+        # 工具定义
         self.tools = [TERMINAL_TOOL_DEFINITION]
         
         print("🤖 Mini-SWE Runner initialized")
@@ -225,7 +223,7 @@ class MiniSWERunner:
         print(f"   Max iterations: {self.max_iterations}")
     
     def _create_env(self):
-        """Create the execution environment."""
+        """创建执行环境。"""
         print(f"🔧 Creating {self.env_type} environment...")
         self.env = create_environment(
             env_type=self.env_type,
@@ -236,7 +234,7 @@ class MiniSWERunner:
         print("✅ Environment ready")
     
     def _cleanup_env(self):
-        """Cleanup the execution environment."""
+        """清理执行环境。"""
         if self.env is not None:
             if hasattr(self.env, 'cleanup'):
                 self.env.cleanup()
@@ -246,14 +244,14 @@ class MiniSWERunner:
     
     def _execute_command(self, command: str, timeout: int = None) -> Dict[str, Any]:
         """
-        Execute a command in the environment.
-        
-        Args:
-            command: Bash command to execute
-            timeout: Optional timeout override
-            
-        Returns:
-            Dict with 'output' and 'returncode'
+        在环境中执行命令。
+
+        参数:
+            command: 要执行的 Bash 命令
+            timeout: 可选的超时时间覆盖
+
+        返回:
+            Dict: 包含 'output' 和 'returncode'
         """
         if self.env is None:
             self._create_env()
@@ -273,7 +271,7 @@ class MiniSWERunner:
             }
     
     def _format_tools_for_system_message(self) -> str:
-        """Format tool definitions for the system message."""
+        """为系统消息格式化工具定义。"""
         formatted_tools = []
         for tool in self.tools:
             func = tool["function"]
@@ -292,13 +290,13 @@ class MiniSWERunner:
         completed: bool
     ) -> List[Dict[str, Any]]:
         """
-        Convert internal message format to Hermes trajectory format.
-        
-        This produces the exact format used by batch_runner.py.
+        将内部消息格式转换为 Hermes 轨迹格式。
+
+        生成与 batch_runner.py 使用的完全相同的格式。
         """
         trajectory = []
         
-        # System message with tool definitions
+        # 包含工具定义的系统消息
         system_msg = (
             "You are a function calling AI model. You are provided with function signatures within <tools> </tools> XML tags. "
             "You may call one or more functions to assist with the user query. If available tools are not relevant in assisting "
@@ -316,24 +314,24 @@ class MiniSWERunner:
         trajectory.append({"from": "system", "value": system_msg})
         trajectory.append({"from": "human", "value": user_query})
         
-        # Process messages (skip first user message as we already added it)
+        # 处理消息（跳过第一条用户消息，因为已经添加过了）
         i = 1
         while i < len(messages):
             msg = messages[i]
             
             if msg["role"] == "assistant":
                 if "tool_calls" in msg and msg["tool_calls"]:
-                    # Assistant message with tool calls
+                    # 带有工具调用的助手消息
                     content = ""
                     
-                    # Add reasoning if present
+                    # 如果存在推理内容则添加
                     if msg.get("reasoning"):
                         content = f"<think>{msg['reasoning']}</think>"
                     
                     if msg.get("content"):
                         content += msg["content"] + "\n"
                     
-                    # Add tool calls in XML format
+                    # 以 XML 格式添加工具调用
                     for tool_call in msg["tool_calls"]:
                         if not tool_call or not isinstance(tool_call, dict): continue
                         try:
@@ -351,14 +349,14 @@ class MiniSWERunner:
                     
                     trajectory.append({"from": "gpt", "value": content.rstrip()})
                     
-                    # Collect subsequent tool responses
+                    # 收集后续的工具响应
                     tool_responses = []
                     j = i + 1
                     while j < len(messages) and messages[j]["role"] == "tool":
                         tool_msg = messages[j]
                         tool_content = tool_msg["content"]
                         
-                        # Try to parse as JSON
+                        # 尝试解析为 JSON
                         try:
                             if tool_content.strip().startswith(("{", "[")):
                                 tool_content = json.loads(tool_content)
@@ -381,7 +379,7 @@ class MiniSWERunner:
                         i = j - 1
                 
                 else:
-                    # Regular assistant message (no tool calls)
+                    # 普通助手消息（无工具调用）
                     content = ""
                     if msg.get("reasoning"):
                         content = f"<think>{msg['reasoning']}</think>"
@@ -397,25 +395,25 @@ class MiniSWERunner:
     
     def run_task(self, task: str) -> Dict[str, Any]:
         """
-        Run a single task and return the result with trajectory.
-        
-        Args:
-            task: The task/prompt to execute
-            
-        Returns:
-            Dict with trajectory, completion status, and metadata
+        运行单个任务并返回包含轨迹的结果。
+
+        参数:
+            task: 要执行的任务/提示词
+
+        返回:
+            Dict: 包含轨迹、完成状态和元数据
         """
         print(f"\n{'='*60}")
         print(f"📝 Task: {task[:80]}{'...' if len(task) > 80 else ''}")
         print(f"{'='*60}")
         
-        # Initialize environment
+        # 初始化环境
         self._create_env()
-        
-        # Message history
+
+        # 消息历史
         messages = [{"role": "user", "content": task}]
-        
-        # System prompt for the LLM (ephemeral - not saved to trajectory)
+
+        # LLM 的系统提示词（临时性 - 不保存到轨迹）
         system_prompt = """You are an AI agent that can execute bash commands to complete tasks.
 
 When you need to run commands, use the 'terminal' tool with your bash command.
@@ -437,10 +435,10 @@ Complete the user's task step by step."""
                 api_call_count += 1
                 print(f"\n🔄 API call #{api_call_count}/{self.max_iterations}")
                 
-                # Prepare API messages
+                # 准备 API 消息
                 api_messages = [{"role": "system", "content": system_prompt}] + messages
                 
-                # Make API call
+                # 调用 API
                 try:
                     response = self.client.chat.completions.create(
                         model=self.model,
@@ -454,15 +452,15 @@ Complete the user's task step by step."""
                 
                 assistant_message = response.choices[0].message
                 
-                # Log assistant response
+                # 记录助手响应
                 if assistant_message.content:
                     print(f"🤖 Assistant: {assistant_message.content[:100]}...")
                 
-                # Check for tool calls
+                # 检查是否有工具调用
                 if assistant_message.tool_calls:
                     print(f"🔧 Tool calls: {len(assistant_message.tool_calls)}")
                     
-                    # Add assistant message with tool calls
+                    # 添加带有工具调用的助手消息
                     messages.append({
                         "role": "assistant",
                         "content": assistant_message.content,
@@ -479,7 +477,7 @@ Complete the user's task step by step."""
                         ]
                     })
                     
-                    # Execute each tool call
+                    # 执行每个工具调用
                     for tc in assistant_message.tool_calls:
                         try:
                             args = json.loads(tc.function.arguments)
@@ -491,10 +489,10 @@ Complete the user's task step by step."""
                         
                         print(f"   📞 terminal: {command[:60]}...")
                         
-                        # Execute command
+                        # 执行命令
                         result = self._execute_command(command, timeout)
-                        
-                        # Format result
+
+                        # 格式化结果
                         result_json = json.dumps({
                             "content": {
                                 "output": result["output"],
@@ -503,12 +501,12 @@ Complete the user's task step by step."""
                             }
                         }, ensure_ascii=False)
                         
-                        # Check for task completion signal
+                        # 检查任务完成信号
                         if "MINI_SWE_AGENT_FINAL_OUTPUT" in result["output"]:
                             print("   ✅ Task completion signal detected!")
                             completed = True
                         
-                        # Add tool response
+                        # 添加工具响应
                         messages.append({
                             "role": "tool",
                             "content": result_json,
@@ -517,13 +515,13 @@ Complete the user's task step by step."""
                         
                         print(f"   ✅ exit_code={result['exit_code']}, output={len(result['output'])} chars")
                     
-                    # If task completed, we can stop
+                    # 如果任务完成，可以停止
                     if completed:
                         final_response = assistant_message.content
                         break
                 
                 else:
-                    # No tool calls - final response
+                    # 无工具调用 - 最终响应
                     final_response = assistant_message.content or ""
                     messages.append({
                         "role": "assistant",
@@ -537,10 +535,10 @@ Complete the user's task step by step."""
                 print(f"⚠️  Reached max iterations ({self.max_iterations})")
         
         finally:
-            # Cleanup environment
+            # 清理环境
             self._cleanup_env()
         
-        # Convert to Hermes trajectory format
+        # 转换为 Hermes 轨迹格式
         trajectory = self._convert_to_hermes_format(messages, task, completed)
         
         return {
@@ -560,14 +558,14 @@ Complete the user's task step by step."""
         output_file: str
     ) -> List[Dict[str, Any]]:
         """
-        Run multiple tasks and save trajectories to a JSONL file.
-        
-        Args:
-            prompts: List of task prompts
-            output_file: Output JSONL file path
-            
-        Returns:
-            List of results
+        运行多个任务并将轨迹保存到 JSONL 文件。
+
+        参数:
+            prompts: 任务提示词列表
+            output_file: 输出 JSONL 文件路径
+
+        返回:
+            结果列表
         """
         results = []
         
@@ -584,7 +582,7 @@ Complete the user's task step by step."""
                     result = self.run_task(prompt)
                     results.append(result)
                     
-                    # Write to file immediately
+                    # 立即写入文件
                     f.write(json.dumps(result, ensure_ascii=False) + "\n")
                     f.flush()
                     
@@ -608,7 +606,7 @@ Complete the user's task step by step."""
 
 
 # ============================================================================
-# CLI Interface
+# CLI 接口
 # ============================================================================
 
 def main(
@@ -626,36 +624,36 @@ def main(
     verbose: bool = False,
 ):
     """
-    Run SWE tasks with Hermes trajectory format output.
-    
-    Args:
-        task: Single task to run (use this OR prompts_file)
-        prompts_file: JSONL file with prompts (each line: {"prompt": "..."})
-        output_file: Output JSONL file for trajectories
-        model: Model name (default: claude-sonnet-4-20250514)
-        base_url: API base URL (optional)
-        api_key: API key (optional, uses env vars)
-        env: Environment type - "local", "docker", or "modal"
-        image: Docker/Modal image (default: python:3.11-slim)
-        cwd: Working directory (default: /tmp)
-        max_iterations: Maximum tool-calling iterations (default: 15)
-        timeout: Command timeout in seconds (default: 60)
-        verbose: Enable verbose logging
-        
-    Examples:
-        # Single task with local environment
+    以 Hermes 轨迹格式输出运行 SWE 任务。
+
+    参数:
+        task: 要运行的单个任务（使用此参数或 prompts_file）
+        prompts_file: 包含提示词的 JSONL 文件（每行: {"prompt": "..."}）
+        output_file: 输出轨迹的 JSONL 文件
+        model: 模型名称（默认: claude-sonnet-4-20250514）
+        base_url: API 基础 URL（可选）
+        api_key: API 密钥（可选，使用环境变量）
+        env: 环境类型 - "local"、"docker" 或 "modal"
+        image: Docker/Modal 镜像（默认: python:3.11-slim）
+        cwd: 工作目录（默认: /tmp）
+        max_iterations: 最大工具调用迭代次数（默认: 15）
+        timeout: 命令超时时间（秒）（默认: 60）
+        verbose: 启用详细日志
+
+    示例:
+        # 使用本地环境运行单个任务
         python mini_swe_runner.py --task "Create hello.py that prints Hello World"
-        
-        # Single task with Docker
+
+        # 使用 Docker 运行单个任务
         python mini_swe_runner.py --task "List files" --env docker
-        
-        # Batch from file
+
+        # 从文件批量运行
         python mini_swe_runner.py --prompts_file tasks.jsonl --output_file results.jsonl
     """
     print("🚀 Mini-SWE Runner with Hermes Trajectory Format")
     print("=" * 60)
     
-    # Initialize runner
+    # 初始化运行器
     runner = MiniSWERunner(
         model=model,
         base_url=base_url,
@@ -669,10 +667,10 @@ def main(
     )
     
     if task:
-        # Single task mode
+        # 单任务模式
         result = runner.run_task(task)
         
-        # Save to file
+        # 保存到文件
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(json.dumps(result, ensure_ascii=False) + "\n")
         
@@ -682,7 +680,7 @@ def main(
         print(f"💬 Turns: {len(result['conversations'])}")
         
     elif prompts_file:
-        # Batch mode
+        # 批量模式
         prompts = []
         with open(prompts_file, 'r', encoding='utf-8') as f:
             for line in f:

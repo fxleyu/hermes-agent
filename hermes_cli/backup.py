@@ -1,11 +1,11 @@
 """
-Backup and import commands for hermes CLI.
+hermes CLI 的备份和导入命令。
 
-`hermes backup` creates a zip archive of the entire ~/.hermes/ directory
-(excluding the hermes-agent repo and transient files).
+`hermes backup` 创建整个 ~/.hermes/ 目录的 zip 归档
+（排除 hermes-agent 代码库和临时文件）。
 
-`hermes import` restores from a backup zip, overlaying onto the current
-HERMES_HOME root.
+`hermes import` 从备份 zip 恢复，覆盖到当前
+HERMES_HOME 根目录。
 """
 
 import json
@@ -27,24 +27,24 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Exclusion rules
+# 排除规则
 # ---------------------------------------------------------------------------
 
-# Directory names to skip entirely (matched against each path component)
+# 需要完全跳过的目录名称（匹配路径中的每个组成部分）
 _EXCLUDED_DIRS = {
-    "hermes-agent",     # the codebase repo — re-clone instead
-    "__pycache__",      # bytecode caches — regenerated on import
-    ".git",             # nested git dirs (profiles shouldn't have these, but safety)
-    "node_modules",     # js deps if website/ somehow leaks in
+    "hermes-agent",     # 代码仓库 —— 重新克隆即可
+    "__pycache__",      # 字节码缓存 —— 导入后会重新生成
+    ".git",             # 嵌套的 git 目录（配置文件不应有这些，但以防万一）
+    "node_modules",     # JS 依赖（以防 website/ 不小心包含进来）
 }
 
-# File-name suffixes to skip
+# 需要跳过的文件后缀
 _EXCLUDED_SUFFIXES = (
     ".pyc",
     ".pyo",
 )
 
-# File names to skip (runtime state that's meaningless on another machine)
+# 需要跳过的文件名（运行时状态文件，在其他机器上无意义）
 _EXCLUDED_NAMES = {
     "gateway.pid",
     "cron.pid",
@@ -52,10 +52,10 @@ _EXCLUDED_NAMES = {
 
 
 def _should_exclude(rel_path: Path) -> bool:
-    """Return True if *rel_path* (relative to hermes root) should be skipped."""
+    """判断 *rel_path*（相对于 hermes 根目录）是否应被跳过。"""
     parts = rel_path.parts
 
-    # Any path component matches an excluded dir name
+    # 路径中的任何部分匹配排除目录名
     for part in parts:
         if part in _EXCLUDED_DIRS:
             return True
@@ -72,14 +72,14 @@ def _should_exclude(rel_path: Path) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# SQLite safe copy
+# SQLite 安全拷贝
 # ---------------------------------------------------------------------------
 
 def _safe_copy_db(src: Path, dst: Path) -> bool:
-    """Copy a SQLite database safely using the backup() API.
+    """使用 backup() API 安全拷贝 SQLite 数据库。
 
-    Handles WAL mode — produces a consistent snapshot even while
-    the DB is being written to.  Falls back to raw copy on failure.
+    处理 WAL 模式 —— 即使数据库正在被写入，也能产生一致的快照。
+    失败时回退到原始文件拷贝。
     """
     try:
         conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
@@ -91,6 +91,7 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
     except Exception as exc:
         logger.warning("SQLite safe copy failed for %s: %s", src, exc)
         try:
+            # 回退到直接文件拷贝
             shutil.copy2(src, dst)
             return True
         except Exception as exc2:
@@ -99,11 +100,11 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Backup
+# 备份
 # ---------------------------------------------------------------------------
 
 def _format_size(nbytes: int) -> str:
-    """Human-readable file size."""
+    """将字节数格式化为人类可读的文件大小。"""
     for unit in ("B", "KB", "MB", "GB"):
         if nbytes < 1024:
             return f"{nbytes:.1f} {unit}" if unit != "B" else f"{nbytes} {unit}"
@@ -112,17 +113,17 @@ def _format_size(nbytes: int) -> str:
 
 
 def run_backup(args) -> None:
-    """Create a zip backup of the Hermes home directory."""
+    """创建 Hermes 主目录的 zip 备份。"""
     hermes_root = get_default_hermes_root()
 
     if not hermes_root.is_dir():
         print(f"Error: Hermes home directory not found at {hermes_root}")
         sys.exit(1)
 
-    # Determine output path
+    # 确定输出路径
     if args.output:
         out_path = Path(args.output).expanduser().resolve()
-        # If user gave a directory, put the zip inside it
+        # 如果用户给的是目录，则将 zip 文件放入其中
         if out_path.is_dir():
             stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
             out_path = out_path / f"hermes-backup-{stamp}.zip"
@@ -130,23 +131,23 @@ def run_backup(args) -> None:
         stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
         out_path = Path.home() / f"hermes-backup-{stamp}.zip"
 
-    # Ensure the suffix is .zip
+    # 确保后缀为 .zip
     if out_path.suffix.lower() != ".zip":
         out_path = out_path.with_suffix(out_path.suffix + ".zip")
 
-    # Ensure parent directory exists
+    # 确保父目录存在
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Collect files
+    # 收集文件
     print(f"Scanning {display_hermes_home()} ...")
-    files_to_add: list[tuple[Path, Path]] = []  # (absolute, relative)
+    files_to_add: list[tuple[Path, Path]] = []  # (绝对路径, 相对路径)
     skipped_dirs = set()
 
     for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
         dp = Path(dirpath)
         rel_dir = dp.relative_to(hermes_root)
 
-        # Prune excluded directories in-place so os.walk doesn't descend
+        # 就地裁剪排除目录，使 os.walk 不会深入遍历
         orig_dirnames = dirnames[:]
         dirnames[:] = [
             d for d in dirnames
@@ -162,7 +163,7 @@ def run_backup(args) -> None:
             if _should_exclude(rel):
                 continue
 
-            # Skip the output zip itself if it happens to be inside hermes root
+            # 跳过输出 zip 文件本身（如果它恰好在 hermes 根目录内）
             try:
                 if fpath.resolve() == out_path.resolve():
                     continue
@@ -175,7 +176,7 @@ def run_backup(args) -> None:
         print("No files to back up.")
         return
 
-    # Create the zip
+    # 创建 zip 归档
     file_count = len(files_to_add)
     print(f"Backing up {file_count} files ...")
 
@@ -186,7 +187,7 @@ def run_backup(args) -> None:
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
             try:
-                # Safe copy for SQLite databases (handles WAL mode)
+                # 对 SQLite 数据库使用安全拷贝（处理 WAL 模式）
                 if abs_path.suffix == ".db":
                     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
                         tmp_db = Path(tmp.name)
@@ -205,14 +206,14 @@ def run_backup(args) -> None:
                 errors.append(f"  {rel_path}: {exc}")
                 continue
 
-            # Progress every 500 files
+            # 每 500 个文件显示一次进度
             if i % 500 == 0:
                 print(f"  {i}/{file_count} files ...")
 
     elapsed = time.monotonic() - t0
     zip_size = out_path.stat().st_size
 
-    # Summary
+    # 摘要
     print()
     print(f"Backup complete: {out_path}")
     print(f"  Files:       {file_count}")
@@ -236,23 +237,23 @@ def run_backup(args) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Import
+# 导入
 # ---------------------------------------------------------------------------
 
 def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:
-    """Check that a zip looks like a Hermes backup.
+    """检查 zip 文件是否看起来像 Hermes 备份。
 
-    Returns (ok, reason).
+    返回 (是否有效, 原因)。
     """
     names = zf.namelist()
     if not names:
         return False, "zip archive is empty"
 
-    # Look for telltale files that a hermes home would have
+    # 查找 hermes 主目录中应有的标志性文件
     markers = {"config.yaml", ".env", "state.db"}
     found = set()
     for n in names:
-        # Could be at the root or one level deep (if someone zipped the directory)
+        # 可能在根级别或深一级（如果有人打包了整个目录）
         basename = Path(n).name
         if basename in markers:
             found.add(basename)
@@ -267,23 +268,23 @@ def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:
 
 
 def _detect_prefix(zf: zipfile.ZipFile) -> str:
-    """Detect if the zip has a common directory prefix wrapping all entries.
+    """检测 zip 中是否有包裹所有条目的公共目录前缀。
 
-    Some tools zip as `.hermes/config.yaml` instead of `config.yaml`.
-    Returns the prefix to strip (empty string if none).
+    某些工具会把文件打包为 `.hermes/config.yaml` 而不是 `config.yaml`。
+    返回需要去除的前缀（如果没有则返回空字符串）。
     """
     names = [n for n in zf.namelist() if not n.endswith("/")]
     if not names:
         return ""
 
-    # Find common prefix
+    # 查找公共前缀
     parts_list = [Path(n).parts for n in names]
 
-    # Check if all entries share a common first directory
+    # 检查所有条目是否共享同一个首级目录
     first_parts = {p[0] for p in parts_list if len(p) > 1}
     if len(first_parts) == 1:
         prefix = first_parts.pop()
-        # Only strip if it looks like a hermes dir name
+        # 只有当它看起来像 hermes 目录名时才去除
         if prefix in (".hermes", "hermes"):
             return prefix + "/"
 
@@ -291,7 +292,7 @@ def _detect_prefix(zf: zipfile.ZipFile) -> str:
 
 
 def run_import(args) -> None:
-    """Restore a Hermes backup from a zip file."""
+    """从 zip 文件恢复 Hermes 备份。"""
     zip_path = Path(args.zipfile).expanduser().resolve()
 
     if not zip_path.is_file():
@@ -305,7 +306,7 @@ def run_import(args) -> None:
     hermes_root = get_default_hermes_root()
 
     with zipfile.ZipFile(zip_path, "r") as zf:
-        # Validate
+        # 验证备份文件
         ok, reason = _validate_backup_zip(zf)
         if not ok:
             print(f"Error: {reason}")
@@ -321,7 +322,7 @@ def run_import(args) -> None:
         if prefix:
             print(f"Detected archive prefix: {prefix!r} (will be stripped)")
 
-        # Check for existing installation
+        # 检查是否存在已有安装
         has_config = (hermes_root / "config.yaml").exists()
         has_env = (hermes_root / ".env").exists()
 
@@ -339,7 +340,7 @@ def run_import(args) -> None:
                 print("Aborted.")
                 return
 
-        # Extract
+        # 解压文件
         print(f"\nImporting {file_count} files ...")
         hermes_root.mkdir(parents=True, exist_ok=True)
 
@@ -348,7 +349,7 @@ def run_import(args) -> None:
         t0 = time.monotonic()
 
         for member in members:
-            # Strip prefix if detected
+            # 去除已检测到的前缀
             if prefix and member.startswith(prefix):
                 rel = member[len(prefix):]
             else:
@@ -359,7 +360,7 @@ def run_import(args) -> None:
 
             target = hermes_root / rel
 
-            # Security: reject absolute paths and traversals
+            # 安全检查：拒绝绝对路径和路径穿越攻击
             try:
                 target.resolve().relative_to(hermes_root.resolve())
             except ValueError:
@@ -379,7 +380,7 @@ def run_import(args) -> None:
 
         elapsed = time.monotonic() - t0
 
-        # Summary
+        # 摘要
         print()
         print(f"Import complete: {restored} files restored in {elapsed:.1f}s")
         print(f"  Target: {display_hermes_home()}")
@@ -391,7 +392,7 @@ def run_import(args) -> None:
             if len(errors) > 10:
                 print(f"  ... and {len(errors) - 10} more")
 
-        # Post-import: restore profile wrapper scripts
+        # 导入后操作：恢复配置文件的包装脚本
         profiles_dir = hermes_root / "profiles"
         restored_profiles = []
         if profiles_dir.is_dir():
@@ -404,7 +405,7 @@ def run_import(args) -> None:
                     if not entry.is_dir():
                         continue
                     profile_name = entry.name
-                    # Only create wrappers for directories with config
+                    # 只为有配置的目录创建包装脚本
                     if not (entry / "config.yaml").exists() and not (entry / ".env").exists():
                         continue
                     collision = check_alias_collision(profile_name)
@@ -427,12 +428,12 @@ def run_import(args) -> None:
                         print('  Add to your shell config (~/.bashrc or ~/.zshrc):')
                         print('    export PATH="$HOME/.local/bin:$PATH"')
             except ImportError:
-                # hermes_cli.profiles might not be available (fresh install)
+                # hermes_cli.profiles 可能不可用（全新安装时）
                 if any(profiles_dir.iterdir()):
                     print(f"\n  Profiles detected but aliases could not be created.")
                     print(f"  Run: hermes profile list  (after installing hermes)")
 
-        # Guidance
+        # 后续指引
         print()
         if not (hermes_root / "hermes-agent").is_dir():
             print("Note: The hermes-agent codebase was not included in the backup.")
@@ -448,12 +449,12 @@ def run_import(args) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Quick state snapshots (used by /snapshot slash command and hermes backup --quick)
+# 快速状态快照（供 /snapshot 斜杠命令和 hermes backup --quick 使用）
 # ---------------------------------------------------------------------------
 
-# Critical state files to include in quick snapshots (relative to HERMES_HOME).
-# Everything else is either regeneratable (logs, cache) or managed separately
-# (skills, repo, sessions/).
+# 快速快照中需要包含的关键状态文件（相对于 HERMES_HOME）。
+# 其他文件要么可重新生成（日志、缓存），要么单独管理
+# （技能、代码库、sessions/）。
 _QUICK_STATE_FILES = (
     "state.db",
     "config.yaml",
@@ -470,6 +471,7 @@ _QUICK_DEFAULT_KEEP = 20
 
 
 def _quick_snapshot_root(hermes_home: Optional[Path] = None) -> Path:
+    """获取快照存储根目录。"""
     home = hermes_home or get_hermes_home()
     return home / _QUICK_SNAPSHOTS_DIR
 
@@ -478,13 +480,13 @@ def create_quick_snapshot(
     label: Optional[str] = None,
     hermes_home: Optional[Path] = None,
 ) -> Optional[str]:
-    """Create a quick state snapshot of critical files.
+    """创建关键文件的快速状态快照。
 
-    Copies STATE_FILES to a timestamped directory under state-snapshots/.
-    Auto-prunes old snapshots beyond the keep limit.
+    将 STATE_FILES 拷贝到 state-snapshots/ 下的带时间戳目录中。
+    自动清理超过保留上限的旧快照。
 
-    Returns:
-        Snapshot ID (timestamp-based), or None if no files found.
+    返回:
+        快照 ID（基于时间戳），如果没有找到文件则返回 None。
     """
     home = hermes_home or get_hermes_home()
     root = _quick_snapshot_root(home)
@@ -494,7 +496,7 @@ def create_quick_snapshot(
     snap_dir = root / snap_id
     snap_dir.mkdir(parents=True, exist_ok=True)
 
-    manifest: Dict[str, int] = {}  # rel_path -> file size
+    manifest: Dict[str, int] = {}  # 相对路径 -> 文件大小
 
     for rel in _QUICK_STATE_FILES:
         src = home / rel
@@ -506,6 +508,7 @@ def create_quick_snapshot(
 
         try:
             if src.suffix == ".db":
+                # SQLite 数据库使用安全拷贝
                 if not _safe_copy_db(src, dst):
                     continue
             else:
@@ -515,10 +518,11 @@ def create_quick_snapshot(
             logger.warning("Could not snapshot %s: %s", rel, exc)
 
     if not manifest:
+        # 没有任何文件被快照，清理空目录
         shutil.rmtree(snap_dir, ignore_errors=True)
         return None
 
-    # Write manifest
+    # 写入清单文件
     meta = {
         "id": snap_id,
         "timestamp": ts,
@@ -530,7 +534,7 @@ def create_quick_snapshot(
     with open(snap_dir / "manifest.json", "w") as f:
         json.dump(meta, f, indent=2)
 
-    # Auto-prune
+    # 自动清理超过保留上限的旧快照
     _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP)
 
     logger.info("State snapshot created: %s (%d files)", snap_id, len(manifest))
@@ -541,7 +545,7 @@ def list_quick_snapshots(
     limit: int = 20,
     hermes_home: Optional[Path] = None,
 ) -> List[Dict[str, Any]]:
-    """List existing quick state snapshots, most recent first."""
+    """列出已有的快速状态快照，最新的在前。"""
     root = _quick_snapshot_root(hermes_home)
     if not root.exists():
         return []
@@ -567,10 +571,10 @@ def restore_quick_snapshot(
     snapshot_id: str,
     hermes_home: Optional[Path] = None,
 ) -> bool:
-    """Restore state from a quick snapshot.
+    """从快速快照恢复状态。
 
-    Overwrites current state files with the snapshot's copies.
-    Returns True if at least one file was restored.
+    用快照的副本覆盖当前的状态文件。
+    如果至少恢复了一个文件则返回 True。
     """
     home = hermes_home or get_hermes_home()
     root = _quick_snapshot_root(home)
@@ -597,7 +601,7 @@ def restore_quick_snapshot(
 
         try:
             if dst.suffix == ".db":
-                # Atomic-ish replace for databases
+                # 数据库文件使用近似原子替换
                 tmp = dst.parent / f".{dst.name}.snap_restore"
                 shutil.copy2(src, tmp)
                 dst.unlink(missing_ok=True)
@@ -613,10 +617,11 @@ def restore_quick_snapshot(
 
 
 def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
-    """Remove oldest quick snapshots beyond the keep limit. Returns count deleted."""
+    """删除超过保留上限的最旧快照。返回已删除的数量。"""
     if not root.exists():
         return 0
 
+    # 按名称降序排列（新的在前），超出 keep 数量的都删除
     dirs = sorted(
         (d for d in root.iterdir() if d.is_dir()),
         key=lambda d: d.name,
@@ -638,12 +643,12 @@ def prune_quick_snapshots(
     keep: int = _QUICK_DEFAULT_KEEP,
     hermes_home: Optional[Path] = None,
 ) -> int:
-    """Manually prune quick snapshots. Returns count deleted."""
+    """手动清理快速快照。返回已删除的数量。"""
     return _prune_quick_snapshots(_quick_snapshot_root(hermes_home), keep=keep)
 
 
 def run_quick_backup(args) -> None:
-    """CLI entry point for hermes backup --quick."""
+    """hermes backup --quick 的 CLI 入口点。"""
     label = getattr(args, "label", None)
     snap_id = create_quick_snapshot(label=label)
     if snap_id:

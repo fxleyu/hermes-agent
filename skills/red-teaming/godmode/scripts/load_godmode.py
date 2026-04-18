@@ -1,12 +1,12 @@
 """
-Loader for G0DM0D3 scripts. Handles the exec-scoping issues.
+G0DM0D3 脚本加载器。处理 exec 作用域问题。
 
-Usage in execute_code:
+在 execute_code 中使用:
     exec(open(os.path.expanduser(
         os.path.join(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")), "skills/red-teaming/godmode/scripts/load_godmode.py")
     )).read())
-    
-    # Now all functions are available:
+
+    # 此后所有函数均可使用:
     # - auto_jailbreak(), undo_jailbreak()
     # - race_models(), race_godmode_classic()
     # - generate_variants(), obfuscate_query(), detect_triggers()
@@ -39,7 +39,7 @@ for _gm_script in ["parseltongue.py", "godmode_race.py", "auto_jailbreak.py"]:
 
 sys.argv = _gm_old_argv
 
-# Cleanup loader vars
+# 清理加载器临时变量
 for _gm_cleanup in ['_gm_scripts_dir', '_gm_old_argv', '_gm_load', '_gm_ns', '_gm_k',
                      '_gm_v', '_gm_script', '_gm_path', '_gm_cleanup']:
     globals().pop(_gm_cleanup, None)

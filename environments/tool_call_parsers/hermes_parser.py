@@ -1,8 +1,8 @@
 """
-Hermes tool call parser.
+Hermes 工具调用解析器。
 
-Format: <tool_call>{"name": "func", "arguments": {...}}</tool_call>
-Based on VLLM's Hermes2ProToolParser.extract_tool_calls()
+格式：<tool_call>{"name": "func", "arguments": {...}}</tool_call>
+基于 VLLM 的 Hermes2ProToolParser.extract_tool_calls()
 """
 
 import json
@@ -21,18 +21,19 @@ from environments.tool_call_parsers import ParseResult, ToolCallParser, register
 @register_parser("hermes")
 class HermesToolCallParser(ToolCallParser):
     """
-    Parser for Hermes-format tool calls.
+    Hermes 格式工具调用的解析器。
 
-    Matches <tool_call>...</tool_call> tags containing JSON with "name" and "arguments".
-    Also handles unclosed <tool_call> at end-of-string (truncated generation).
+    匹配包含 "name" 和 "arguments" 的 JSON 的 <tool_call>...</tool_call> 标签。
+    同时处理字符串末尾未闭合的 <tool_call>（生成被截断的情况）。
     """
 
-    # Matches both closed and unclosed tool_call tags
+    # 匹配闭合和未闭合的 tool_call 标签
     PATTERN = re.compile(
         r"<tool_call>\s*(.*?)\s*</tool_call>|<tool_call>\s*(.*)", re.DOTALL
     )
 
     def parse(self, text: str) -> ParseResult:
+        # 快速检查：如果文本中不包含 <tool_call> 标签，直接返回原文
         if "<tool_call>" not in text:
             return text, None
 
@@ -43,14 +44,16 @@ class HermesToolCallParser(ToolCallParser):
 
             tool_calls: List[ChatCompletionMessageToolCall] = []
             for match in matches:
-                # match is a tuple: (closed_content, unclosed_content)
+                # match 是一个元组：(闭合标签内容, 未闭合标签内容)
                 raw_json = match[0] if match[0] else match[1]
                 if not raw_json.strip():
                     continue
 
+                # 将匹配到的 JSON 字符串解析为字典
                 tc_data = json.loads(raw_json)
                 if "name" not in tc_data:
                     continue
+                # 构造标准的 ChatCompletionMessageToolCall 对象
                 tool_calls.append(
                     ChatCompletionMessageToolCall(
                         id=f"call_{uuid.uuid4().hex[:8]}",
@@ -67,9 +70,10 @@ class HermesToolCallParser(ToolCallParser):
             if not tool_calls:
                 return text, None
 
-            # Content is everything before the first <tool_call> tag
+            # content 是第一个 <tool_call> 标签之前的所有内容
             content = text[: text.find("<tool_call>")].strip()
             return content if content else None, tool_calls
 
         except Exception:
+            # 解析失败时返回原始文本，不丢失信息
             return text, None

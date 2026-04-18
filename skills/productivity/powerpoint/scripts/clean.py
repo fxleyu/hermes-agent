@@ -1,18 +1,18 @@
-"""Remove unreferenced files from an unpacked PPTX directory.
+"""从解压后的 PPTX 目录中移除未引用的文件。
 
-Usage: python clean.py <unpacked_dir>
+用法: python clean.py <unpacked_dir>
 
-Example:
+示例:
     python clean.py unpacked/
 
-This script removes:
-- Orphaned slides (not in sldIdLst) and their relationships
-- [trash] directory (unreferenced files)
-- Orphaned .rels files for deleted resources
-- Unreferenced media, embeddings, charts, diagrams, drawings, ink files
-- Unreferenced theme files
-- Unreferenced notes slides
-- Content-Type overrides for deleted files
+此脚本移除:
+- 孤立的幻灯片（不在 sldIdLst 中）及其关系文件
+- [trash] 目录（未引用的文件）
+- 已删除资源的孤立 .rels 文件
+- 未引用的媒体、嵌入对象、图表、图示、绘图、墨迹文件
+- 未引用的主题文件
+- 未引用的备注幻灯片
+- 已删除文件的 Content-Type 覆盖项
 """
 
 import sys

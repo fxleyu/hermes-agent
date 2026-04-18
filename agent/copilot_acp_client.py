@@ -1,9 +1,8 @@
-"""OpenAI-compatible shim that forwards Hermes requests to `copilot --acp`.
+"""兼容 OpenAI 接口的垫片，将 Hermes 请求转发至 `copilot --acp`。
 
-This adapter lets Hermes treat the GitHub Copilot ACP server as a chat-style
-backend. Each request starts a short-lived ACP session, sends the formatted
-conversation as a single prompt, collects text chunks, and converts the result
-back into the minimal shape Hermes expects from an OpenAI client.
+该适配器使 Hermes 可以将 GitHub Copilot ACP 服务器作为聊天风格的后端使用。
+每次请求启动一个短生命周期的 ACP 会话，将格式化的对话作为单条提示发送，
+收集文本块，然后将结果转换回 Hermes 从 OpenAI 客户端所期望的最小格式。
 """
 
 from __future__ import annotations
@@ -195,7 +194,7 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str
         _try_add_tool_call(raw)
         consumed_spans.append((m.start(), m.end()))
 
-    # Only try bare-JSON fallback when no XML blocks were found.
+    # 仅在未找到 XML 块时尝试裸 JSON 回退。
     if not extracted:
         for m in _TOOL_CALL_JSON_RE.finditer(text):
             raw = m.group(0)
@@ -254,7 +253,7 @@ class _ACPChatNamespace:
 
 
 class CopilotACPClient:
-    """Minimal OpenAI-client-compatible facade for Copilot ACP."""
+    """Copilot ACP 的最小化 OpenAI 客户端兼容门面。"""
 
     def __init__(
         self,
@@ -313,15 +312,15 @@ class CopilotACPClient:
             tools=tools,
             tool_choice=tool_choice,
         )
-        # Normalise timeout: run_agent.py may pass an httpx.Timeout object
-        # (used natively by the OpenAI SDK) rather than a plain float.
+        # 标准化超时值：run_agent.py 可能传入 httpx.Timeout 对象
+        # （OpenAI SDK 原生使用）而非普通 float。
         if timeout is None:
             _effective_timeout = _DEFAULT_TIMEOUT_SECONDS
         elif isinstance(timeout, (int, float)):
             _effective_timeout = float(timeout)
         else:
-            # httpx.Timeout or similar — pick the largest component so the
-            # subprocess has enough wall-clock time for the full response.
+            # httpx.Timeout 或类似对象——取最大的组件值，
+            # 以便子进程有足够的挂钟时间来完成完整响应。
             _candidates = [
                 getattr(timeout, attr, None)
                 for attr in ("read", "write", "connect", "pool", "timeout")

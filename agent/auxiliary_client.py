@@ -1,37 +1,37 @@
-"""Shared auxiliary client router for side tasks.
+"""共享辅助客户端路由器，用于侧任务。
 
-Provides a single resolution chain so every consumer (context compression,
-session search, web extraction, vision analysis, browser vision) picks up
-the best available backend without duplicating fallback logic.
+提供统一的解析链，使每个使用者（上下文压缩、会话搜索、
+网页提取、视觉分析、浏览器视觉）都能选择最佳可用后端，
+而无需重复回退逻辑。
 
-Resolution order for text tasks (auto mode):
+文本任务的解析顺序（auto 模式）：
   1. OpenRouter  (OPENROUTER_API_KEY)
-  2. Nous Portal (~/.hermes/auth.json active provider)
-  3. Custom endpoint (config.yaml model.base_url + OPENAI_API_KEY)
-  4. Codex OAuth (Responses API via chatgpt.com with gpt-5.3-codex,
-     wrapped to look like a chat.completions client)
-  5. Native Anthropic
-  6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
+  2. Nous Portal (~/.hermes/auth.json 活跃提供者)
+  3. 自定义端点 (config.yaml model.base_url + OPENAI_API_KEY)
+  4. Codex OAuth (通过 chatgpt.com 的 Responses API 使用 gpt-5.3-codex，
+     包装为类似 chat.completions 客户端)
+  5. 原生 Anthropic
+  6. 直接 API 密钥提供者 (z.ai/GLM、Kimi/Moonshot、MiniMax、MiniMax-CN)
   7. None
 
-Resolution order for vision/multimodal tasks (auto mode):
-  1. Selected main provider, if it is one of the supported vision backends below
+视觉/多模态任务的解析顺序（auto 模式）：
+  1. 已选择的主提供者，如果它是以下支持的视觉后端之一
   2. OpenRouter
   3. Nous Portal
-  4. Codex OAuth (gpt-5.3-codex supports vision via Responses API)
-  5. Native Anthropic
-  6. Custom endpoint (for local vision models: Qwen-VL, LLaVA, Pixtral, etc.)
+  4. Codex OAuth（gpt-5.3-codex 通过 Responses API 支持视觉）
+  5. 原生 Anthropic
+  6. 自定义端点（用于本地视觉模型：Qwen-VL、LLaVA、Pixtral 等）
   7. None
 
-Per-task overrides are configured in config.yaml under the ``auxiliary:`` section
-(e.g. ``auxiliary.vision.provider``, ``auxiliary.compression.model``).
-Default "auto" follows the chains above.
+每任务覆盖在 config.yaml 的 ``auxiliary:`` 部分配置
+（例如 ``auxiliary.vision.provider``、``auxiliary.compression.model``）。
+默认 "auto" 遵循上述链。
 
-Payment / credit exhaustion fallback:
-  When a resolved provider returns HTTP 402 or a credit-related error,
-  call_llm() automatically retries with the next available provider in the
-  auto-detection chain.  This handles the common case where a user depletes
-  their OpenRouter balance but has Codex OAuth or another provider available.
+支付/额度耗尽回退：
+  当解析的提供者返回 HTTP 402 或额度相关错误时，
+  call_llm() 自动用自动检测链中的下一个可用提供者重试。
+  这处理了用户耗尽 OpenRouter 余额但有 Codex OAuth
+  或其他提供者可用的常见情况。
 """
 
 import json
@@ -51,7 +51,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
 
-# Module-level flag: only warn once per process about stale OPENAI_BASE_URL.
+# 模块级标志：每个进程只警告一次过期的 OPENAI_BASE_URL。
 _stale_base_url_warned = False
 
 _PROVIDER_ALIASES = {
@@ -86,15 +86,15 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
     if normalized == "codex":
         return "openai-codex"
     if normalized == "main":
-        # Resolve to the user's actual main provider so named custom providers
-        # and non-aggregator providers (DeepSeek, Alibaba, etc.) work correctly.
+        # 解析为用户的实际主提供者，使命名自定义提供者
+        # 和非聚合器提供者（DeepSeek、Alibaba 等）能正确工作。
         main_prov = _read_main_provider()
         if main_prov and main_prov not in ("auto", "main", ""):
             return main_prov
         return "custom"
     return _PROVIDER_ALIASES.get(normalized, normalized)
 
-# Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
+# 直接 API 密钥提供者的默认辅助模型（用于侧任务的廉价/快速模型）
 _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "gemini": "gemini-3-flash-preview",
     "zai": "glm-4.5-flash",
@@ -110,31 +110,30 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "ollama-cloud": "nemotron-3-nano:30b",
 }
 
-# Vision-specific model overrides for direct providers.
-# When the user's main provider has a dedicated vision/multimodal model that
-# differs from their main chat model, map it here.  The vision auto-detect
-# "exotic provider" branch checks this before falling back to the main model.
+# 视觉特定的模型覆盖，用于直接提供者。
+# 当用户的主提供者有一个与其主聊天模型不同的专用视觉/多模态模型时，
+# 在此映射。视觉自动检测的"特殊提供者"分支在回退到主模型之前检查此项。
 _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "xiaomi": "mimo-v2-omni",
     "zai": "glm-5v-turbo",
 }
 
-# OpenRouter app attribution headers
+# OpenRouter 应用归属头
 _OR_HEADERS = {
     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-OpenRouter-Title": "Hermes Agent",
     "X-OpenRouter-Categories": "productivity,cli-agent",
 }
 
-# Nous Portal extra_body for product attribution.
-# Callers should pass this as extra_body in chat.completions.create()
-# when the auxiliary client is backed by Nous Portal.
+# Nous Portal 产品归属的 extra_body。
+# 当辅助客户端由 Nous Portal 支持时，调用方应在
+# chat.completions.create() 中将此作为 extra_body 传递。
 NOUS_EXTRA_BODY = {"tags": ["product=hermes-agent"]}
 
-# Set at resolve time — True if the auxiliary client points to Nous Portal
+# 解析时设置——如果辅助客户端指向 Nous Portal 则为 True
 auxiliary_is_nous: bool = False
 
-# Default auxiliary models per provider
+# 每个提供者的默认辅助模型
 _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
 _NOUS_MODEL = "google/gemini-3-flash-preview"
 _NOUS_FREE_TIER_VISION_MODEL = "xiaomi/mimo-v2-omni"
@@ -143,23 +142,22 @@ _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
 
-# Codex fallback: uses the Responses API (the only endpoint the Codex
-# OAuth token can access) with a fast model for auxiliary tasks.
-# ChatGPT-backed Codex accounts currently reject gpt-5.3-codex for these
-# auxiliary flows, while gpt-5.2-codex remains broadly available and supports
-# vision via Responses.
+# Codex 回退：使用 Responses API（Codex OAuth 令牌能访问的唯一端点），
+# 并为辅助任务使用快速模型。
+# ChatGPT 支持的 Codex 帐户目前拒绝这些辅助流的 gpt-5.3-codex，
+# 而 gpt-5.2-codex 仍广泛可用且支持通过 Responses 的视觉功能。
 _CODEX_AUX_MODEL = "gpt-5.2-codex"
 _CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
 
 def _to_openai_base_url(base_url: str) -> str:
-    """Normalize an Anthropic-style base URL to OpenAI-compatible format.
+    """将 Anthropic 风格的 base URL 标准化为 OpenAI 兼容格式。
 
-    Some providers (MiniMax, MiniMax-CN) expose an ``/anthropic`` endpoint for
-    the Anthropic Messages API and a separate ``/v1`` endpoint for OpenAI chat
-    completions.  The auxiliary client uses the OpenAI SDK, so it must hit the
-    ``/v1`` surface.  Passing the raw ``inference_base_url`` causes requests to
-    land on ``/anthropic/chat/completions`` — a 404.
+    某些提供者（MiniMax、MiniMax-CN）暴露用于 Anthropic Messages API
+    的 ``/anthropic`` 端点和用于 OpenAI chat completions 的独立
+    ``/v1`` 端点。辅助客户端使用 OpenAI SDK，因此必须访问
+    ``/v1`` 接口。传递原始 ``inference_base_url`` 会导致请求
+    落在 ``/anthropic/chat/completions`` 上——返回 404。
     """
     url = str(base_url or "").strip().rstrip("/")
     if url.endswith("/anthropic"):
@@ -170,7 +168,7 @@ def _to_openai_base_url(base_url: str) -> str:
 
 
 def _select_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
-    """Return (pool_exists_for_provider, selected_entry)."""
+    """返回 (该提供者是否存在凭证池, 选中的条目)。"""
     try:
         pool = load_pool(provider)
     except Exception as exc:
@@ -188,8 +186,8 @@ def _select_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
 def _pool_runtime_api_key(entry: Any) -> str:
     if entry is None:
         return ""
-    # Use the PooledCredential.runtime_api_key property which handles
-    # provider-specific fallback (e.g. agent_key for nous).
+    # 使用 PooledCredential.runtime_api_key 属性，该属性处理
+    # 提供者特定的回退逻辑（例如 nous 的 agent_key）。
     key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
     return str(key or "").strip()
 
@@ -197,8 +195,8 @@ def _pool_runtime_api_key(entry: Any) -> str:
 def _pool_runtime_base_url(entry: Any, fallback: str = "") -> str:
     if entry is None:
         return str(fallback or "").strip().rstrip("/")
-    # runtime_base_url handles provider-specific logic (e.g. nous prefers inference_base_url).
-    # Fall back through inference_base_url and base_url for non-PooledCredential entries.
+    # runtime_base_url 处理提供者特定的逻辑（例如 nous 优先使用 inference_base_url）。
+    # 对于非 PooledCredential 条目，回退到 inference_base_url 和 base_url。
     url = (
         getattr(entry, "runtime_base_url", None)
         or getattr(entry, "inference_base_url", None)
@@ -208,25 +206,25 @@ def _pool_runtime_base_url(entry: Any, fallback: str = "") -> str:
     return str(url or "").strip().rstrip("/")
 
 
-# ── Codex Responses → chat.completions adapter ─────────────────────────────
-# All auxiliary consumers call client.chat.completions.create(**kwargs) and
-# read response.choices[0].message.content. This adapter translates those
-# calls to the Codex Responses API so callers don't need any changes.
+# ── Codex Responses → chat.completions 适配器 ─────────────────────────────
+# 所有辅助使用者调用 client.chat.completions.create(**kwargs) 并
+# 读取 response.choices[0].message.content。此适配器将这些
+# 调用转换为 Codex Responses API，使调用方无需任何修改。
 
 
 def _convert_content_for_responses(content: Any) -> Any:
-    """Convert chat.completions content to Responses API format.
+    """将 chat.completions 内容转换为 Responses API 格式。
 
-    chat.completions uses:
+    chat.completions 使用:
       {"type": "text", "text": "..."}
       {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
 
-    Responses API uses:
+    Responses API 使用:
       {"type": "input_text", "text": "..."}
       {"type": "input_image", "image_url": "data:image/png;base64,..."}
 
-    If content is a plain string, it's returned as-is (the Responses API
-    accepts strings directly for text-only messages).
+    如果内容是纯字符串，直接返回（Responses API 对纯文本消息
+    直接接受字符串）。
     """
     if isinstance(content, str):
         return content
@@ -241,20 +239,20 @@ def _convert_content_for_responses(content: Any) -> Any:
         if ptype == "text":
             converted.append({"type": "input_text", "text": part.get("text", "")})
         elif ptype == "image_url":
-            # chat.completions nests the URL: {"image_url": {"url": "..."}}
+            # chat.completions 中 URL 是嵌套的: {"image_url": {"url": "..."}}
             image_data = part.get("image_url", {})
             url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data)
             entry: Dict[str, Any] = {"type": "input_image", "image_url": url}
-            # Preserve detail if specified
+            # 如果指定了 detail 则保留
             detail = image_data.get("detail") if isinstance(image_data, dict) else None
             if detail:
                 entry["detail"] = detail
             converted.append(entry)
         elif ptype in ("input_text", "input_image"):
-            # Already in Responses format — pass through
+            # 已经是 Responses 格式——直接传递
             converted.append(part)
         else:
-            # Unknown content type — try to preserve as text
+            # 未知内容类型——尝试作为文本保留
             text = part.get("text", "")
             if text:
                 converted.append({"type": "input_text", "text": text})
@@ -263,8 +261,8 @@ def _convert_content_for_responses(content: Any) -> Any:
 
 
 class _CodexCompletionsAdapter:
-    """Drop-in shim that accepts chat.completions.create() kwargs and
-    routes them through the Codex Responses streaming API."""
+    """直通填充层，接受 chat.completions.create() 的 kwargs 参数，
+    并通过 Codex Responses 流式 API 进行路由。"""
 
     def __init__(self, real_client: OpenAI, model: str):
         self._client = real_client
@@ -274,9 +272,9 @@ class _CodexCompletionsAdapter:
         messages = kwargs.get("messages", [])
         model = kwargs.get("model", self._model)
 
-        # Separate system/instructions from conversation messages.
-        # Convert chat.completions multimodal content blocks to Responses
-        # API format (input_text / input_image instead of text / image_url).
+        # 将系统/指令消息与对话消息分开。
+        # 将 chat.completions 的多模态内容块转换为 Responses
+        # API 格式（input_text / input_image 替代 text / image_url）。
         instructions = "You are a helpful assistant."
         input_msgs: List[Dict[str, Any]] = []
         for msg in messages:
@@ -297,10 +295,10 @@ class _CodexCompletionsAdapter:
             "store": False,
         }
 
-        # Note: the Codex endpoint (chatgpt.com/backend-api/codex) does NOT
-        # support max_output_tokens or temperature — omit to avoid 400 errors.
+        # 注意：Codex 端点 (chatgpt.com/backend-api/codex) 不支持
+        # max_output_tokens 或 temperature——省略以避免 400 错误。
 
-        # Tools support for flush_memories and similar callers
+        # 工具支持，用于 flush_memories 和类似的调用方
         tools = kwargs.get("tools")
         if tools:
             converted = []
@@ -318,15 +316,15 @@ class _CodexCompletionsAdapter:
             if converted:
                 resp_kwargs["tools"] = converted
 
-        # Stream and collect the response
+        # 流式接收并收集响应
         text_parts: List[str] = []
         tool_calls_raw: List[Any] = []
         usage = None
 
         try:
-            # Collect output items and text deltas during streaming —
-            # the Codex backend can return empty response.output from
-            # get_final_response() even when items were streamed.
+            # 在流式传输期间收集输出项和文本增量——
+            # Codex 后端可能从 get_final_response() 返回空的 response.output，
+            # 即使流式传输了项目也是如此。
             collected_output_items: List[Any] = []
             collected_text_deltas: List[str] = []
             has_function_calls = False
@@ -345,7 +343,7 @@ class _CodexCompletionsAdapter:
                         has_function_calls = True
                 final = stream.get_final_response()
 
-            # Backfill empty output from collected stream events
+            # 用收集的流事件回填空的 output
             _output = getattr(final, "output", None)
             if isinstance(_output, list) and not _output:
                 if collected_output_items:
@@ -355,9 +353,9 @@ class _CodexCompletionsAdapter:
                         len(collected_output_items),
                     )
                 elif collected_text_deltas and not has_function_calls:
-                    # Only synthesize text when no tool calls were streamed —
-                    # a function_call response with incidental text should not
-                    # be collapsed into a plain-text message.
+                    # 仅在没有流式工具调用时合成文本——
+                    # 带有附带文本的 function_call 响应不应
+                    # 被折叠为纯文本消息。
                     assembled = "".join(collected_text_deltas)
                     final.output = [SimpleNamespace(
                         type="message", role="assistant", status="completed",
@@ -368,9 +366,9 @@ class _CodexCompletionsAdapter:
                         len(collected_text_deltas), len(assembled),
                     )
 
-            # Extract text and tool calls from the Responses output.
-            # Items may be SDK objects (attrs) or dicts (raw/fallback paths),
-            # so use a helper that handles both shapes.
+            # 从 Responses 输出中提取文本和工具调用。
+            # 项目可能是 SDK 对象（属性访问）或字典（原始/回退路径），
+            # 因此使用一个处理两种形式的辅助函数。
             def _item_get(obj: Any, key: str, default: Any = None) -> Any:
                 val = getattr(obj, key, None)
                 if val is None and isinstance(obj, dict):
@@ -407,7 +405,7 @@ class _CodexCompletionsAdapter:
 
         content = "".join(text_parts).strip() or None
 
-        # Build a response that looks like chat.completions
+        # 构建一个看起来像 chat.completions 的响应
         message = SimpleNamespace(
             role="assistant",
             content=content,
@@ -426,17 +424,17 @@ class _CodexCompletionsAdapter:
 
 
 class _CodexChatShim:
-    """Wraps the adapter to provide client.chat.completions.create()."""
+    """包装适配器以提供 client.chat.completions.create() 接口。"""
 
     def __init__(self, adapter: _CodexCompletionsAdapter):
         self.completions = adapter
 
 
 class CodexAuxiliaryClient:
-    """OpenAI-client-compatible wrapper that routes through Codex Responses API.
+    """兼容 OpenAI 客户端的包装器，通过 Codex Responses API 路由。
 
-    Consumers can call client.chat.completions.create(**kwargs) as normal.
-    Also exposes .api_key and .base_url for introspection by async wrappers.
+    使用者可以像平常一样调用 client.chat.completions.create(**kwargs)。
+    同时暴露 .api_key 和 .base_url 供异步包装器内省使用。
     """
 
     def __init__(self, real_client: OpenAI, model: str):
@@ -451,10 +449,10 @@ class CodexAuxiliaryClient:
 
 
 class _AsyncCodexCompletionsAdapter:
-    """Async version of the Codex Responses adapter.
+    """Codex Responses 适配器的异步版本。
 
-    Wraps the sync adapter via asyncio.to_thread() so async consumers
-    (web_tools, session_search) can await it as normal.
+    通过 asyncio.to_thread() 包装同步适配器，使异步使用者
+    （web_tools、session_search）可以正常 await。
     """
 
     def __init__(self, sync_adapter: _CodexCompletionsAdapter):
@@ -471,7 +469,7 @@ class _AsyncCodexChatShim:
 
 
 class AsyncCodexAuxiliaryClient:
-    """Async-compatible wrapper matching AsyncOpenAI.chat.completions.create()."""
+    """匹配 AsyncOpenAI.chat.completions.create() 的异步兼容包装器。"""
 
     def __init__(self, sync_wrapper: "CodexAuxiliaryClient"):
         sync_adapter = sync_wrapper.chat.completions
@@ -482,7 +480,7 @@ class AsyncCodexAuxiliaryClient:
 
 
 class _AnthropicCompletionsAdapter:
-    """OpenAI-client-compatible adapter for Anthropic Messages API."""
+    """兼容 OpenAI 客户端的 Anthropic Messages API 适配器。"""
 
     def __init__(self, real_client: Any, model: str, is_oauth: bool = False):
         self._client = real_client
@@ -518,9 +516,9 @@ class _AnthropicCompletionsAdapter:
             tool_choice=normalized_tool_choice,
             is_oauth=self._is_oauth,
         )
-        # Opus 4.7+ rejects any non-default temperature/top_p/top_k; only set
-        # temperature for models that still accept it. build_anthropic_kwargs
-        # additionally strips these keys as a safety net — keep both layers.
+        # Opus 4.7+ 拒绝任何非默认的 temperature/top_p/top_k；仅对
+        # 仍接受这些参数的模型设置 temperature。build_anthropic_kwargs
+        # 还会作为安全网额外剥离这些键——保留两层保护。
         if temperature is not None:
             from agent.anthropic_adapter import _forbids_sampling_params
             if not _forbids_sampling_params(model):
@@ -558,7 +556,7 @@ class _AnthropicChatShim:
 
 
 class AnthropicAuxiliaryClient:
-    """OpenAI-client-compatible wrapper over a native Anthropic client."""
+    """基于原生 Anthropic 客户端的兼容 OpenAI 客户端的包装器。"""
 
     def __init__(self, real_client: Any, model: str, api_key: str, base_url: str, is_oauth: bool = False):
         self._real_client = real_client
@@ -597,10 +595,10 @@ class AsyncAnthropicAuxiliaryClient:
 
 
 def _read_nous_auth() -> Optional[dict]:
-    """Read and validate ~/.hermes/auth.json for an active Nous provider.
+    """读取并验证 ~/.hermes/auth.json 中的活跃 Nous 提供者。
 
-    Returns the provider state dict if Nous is active with tokens,
-    otherwise None.
+    如果 Nous 是活跃提供者且有令牌，返回提供者状态字典，
+    否则返回 None。
     """
     pool_present, entry = _select_pool_entry("nous")
     if pool_present:
@@ -625,7 +623,7 @@ def _read_nous_auth() -> Optional[dict]:
         if data.get("active_provider") != "nous":
             return None
         provider = data.get("providers", {}).get("nous", {})
-        # Must have at least an access_token or agent_key
+        # 必须至少有 access_token 或 agent_key
         if not provider.get("agent_key") and not provider.get("access_token"):
             return None
         return provider
@@ -635,23 +633,23 @@ def _read_nous_auth() -> Optional[dict]:
 
 
 def _nous_api_key(provider: dict) -> str:
-    """Extract the best API key from a Nous provider state dict."""
+    """从 Nous 提供者状态字典中提取最佳 API 密钥。"""
     return provider.get("agent_key") or provider.get("access_token", "")
 
 
 def _nous_base_url() -> str:
-    """Resolve the Nous inference base URL from env or default."""
+    """从环境变量或默认值解析 Nous 推理 base URL。"""
     return os.getenv("NOUS_INFERENCE_BASE_URL", _NOUS_DEFAULT_BASE_URL)
 
 
 def _read_codex_access_token() -> Optional[str]:
-    """Read a valid, non-expired Codex OAuth access token from Hermes auth store.
+    """从 Hermes 认证存储中读取有效、未过期的 Codex OAuth 访问令牌。
 
-    If a credential pool exists but currently has no selectable runtime entry
-    (for example all pool slots are marked exhausted), fall back to the
-    profile's auth.json token instead of hard-failing. This keeps explicit
-    fallback-to-Codex working when the pool state is stale but the stored OAuth
-    token is still valid.
+    如果凭证池存在但当前没有可选择的运行时条目
+    （例如所有池槽位被标记为已耗尽），则回退到
+    配置文件的 auth.json 令牌，而不是直接失败。这使得
+    在池状态过期但存储的 OAuth 令牌仍有效时，
+    显式回退到 Codex 仍能工作。
     """
     pool_present, entry = _select_pool_entry("openai-codex")
     if pool_present:
@@ -667,8 +665,8 @@ def _read_codex_access_token() -> Optional[str]:
         if not isinstance(access_token, str) or not access_token.strip():
             return None
 
-        # Check JWT expiry — expired tokens block the auto chain and
-        # prevent fallback to working providers (e.g. Anthropic).
+        # 检查 JWT 过期时间——过期的令牌会阻塞自动链，
+        # 阻止回退到正常工作的提供者（例如 Anthropic）。
         try:
             import base64
             payload = access_token.split(".")[1]
@@ -679,7 +677,7 @@ def _read_codex_access_token() -> Optional[str]:
                 logger.debug("Codex access token expired (exp=%s), skipping", exp)
                 return None
         except Exception:
-            pass  # Non-JWT token or decode error — use as-is
+            pass  # 非 JWT 令牌或解码错误——照原样使用
 
         return access_token.strip()
     except Exception as exc:
@@ -688,10 +686,10 @@ def _read_codex_access_token() -> Optional[str]:
 
 
 def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
-    """Try each API-key provider in PROVIDER_REGISTRY order.
+    """按 PROVIDER_REGISTRY 顺序尝试每个 API 密钥提供者。
 
-    Returns (client, model) for the first provider with usable runtime
-    credentials, or (None, None) if none are configured.
+    返回第一个有可用运行时凭证的提供者的 (client, model)，
+    如果均未配置则返回 (None, None)。
     """
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
@@ -703,9 +701,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         if pconfig.auth_type != "api_key":
             continue
         if provider_id == "anthropic":
-            # Only try anthropic when the user has explicitly configured it.
-            # Without this gate, Claude Code credentials get silently used
-            # as auxiliary fallback when the user's primary provider fails.
+            # 仅在用户显式配置 anthropic 时尝试。
+            # 没有此门控，Claude Code 凭证会在用户的主提供者
+            # 失败时被静默用作辅助回退。
             try:
                 from hermes_cli.auth import is_provider_explicitly_configured
                 if not is_provider_explicitly_configured("anthropic"):
@@ -725,7 +723,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             )
             model = _API_KEY_PROVIDER_AUX_MODELS.get(provider_id)
             if model is None:
-                continue  # skip provider if we don't know a valid aux model
+                continue  # 如果不知道有效的辅助模型则跳过该提供者
             logger.debug("Auxiliary text client: %s (%s) via pool", pconfig.name, model)
             extra = {}
             if "api.kimi.com" in base_url.lower():
@@ -746,7 +744,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         )
         model = _API_KEY_PROVIDER_AUX_MODELS.get(provider_id)
         if model is None:
-            continue  # skip provider if we don't know a valid aux model
+            continue  # 如果不知道有效的辅助模型则跳过该提供者
         logger.debug("Auxiliary text client: %s (%s)", pconfig.name, model)
         extra = {}
         if "api.kimi.com" in base_url.lower():
@@ -760,7 +758,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
     return None, None
 
 
-# ── Provider resolution helpers ─────────────────────────────────────────────
+# ── 提供者解析辅助函数 ─────────────────────────────────────────────
 
 
 
@@ -784,9 +782,9 @@ def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 
 def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
-    # Check cross-session rate limit guard before attempting Nous —
-    # if another session already recorded a 429, skip Nous entirely
-    # to avoid piling more requests onto the tapped RPH bucket.
+    # 在尝试 Nous 之前检查跨会话速率限制保护——
+    # 如果另一个会话已经记录了 429，完全跳过 Nous
+    # 以避免在已达到 RPH 桶限制上堆积更多请求。
     try:
         from agent.nous_rate_guard import nous_rate_limit_remaining
         _remaining = nous_rate_limit_remaining()
@@ -809,8 +807,8 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         model = "gemini-3-flash"
     else:
         model = _NOUS_MODEL
-    # Free-tier users can't use paid auxiliary models — use the free
-    # models instead: mimo-v2-omni for vision, mimo-v2-pro for text tasks.
+    # 免费层用户不能使用付费辅助模型——改用免费模型：
+    # mimo-v2-omni 用于视觉，mimo-v2-pro 用于文本任务。
     try:
         from hermes_cli.models import check_nous_free_tier
         if check_nous_free_tier():
@@ -829,10 +827,10 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
 
 
 def _read_main_model() -> str:
-    """Read the user's configured main model from config.yaml.
+    """从 config.yaml 读取用户配置的主模型。
 
-    config.yaml model.default is the single source of truth for the active
-    model. Environment variables are no longer consulted.
+    config.yaml 的 model.default 是活跃模型的唯一真相来源。
+    不再查询环境变量。
     """
     try:
         from hermes_cli.config import load_config
@@ -850,10 +848,10 @@ def _read_main_model() -> str:
 
 
 def _read_main_provider() -> str:
-    """Read the user's configured main provider from config.yaml.
+    """从 config.yaml 读取用户配置的主提供者。
 
-    Returns the lowercase provider id (e.g. "alibaba", "openrouter") or ""
-    if not configured.
+    返回小写的提供者 ID（例如 "alibaba"、"openrouter"），
+    如果未配置则返回 ""。
     """
     try:
         from hermes_cli.config import load_config
@@ -869,11 +867,10 @@ def _read_main_provider() -> str:
 
 
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """Resolve the active custom/main endpoint the same way the main CLI does.
+    """解析活跃的自定义/主端点，方式与主 CLI 相同。
 
-    This covers both env-driven OPENAI_BASE_URL setups and config-saved custom
-    endpoints where the base URL lives in config.yaml instead of the live
-    environment.
+    这涵盖了环境变量驱动的 OPENAI_BASE_URL 设置和 config 保存的
+    自定义端点（base URL 存在于 config.yaml 而非实时环境中）两种情况。
     """
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -901,14 +898,14 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
 
     custom_base = custom_base.strip().rstrip("/")
     if "openrouter.ai" in custom_base.lower():
-        # requested='custom' falls back to OpenRouter when no custom endpoint is
-        # configured. Treat that as "no custom endpoint" for auxiliary routing.
+        # requested='custom' 在没有自定义端点配置时回退到 OpenRouter。
+        # 对辅助路由将其视为"无自定义端点"。
         return None, None, None
 
-    # Local servers (Ollama, llama.cpp, vLLM, LM Studio) don't require auth.
-    # Use a placeholder key — the OpenAI SDK requires a non-empty string but
-    # local servers ignore the Authorization header.  Same fix as cli.py
-    # _ensure_runtime_credentials() (PR #2556).
+    # 本地服务器（Ollama、llama.cpp、vLLM、LM Studio）不需要认证。
+    # 使用占位密钥——OpenAI SDK 要求非空字符串但
+    # 本地服务器忽略 Authorization 头。与 cli.py
+    # _ensure_runtime_credentials() 的修复相同（PR #2556）。
     if not isinstance(custom_key, str) or not custom_key.strip():
         custom_key = "no-key-required"
 
@@ -924,13 +921,13 @@ def _current_custom_base_url() -> str:
 
 
 def _validate_proxy_env_urls() -> None:
-    """Fail fast with a clear error when proxy env vars have malformed URLs.
+    """当代理环境变量包含格式错误的 URL 时快速失败并给出清晰的错误。
 
-    Common cause: shell config (e.g. .zshrc) with a typo like
+    常见原因：shell 配置（例如 .zshrc）中的拼写错误，如
     ``export HTTP_PROXY=http://127.0.0.1:6153export NEXT_VAR=...``
-    which concatenates 'export' into the port number.  Without this
-    check the OpenAI/httpx client raises a cryptic ``Invalid port``
-    error that doesn't name the offending env var.
+    将 'export' 连接到端口号中。没有此检查，
+    OpenAI/httpx 客户端会抛出一个不指明
+    有问题的环境变量的晦涩 ``Invalid port`` 错误。
     """
     from urllib.parse import urlparse
 
@@ -942,7 +939,7 @@ def _validate_proxy_env_urls() -> None:
         try:
             parsed = urlparse(value)
             if parsed.scheme:
-                _ = parsed.port          # raises ValueError for e.g. '6153export'
+                _ = parsed.port          # 对例如 '6153export' 会抛出 ValueError
         except ValueError as exc:
             raise RuntimeError(
                 f"Malformed proxy environment variable {key}={value!r}. "
@@ -951,7 +948,7 @@ def _validate_proxy_env_urls() -> None:
 
 
 def _validate_base_url(base_url: str) -> None:
-    """Reject obviously broken custom endpoint URLs before they reach httpx."""
+    """在明显损坏的自定义端点 URL 到达 httpx 之前拒绝它们。"""
     from urllib.parse import urlparse
 
     candidate = str(base_url or "").strip()
@@ -960,7 +957,7 @@ def _validate_base_url(base_url: str) -> None:
     try:
         parsed = urlparse(candidate)
         if parsed.scheme in {"http", "https"}:
-            _ = parsed.port              # raises ValueError for malformed ports
+            _ = parsed.port              # 对格式错误的端口抛出 ValueError
     except ValueError as exc:
         raise RuntimeError(
             f"Malformed custom endpoint URL: {candidate!r}. "
@@ -1025,9 +1022,9 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
     if not token:
         return None, None
 
-    # Allow base URL override from config.yaml model.base_url, but only
-    # when the configured provider is anthropic — otherwise a non-Anthropic
-    # base_url (e.g. Codex endpoint) would leak into Anthropic requests.
+    # 允许从 config.yaml model.base_url 覆盖 base URL，但仅当
+    # 配置的提供者是 anthropic 时——否则非 Anthropic 的
+    # base_url（例如 Codex 端点）会泄漏到 Anthropic 请求中。
     base_url = _pool_runtime_base_url(entry, _ANTHROPIC_DEFAULT_BASE_URL) if pool_present else _ANTHROPIC_DEFAULT_BASE_URL
     try:
         from hermes_cli.config import load_config
@@ -1049,9 +1046,9 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
     try:
         real_client = build_anthropic_client(token, base_url)
     except ImportError:
-        # The anthropic_adapter module imports fine but the SDK itself is
-        # missing — build_anthropic_client raises ImportError at call time
-        # when _anthropic_sdk is None.  Treat as unavailable.
+        # anthropic_adapter 模块导入正常但 SDK 本身缺失——
+        # build_anthropic_client 在调用时当 _anthropic_sdk 为 None 时
+        # 抛出 ImportError。视为不可用。
         return None, None
     return AnthropicAuxiliaryClient(real_client, model, token, base_url, is_oauth=is_oauth), model
 
@@ -1070,7 +1067,7 @@ _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode")
 
 
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, str]:
-    """Return a sanitized copy of a live main-runtime override."""
+    """返回实时主运行时覆盖的清理副本。"""
     if not isinstance(main_runtime, dict):
         return {}
     normalized: Dict[str, str] = {}
@@ -1085,10 +1082,10 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
 
 
 def _get_provider_chain() -> List[tuple]:
-    """Return the ordered provider detection chain.
+    """返回有序的提供者检测链。
 
-    Built at call time (not module level) so that test patches
-    on the ``_try_*`` functions are picked up correctly.
+    在调用时构建（而非模块级别），以确保测试中对
+    ``_try_*`` 函数的补丁能被正确捕获。
     """
     return [
         ("openrouter", _try_openrouter),
@@ -1100,17 +1097,17 @@ def _get_provider_chain() -> List[tuple]:
 
 
 def _is_payment_error(exc: Exception) -> bool:
-    """Detect payment/credit/quota exhaustion errors.
+    """检测支付/额度/配额耗尽错误。
 
-    Returns True for HTTP 402 (Payment Required) and for 429/other errors
-    whose message indicates billing exhaustion rather than rate limiting.
+    对 HTTP 402（需要支付）以及消息表明账单耗尽
+    而非速率限制的 429/其他错误返回 True。
     """
     status = getattr(exc, "status_code", None)
     if status == 402:
         return True
     err_lower = str(exc).lower()
-    # OpenRouter and other providers include "credits" or "afford" in 402 bodies,
-    # but sometimes wrap them in 429 or other codes.
+    # OpenRouter 和其他提供者在 402 正文中包含 "credits" 或 "afford"，
+    # 但有时将其包装在 429 或其他状态码中。
     if status in (402, 429, None):
         if any(kw in err_lower for kw in ("credits", "insufficient funds",
                                            "can only afford", "billing",
@@ -1120,18 +1117,18 @@ def _is_payment_error(exc: Exception) -> bool:
 
 
 def _is_connection_error(exc: Exception) -> bool:
-    """Detect connection/network errors that warrant provider fallback.
+    """检测需要提供者回退的连接/网络错误。
 
-    Returns True for errors indicating the provider endpoint is unreachable
-    (DNS failure, connection refused, TLS errors, timeouts).  These are
-    distinct from API errors (4xx/5xx) which indicate the provider IS
-    reachable but returned an error.
+    对表明提供者端点不可达的错误返回 True
+    （DNS 失败、连接被拒绝、TLS 错误、超时）。这些
+    不同于 API 错误（4xx/5xx），后者表明提供者可达
+    但返回了错误。
     """
     from openai import APIConnectionError, APITimeoutError
 
     if isinstance(exc, (APIConnectionError, APITimeoutError)):
         return True
-    # urllib3 / httpx / httpcore connection errors
+    # urllib3 / httpx / httpcore 连接错误
     err_type = type(exc).__name__
     if any(kw in err_type for kw in ("Connection", "Timeout", "DNS", "SSL")):
         return True
@@ -1150,23 +1147,22 @@ def _try_payment_fallback(
     task: str = None,
     reason: str = "payment error",
 ) -> Tuple[Optional[Any], Optional[str], str]:
-    """Try alternative providers after a payment/credit or connection error.
+    """在支付/额度或连接错误后尝试替代提供者。
 
-    Iterates the standard auto-detection chain, skipping the provider that
-    failed.
+    遍历标准自动检测链，跳过失败的提供者。
 
-    Returns:
-        (client, model, provider_label) or (None, None, "") if no fallback.
+    返回:
+        (client, model, provider_label) 或 (None, None, "") 如果没有回退。
     """
-    # Normalise the failed provider label for matching.
+    # 标准化失败的提供者标签用于匹配。
     skip = failed_provider.lower().strip()
-    # Also skip Step-1 main-provider path if it maps to the same backend.
-    # (e.g. main_provider="openrouter" → skip "openrouter" in chain)
+    # 如果主提供者映射到同一后端，也跳过 Step-1 的主提供者路径。
+    # （例如 main_provider="openrouter" → 跳过链中的 "openrouter"）
     main_provider = _read_main_provider()
     skip_labels = {skip}
     if main_provider and main_provider.lower() in skip:
         skip_labels.add(main_provider.lower())
-    # Map common resolved_provider values back to chain labels.
+    # 将常见的 resolved_provider 值映射回链标签。
     _alias_to_label = {"openrouter": "openrouter", "nous": "nous",
                        "openai-codex": "openai-codex", "codex": "openai-codex",
                        "custom": "local/custom", "local/custom": "local/custom"}
@@ -1193,17 +1189,17 @@ def _try_payment_fallback(
 
 
 def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Optional[OpenAI], Optional[str]]:
-    """Full auto-detection chain.
+    """完整的自动检测链。
 
-    Priority:
-      1. If the user's main provider is NOT an aggregator (OpenRouter / Nous),
-         use their main provider + main model directly.  This ensures users on
-         Alibaba, DeepSeek, ZAI, etc. get auxiliary tasks handled by the same
-         provider they already have credentials for — no OpenRouter key needed.
-      2. OpenRouter → Nous → custom → Codex → API-key providers (original chain).
+    优先级：
+      1. 如果用户的主提供者不是聚合器（OpenRouter / Nous），
+         直接使用其主提供者 + 主模型。这确保使用 Alibaba、
+         DeepSeek、ZAI 等的用户的辅助任务由其已有凭证的
+         同一提供者处理——无需 OpenRouter 密钥。
+      2. OpenRouter → Nous → 自定义 → Codex → API 密钥提供者（原始链）。
     """
     global auxiliary_is_nous, _stale_base_url_warned
-    auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
+    auxiliary_is_nous = False  # 重置——_try_nous() 如果胜出会设置为 True
     runtime = _normalize_main_runtime(main_runtime)
     runtime_provider = runtime.get("provider", "")
     runtime_model = runtime.get("model", "")
@@ -1211,10 +1207,10 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     runtime_api_key = runtime.get("api_key", "")
     runtime_api_mode = runtime.get("api_mode", "")
 
-    # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
-    #    provider (not 'custom').  This catches the common "env poisoning"
-    #    scenario where a user switches providers via `hermes model` but the
-    #    old OPENAI_BASE_URL lingers in ~/.hermes/.env. ──
+    # ── 当 OPENAI_BASE_URL 已设置但 config.yaml 使用命名提供者
+    #    （非 'custom'）时，警告一次。这捕获了常见的"环境污染"
+    #    场景：用户通过 `hermes model` 切换提供者，但旧的
+    #    OPENAI_BASE_URL 残留在 ~/.hermes/.env 中。──
     if not _stale_base_url_warned:
         _env_base = os.getenv("OPENAI_BASE_URL", "").strip()
         _cfg_provider = runtime_provider or _read_main_provider()
@@ -1230,7 +1226,7 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
             )
             _stale_base_url_warned = True
 
-    # ── Step 1: non-aggregator main provider → use main model directly ──
+    # ── 步骤 1: 非聚合器主提供者 → 直接使用主模型 ──
     main_provider = runtime_provider or _read_main_provider()
     main_model = runtime_model or _read_main_model()
     if (main_provider and main_model
@@ -1255,7 +1251,7 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
                         main_provider, resolved or main_model)
             return client, resolved or main_model
 
-    # ── Step 2: aggregator / fallback chain ──────────────────────────────
+    # ── 步骤 2: 聚合器 / 回退链 ──────────────────────────────
     tried = []
     for label, try_fn in _get_provider_chain():
         client, model = try_fn()
@@ -1274,19 +1270,18 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     return None, None
 
 
-# ── Centralized Provider Router ─────────────────────────────────────────────
+# ── 集中式提供者路由器 ─────────────────────────────────────────────
 #
-# resolve_provider_client() is the single entry point for creating a properly
-# configured client given a (provider, model) pair.  It handles auth lookup,
-# base URL resolution, provider-specific headers, and API format differences
-# (Chat Completions vs Responses API for Codex).
+# resolve_provider_client() 是给定 (provider, model) 对创建正确配置客户端的
+# 唯一入口点。它处理认证查找、base URL 解析、提供者特定头部，
+# 以及 API 格式差异（Chat Completions vs Responses API for Codex）。
 #
-# All auxiliary consumer code should go through this or the public helpers
-# below — never look up auth env vars ad-hoc.
+# 所有辅助使用代码应通过此函数或下面的公共辅助函数——
+# 永远不要临时查找认证环境变量。
 
 
 def _to_async_client(sync_client, model: str):
-    """Convert a sync client to its async counterpart, preserving Codex routing."""
+    """将同步客户端转换为其异步对应物，保留 Codex 路由。"""
     from openai import AsyncOpenAI
 
     if isinstance(sync_client, CodexAuxiliaryClient):
@@ -1317,7 +1312,7 @@ def _to_async_client(sync_client, model: str):
 
 
 def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optional[str]:
-    """Normalize a resolved model for the provider that will receive it."""
+    """为将接收请求的提供者标准化已解析的模型名称。"""
     if not model_name:
         return model_name
     try:
@@ -1338,46 +1333,43 @@ def resolve_provider_client(
     api_mode: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
-    """Central router: given a provider name and optional model, return a
-    configured client with the correct auth, base URL, and API format.
+    """中央路由器：给定提供者名称和可选模型，返回一个
+    配置了正确认证、base URL 和 API 格式的客户端。
 
-    The returned client always exposes ``.chat.completions.create()`` — for
-    Codex/Responses API providers, an adapter handles the translation
-    transparently.
+    返回的客户端始终暴露 ``.chat.completions.create()``——对于
+    Codex/Responses API 提供者，适配器透明地处理转换。
 
-    Args:
-        provider: Provider identifier.  One of:
-            "openrouter", "nous", "openai-codex" (or "codex"),
-            "zai", "kimi-coding", "minimax", "minimax-cn",
-            "custom" (OPENAI_BASE_URL + OPENAI_API_KEY),
-            "auto" (full auto-detection chain).
-        model: Model slug override.  If None, uses the provider's default
-               auxiliary model.
-        async_mode: If True, return an async-compatible client.
-        raw_codex: If True, return a raw OpenAI client for Codex providers
-            instead of wrapping in CodexAuxiliaryClient.  Use this when
-            the caller needs direct access to responses.stream() (e.g.,
-            the main agent loop).
-        explicit_base_url: Optional direct OpenAI-compatible endpoint.
-        explicit_api_key: Optional API key paired with explicit_base_url.
-        api_mode: API mode override.  One of "chat_completions",
-            "codex_responses", or None (auto-detect).  When set to
-            "codex_responses", the client is wrapped in
-            CodexAuxiliaryClient to route through the Responses API.
+    参数:
+        provider: 提供者标识符。可选值：
+            "openrouter"、"nous"、"openai-codex"（或 "codex"）、
+            "zai"、"kimi-coding"、"minimax"、"minimax-cn"、
+            "custom"（OPENAI_BASE_URL + OPENAI_API_KEY）、
+            "auto"（完整自动检测链）。
+        model: 模型标识符覆盖。如果为 None，使用提供者的默认辅助模型。
+        async_mode: 如果为 True，返回异步兼容客户端。
+        raw_codex: 如果为 True，对 Codex 提供者返回原始 OpenAI 客户端
+            而非包装在 CodexAuxiliaryClient 中。当调用方需要直接访问
+            responses.stream() 时使用（例如主代理循环）。
+        explicit_base_url: 可选的直接 OpenAI 兼容端点。
+        explicit_api_key: 与 explicit_base_url 配对的可选 API 密钥。
+        api_mode: API 模式覆盖。可选值："chat_completions"、
+            "codex_responses" 或 None（自动检测）。设置为
+            "codex_responses" 时，客户端被包装在
+            CodexAuxiliaryClient 中以通过 Responses API 路由。
 
-    Returns:
-        (client, resolved_model) or (None, None) if auth is unavailable.
+    返回:
+        (client, resolved_model)，如果认证不可用则为 (None, None)。
     """
     _validate_proxy_env_urls()
-    # Normalise aliases
+    # 标准化别名
     provider = _normalize_aux_provider(provider)
 
     def _needs_codex_wrap(client_obj, base_url_str: str, model_str: str) -> bool:
-        """Decide if a plain OpenAI client should be wrapped for Responses API.
+        """判断纯 OpenAI 客户端是否需要为 Responses API 进行包装。
 
-        Returns True when api_mode is explicitly "codex_responses", or when
-        auto-detection (api.openai.com + codex-family model) suggests it.
-        Already-wrapped clients (CodexAuxiliaryClient) are skipped.
+        当 api_mode 显式为 "codex_responses" 时返回 True，或当
+        自动检测（api.openai.com + codex 系列模型）建议时也返回 True。
+        已包装的客户端（CodexAuxiliaryClient）会被跳过。
         """
         if isinstance(client_obj, CodexAuxiliaryClient):
             return False
@@ -1385,9 +1377,9 @@ def resolve_provider_client(
             return False
         if api_mode == "codex_responses":
             return True
-        # Auto-detect: api.openai.com + codex model name pattern
+        # 自动检测：api.openai.com + codex 模型名称模式
         if api_mode and api_mode != "codex_responses":
-            return False  # explicit non-codex mode
+            return False  # 显式的非 codex 模式
         normalized_base = (base_url_str or "").strip().lower()
         if "api.openai.com" in normalized_base and "openrouter" not in normalized_base:
             model_lower = (model_str or "").lower()
@@ -1396,7 +1388,7 @@ def resolve_provider_client(
         return False
 
     def _wrap_if_needed(client_obj, final_model_str: str, base_url_str: str = ""):
-        """Wrap a plain OpenAI client in CodexAuxiliaryClient if Responses API is needed."""
+        """如果需要 Responses API，将纯 OpenAI 客户端包装在 CodexAuxiliaryClient 中。"""
         if _needs_codex_wrap(client_obj, base_url_str, final_model_str):
             logger.debug(
                 "resolve_provider_client: wrapping client in CodexAuxiliaryClient "
@@ -1406,15 +1398,14 @@ def resolve_provider_client(
             return CodexAuxiliaryClient(client_obj, final_model_str)
         return client_obj
 
-    # ── Auto: try all providers in priority order ────────────────────
+    # ── Auto: 按优先级顺序尝试所有提供者 ────────────────────
     if provider == "auto":
         client, resolved = _resolve_auto(main_runtime=main_runtime)
         if client is None:
             return None, None
-        # When auto-detection lands on a non-OpenRouter provider (e.g. a
-        # local server), an OpenRouter-formatted model override like
-        # "google/gemini-3-flash-preview" won't work.  Drop it and use
-        # the provider's own default model instead.
+        # 当自动检测落在非 OpenRouter 提供者上（例如本地服务器）时，
+        # OpenRouter 格式的模型覆盖（如 "google/gemini-3-flash-preview"）
+        # 不会工作。丢弃它并使用提供者自己的默认模型。
         if model and "/" in model and resolved and "/" not in resolved:
             logger.debug(
                 "Dropping OpenRouter-format model %r for non-OpenRouter "
@@ -1449,8 +1440,8 @@ def resolve_provider_client(
     # ── OpenAI Codex (OAuth → Responses API) ─────────────────────────
     if provider == "openai-codex":
         if raw_codex:
-            # Return the raw OpenAI client for callers that need direct
-            # access to responses.stream() (e.g., the main agent loop).
+            # 返回原始 OpenAI 客户端，供需要直接访问
+            # responses.stream() 的调用方使用（例如主代理循环）。
             codex_token = _read_codex_access_token()
             if not codex_token:
                 logger.warning("resolve_provider_client: openai-codex requested "
@@ -1459,7 +1450,7 @@ def resolve_provider_client(
             final_model = _normalize_resolved_model(model or _CODEX_AUX_MODEL, provider)
             raw_client = OpenAI(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL)
             return (raw_client, final_model)
-        # Standard path: wrap in CodexAuxiliaryClient adapter
+        # 标准路径：包装在 CodexAuxiliaryClient 适配器中
         client, default = _try_codex()
         if client is None:
             logger.warning("resolve_provider_client: openai-codex requested "
@@ -1469,14 +1460,14 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
 
-    # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
+    # ── 自定义端点 (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         if explicit_base_url:
             custom_base = explicit_base_url.strip()
             custom_key = (
                 (explicit_api_key or "").strip()
                 or os.getenv("OPENAI_API_KEY", "").strip()
-                or "no-key-required"  # local servers don't need auth
+                or "no-key-required"  # 本地服务器不需要认证
             )
             if not custom_base:
                 logger.warning(
@@ -1498,7 +1489,7 @@ def resolve_provider_client(
             client = _wrap_if_needed(client, final_model, custom_base)
             return (_to_async_client(client, final_model) if async_mode
                     else (client, final_model))
-        # Try custom first, then codex, then API-key providers
+        # 先尝试自定义，然后 codex，最后 API 密钥提供者
         for try_fn in (_try_custom_endpoint, _try_codex,
                        _resolve_api_key_provider):
             client, default = try_fn()
@@ -1512,7 +1503,7 @@ def resolve_provider_client(
                        "but no endpoint credentials found")
         return None, None
 
-    # ── Named custom providers (config.yaml custom_providers list) ───
+    # ── 命名自定义提供者（config.yaml custom_providers 列表）───
     try:
         from hermes_cli.runtime_provider import _get_named_custom_provider
         custom_entry = _get_named_custom_provider(provider)
@@ -1542,7 +1533,7 @@ def resolve_provider_client(
     except ImportError:
         pass
 
-    # ── API-key providers from PROVIDER_REGISTRY ─────────────────────
+    # ── 来自 PROVIDER_REGISTRY 的 API 密钥提供者 ─────────────────────
     try:
         from hermes_cli.auth import (
             PROVIDER_REGISTRY,
@@ -1585,7 +1576,7 @@ def resolve_provider_client(
         default_model = _API_KEY_PROVIDER_AUX_MODELS.get(provider, "")
         final_model = _normalize_resolved_model(model or default_model, provider)
 
-        # Provider-specific headers
+        # 提供者特定头部
         headers = {}
         if "api.kimi.com" in base_url.lower():
             headers["User-Agent"] = "KimiCLI/1.30.0"
@@ -1597,10 +1588,10 @@ def resolve_provider_client(
         client = OpenAI(api_key=api_key, base_url=base_url,
                         **({"default_headers": headers} if headers else {}))
 
-        # Copilot GPT-5+ models (except gpt-5-mini) require the Responses
-        # API — they are not accessible via /chat/completions.  Wrap the
-        # plain client in CodexAuxiliaryClient so call_llm() transparently
-        # routes through responses.stream().
+        # Copilot GPT-5+ 模型（gpt-5-mini 除外）需要 Responses
+        # API——它们无法通过 /chat/completions 访问。将纯客户端
+        # 包装在 CodexAuxiliaryClient 中，使 call_llm() 透明地
+        # 通过 responses.stream() 路由。
         if provider == "copilot" and final_model and not raw_codex:
             try:
                 from hermes_cli.models import _should_use_copilot_responses_api
@@ -1613,9 +1604,9 @@ def resolve_provider_client(
             except ImportError:
                 pass
 
-        # Honor api_mode for any API-key provider (e.g. direct OpenAI with
-        # codex-family models).  The copilot-specific wrapping above handles
-        # copilot; this covers the general case (#6800).
+        # 为任何 API 密钥提供者兑现 api_mode（例如使用 codex 系列模型
+        # 的直接 OpenAI）。上面的 copilot 特定包装处理了
+        # copilot；这覆盖了通用情况（#6800）。
         client = _wrap_if_needed(client, final_model, base_url)
 
         logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
@@ -1658,12 +1649,12 @@ def resolve_provider_client(
         return None, None
 
     elif pconfig.auth_type in ("oauth_device_code", "oauth_external"):
-        # OAuth providers — route through their specific try functions
+        # OAuth 提供者——通过它们的特定 try 函数路由
         if provider == "nous":
             return resolve_provider_client("nous", model, async_mode)
         if provider == "openai-codex":
             return resolve_provider_client("openai-codex", model, async_mode)
-        # Other OAuth providers not directly supported
+        # 其他 OAuth 提供者不直接支持
         logger.warning("resolve_provider_client: OAuth provider %s not "
                        "directly supported, try 'auto'", provider)
         return None, None
@@ -1673,21 +1664,21 @@ def resolve_provider_client(
     return None, None
 
 
-# ── Public API ──────────────────────────────────────────────────────────────
+# ── 公共 API ──────────────────────────────────────────────────────────────
 
 def get_text_auxiliary_client(
     task: str = "",
     *,
     main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[OpenAI], Optional[str]]:
-    """Return (client, default_model_slug) for text-only auxiliary tasks.
+    """返回 (client, default_model_slug) 用于纯文本辅助任务。
 
-    Args:
-        task: Optional task name ("compression", "web_extract") to check
-              for a task-specific provider override.
+    参数:
+        task: 可选的任务名称（"compression"、"web_extract"）用于检查
+              任务特定的提供者覆盖。
 
-    Callers may override the returned model via config.yaml
-    (e.g. auxiliary.compression.model, auxiliary.web_extract.model).
+    调用方可通过 config.yaml 覆盖返回的模型
+    （例如 auxiliary.compression.model、auxiliary.web_extract.model）。
     """
     provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
     return resolve_provider_client(
@@ -1701,11 +1692,11 @@ def get_text_auxiliary_client(
 
 
 def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Dict[str, Any]] = None):
-    """Return (async_client, model_slug) for async consumers.
+    """返回 (async_client, model_slug) 用于异步使用者。
 
-    For standard providers returns (AsyncOpenAI, model). For Codex returns
-    (AsyncCodexAuxiliaryClient, model) which wraps the Responses API.
-    Returns (None, None) when no provider is available.
+    对标准提供者返回 (AsyncOpenAI, model)。对 Codex 返回
+    (AsyncCodexAuxiliaryClient, model) 用于包装 Responses API。
+    当无提供者可用时返回 (None, None)。
     """
     provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
     return resolve_provider_client(
@@ -1749,14 +1740,13 @@ def _strict_vision_backend_available(provider: str) -> bool:
 
 
 def get_available_vision_backends() -> List[str]:
-    """Return the currently available vision backends in auto-selection order.
+    """返回当前按自动选择顺序排列的可用视觉后端。
 
-    Order: active provider → OpenRouter → Nous → stop.  This is the single
-    source of truth for setup, tool gating, and runtime auto-routing of
-    vision tasks.
+    顺序：活跃提供者 → OpenRouter → Nous → 停止。这是
+    设置、工具门控和视觉任务运行时自动路由的唯一真相来源。
     """
     available: List[str] = []
-    # 1. Active provider — if the user configured a provider, try it first.
+    # 1. 活跃提供者——如果用户配置了提供者，优先尝试。
     main_provider = _read_main_provider()
     if main_provider and main_provider not in ("auto", ""):
         if main_provider in _VISION_AUTO_PROVIDER_ORDER:
@@ -1766,7 +1756,7 @@ def get_available_vision_backends() -> List[str]:
             client, _ = resolve_provider_client(main_provider, _read_main_model())
             if client is not None:
                 available.append(main_provider)
-    # 2. OpenRouter, 3. Nous — skip if already covered by main provider.
+    # 2. OpenRouter, 3. Nous——如果已被主提供者覆盖则跳过。
     for p in _VISION_AUTO_PROVIDER_ORDER:
         if p not in available and _strict_vision_backend_available(p):
             available.append(p)
@@ -1781,12 +1771,11 @@ def resolve_vision_provider_client(
     api_key: Optional[str] = None,
     async_mode: bool = False,
 ) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
-    """Resolve the client actually used for vision tasks.
+    """解析实际用于视觉任务的客户端。
 
-    Direct endpoint overrides take precedence over provider selection. Explicit
-    provider overrides still use the generic provider router for non-standard
-    backends, so users can intentionally force experimental providers. Auto mode
-    stays conservative and only tries vision backends known to work today.
+    直接端点覆盖优先于提供者选择。显式提供者覆盖仍使用
+    通用提供者路由器处理非标准后端，使用户可以有意强制使用
+    实验性提供者。自动模式保持保守，仅尝试已知目前能工作的视觉后端。
     """
     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         "vision", provider, model, base_url, api_key
@@ -1816,22 +1805,22 @@ def resolve_vision_provider_client(
         return "custom", client, final_model
 
     if requested == "auto":
-        # Vision auto-detection order:
-        #   1. Active provider + model (user's main chat config)
-        #   2. OpenRouter  (known vision-capable default model)
-        #   3. Nous Portal (known vision-capable default model)
-        #   4. Stop
+        # 视觉自动检测顺序：
+        #   1. 活跃提供者 + 模型（用户的主聊天配置）
+        #   2. OpenRouter（已知支持视觉的默认模型）
+        #   3. Nous Portal（已知支持视觉的默认模型）
+        #   4. 停止
         main_provider = _read_main_provider()
         main_model = _read_main_model()
         if main_provider and main_provider not in ("auto", ""):
             if main_provider in _VISION_AUTO_PROVIDER_ORDER:
-                # Known strict backend — use its defaults.
+                # 已知的严格后端——使用其默认值。
                 sync_client, default_model = _resolve_strict_vision_backend(main_provider)
                 if sync_client is not None:
                     return _finalize(main_provider, sync_client, default_model)
             else:
-                # Exotic provider (DeepSeek, Alibaba, Xiaomi, named custom, etc.)
-                # Use provider-specific vision model if available, otherwise main model.
+                # 特殊提供者（DeepSeek、Alibaba、Xiaomi、命名自定义等）
+                # 如果可用则使用提供者特定的视觉模型，否则使用主模型。
                 vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
                 rpc_client, rpc_model = resolve_provider_client(
                     main_provider, vision_model,
@@ -1844,7 +1833,7 @@ def resolve_vision_provider_client(
                     return _finalize(
                         main_provider, rpc_client, rpc_model or vision_model)
 
-        # Fall back through aggregators.
+        # 回退到聚合器。
         for candidate in _VISION_AUTO_PROVIDER_ORDER:
             if candidate == main_provider:
                 continue  # already tried above
@@ -1867,25 +1856,24 @@ def resolve_vision_provider_client(
 
 
 def get_auxiliary_extra_body() -> dict:
-    """Return extra_body kwargs for auxiliary API calls.
-    
-    Includes Nous Portal product tags when the auxiliary client is backed
-    by Nous Portal. Returns empty dict otherwise.
+    """返回辅助 API 调用的 extra_body kwargs。
+
+    当辅助客户端由 Nous Portal 支持时包含 Nous Portal 产品标签。
+    否则返回空字典。
     """
     return dict(NOUS_EXTRA_BODY) if auxiliary_is_nous else {}
 
 
 def auxiliary_max_tokens_param(value: int) -> dict:
-    """Return the correct max tokens kwarg for the auxiliary client's provider.
-    
-    OpenRouter and local models use 'max_tokens'. Direct OpenAI with newer
-    models (gpt-4o, o-series, gpt-5+) requires 'max_completion_tokens'.
-    The Codex adapter translates max_tokens internally, so we use max_tokens
-    for it as well.
+    """返回辅助客户端提供者的正确 max tokens 参数。
+
+    OpenRouter 和本地模型使用 'max_tokens'。直接使用较新模型
+    （gpt-4o、o 系列、gpt-5+）的 OpenAI 需要 'max_completion_tokens'。
+    Codex 适配器内部处理 max_tokens 转换，因此我们也对其使用 max_tokens。
     """
     custom_base = _current_custom_base_url()
     or_key = os.getenv("OPENROUTER_API_KEY")
-    # Only use max_completion_tokens for direct OpenAI custom endpoints
+    # 仅对直接 OpenAI 自定义端点使用 max_completion_tokens
     if (not or_key
             and _read_nous_auth() is None
             and "api.openai.com" in custom_base.lower()):
@@ -1893,72 +1881,69 @@ def auxiliary_max_tokens_param(value: int) -> dict:
     return {"max_tokens": value}
 
 
-# ── Centralized LLM Call API ────────────────────────────────────────────────
+# ── 集中式 LLM 调用 API ────────────────────────────────────────────────
 #
-# call_llm() and async_call_llm() own the full request lifecycle:
-#   1. Resolve provider + model from task config (or explicit args)
-#   2. Get or create a cached client for that provider
-#   3. Format request args for the provider + model (max_tokens handling, etc.)
-#   4. Make the API call
-#   5. Return the response
+# call_llm() 和 async_call_llm() 管理完整的请求生命周期：
+#   1. 从任务配置（或显式参数）解析提供者 + 模型
+#   2. 获取或创建该提供者的缓存客户端
+#   3. 为提供者 + 模型格式化请求参数（max_tokens 处理等）
+#   4. 发起 API 调用
+#   5. 返回响应
 #
-# Every auxiliary LLM consumer should use these instead of manually
-# constructing clients and calling .chat.completions.create().
+# 每个辅助 LLM 使用者都应使用这些函数，而不是手动
+# 构造客户端并调用 .chat.completions.create()。
 
-# Client cache: (provider, async_mode, base_url, api_key, api_mode, runtime_key) -> (client, default_model, loop)
-# NOTE: loop identity is NOT part of the key.  On async cache hits we check
-# whether the cached loop is the *current* loop; if not, the stale entry is
-# replaced in-place.  This bounds cache growth to one entry per unique
-# provider config rather than one per (config × event-loop), which previously
-# caused unbounded fd accumulation in long-running gateway processes (#10200).
+# 客户端缓存：(provider, async_mode, base_url, api_key, api_mode, runtime_key) -> (client, default_model, loop)
+# 注意：loop 标识不是缓存键的一部分。异步缓存命中时我们检查
+# 缓存的 loop 是否是*当前* loop；如果不是，过期条目将被
+# 原地替换。这将缓存增长限制在每个唯一提供者配置一个条目，
+# 而不是之前导致长时间运行网关进程中 fd 无限积累的
+# 每 (配置 × 事件循环) 一个条目（#10200）。
 _client_cache: Dict[tuple, tuple] = {}
 _client_cache_lock = threading.Lock()
-_CLIENT_CACHE_MAX_SIZE = 64  # safety belt — evict oldest when exceeded
+_CLIENT_CACHE_MAX_SIZE = 64  # 安全带——超过时淘汰最旧的
 
 
 def neuter_async_httpx_del() -> None:
-    """Monkey-patch ``AsyncHttpxClientWrapper.__del__`` to be a no-op.
+    """将 ``AsyncHttpxClientWrapper.__del__`` 猴子补丁为空操作。
 
-    The OpenAI SDK's ``AsyncHttpxClientWrapper.__del__`` schedules
-    ``self.aclose()`` via ``asyncio.get_running_loop().create_task()``.
-    When an ``AsyncOpenAI`` client is garbage-collected while
-    prompt_toolkit's event loop is running (the common CLI idle state),
-    the ``aclose()`` task runs on prompt_toolkit's loop but the
-    underlying TCP transport is bound to a *different* loop (the worker
-    thread's loop that the client was originally created on).  If that
-    loop is closed or its thread is dead, the transport's
-    ``self._loop.call_soon()`` raises ``RuntimeError("Event loop is
-    closed")``, which prompt_toolkit surfaces as "Unhandled exception
-    in event loop ... Press ENTER to continue...".
+    OpenAI SDK 的 ``AsyncHttpxClientWrapper.__del__`` 通过
+    ``asyncio.get_running_loop().create_task()`` 调度
+    ``self.aclose()``。当 ``AsyncOpenAI`` 客户端在
+    prompt_toolkit 的事件循环运行时被垃圾回收（常见的 CLI 空闲状态），
+    ``aclose()`` 任务在 prompt_toolkit 的循环上运行，但底层
+    TCP 传输绑定在*另一个*循环（客户端最初创建时的工作线程循环）上。
+    如果该循环已关闭或其线程已死亡，传输的
+    ``self._loop.call_soon()`` 会抛出 ``RuntimeError("Event loop is
+    closed")``，prompt_toolkit 将其显示为 "Unhandled exception
+    in event loop ... Press ENTER to continue..."。
 
-    Neutering ``__del__`` is safe because:
-    - Cached clients are explicitly cleaned via ``_force_close_async_httpx``
-      on stale-loop detection and ``shutdown_cached_clients`` on exit.
-    - Uncached clients' TCP connections are cleaned up by the OS when the
-      process exits.
-    - The OpenAI SDK itself marks this as a TODO (``# TODO(someday):
-      support non asyncio runtimes here``).
+    使 ``__del__`` 无效化是安全的，因为：
+    - 缓存的客户端在过期循环检测时通过 ``_force_close_async_httpx``
+      显式清理，退出时通过 ``shutdown_cached_clients`` 清理。
+    - 未缓存客户端的 TCP 连接在进程退出时由操作系统清理。
+    - OpenAI SDK 本身将此标记为 TODO（``# TODO(someday):
+      support non asyncio runtimes here``）。
 
-    Call this once at CLI startup, before any ``AsyncOpenAI`` clients are
-    created.
+    在 CLI 启动时调用一次，在创建任何 ``AsyncOpenAI`` 客户端之前。
     """
     try:
         from openai._base_client import AsyncHttpxClientWrapper
         AsyncHttpxClientWrapper.__del__ = lambda self: None  # type: ignore[assignment]
     except (ImportError, AttributeError):
-        pass  # Graceful degradation if the SDK changes its internals
+        pass  # 如果 SDK 更改了其内部结构则优雅降级
 
 
 def _force_close_async_httpx(client: Any) -> None:
-    """Mark the httpx AsyncClient inside an AsyncOpenAI client as closed.
+    """将 AsyncOpenAI 客户端内部的 httpx AsyncClient 标记为已关闭。
 
-    This prevents ``AsyncHttpxClientWrapper.__del__`` from scheduling
-    ``aclose()`` on a (potentially closed) event loop, which causes
-    ``RuntimeError: Event loop is closed`` → prompt_toolkit's
-    "Press ENTER to continue..." handler.
+    这防止 ``AsyncHttpxClientWrapper.__del__`` 在（可能已关闭的）
+    事件循环上调度 ``aclose()``，从而导致
+    ``RuntimeError: Event loop is closed`` → prompt_toolkit 的
+    "Press ENTER to continue..." 处理器。
 
-    We intentionally do NOT run the full async close path — the
-    connections will be dropped by the OS when the process exits.
+    我们故意不运行完整的异步关闭路径——连接将在进程退出时
+    由操作系统丢弃。
     """
     try:
         from httpx._client import ClientState
@@ -1970,10 +1955,10 @@ def _force_close_async_httpx(client: Any) -> None:
 
 
 def shutdown_cached_clients() -> None:
-    """Close all cached clients (sync and async) to prevent event-loop errors.
+    """关闭所有缓存的客户端（同步和异步）以防止事件循环错误。
 
-    Call this during CLI shutdown, *before* the event loop is closed, to
-    avoid ``AsyncHttpxClientWrapper.__del__`` raising on a dead loop.
+    在 CLI 关闭期间调用，*在*事件循环关闭之前，以避免
+    ``AsyncHttpxClientWrapper.__del__`` 在死循环上抛出异常。
     """
     import inspect
 
@@ -1982,11 +1967,11 @@ def shutdown_cached_clients() -> None:
             client = entry[0]
             if client is None:
                 continue
-            # Mark any async httpx transport as closed first (prevents __del__
-            # from scheduling aclose() on a dead event loop).
+            # 首先将任何异步 httpx 传输标记为已关闭（防止 __del__
+            # 在死事件循环上调度 aclose()）。
             _force_close_async_httpx(client)
-            # Sync clients: close the httpx connection pool cleanly.
-            # Async clients: skip — we already neutered __del__ above.
+            # 同步客户端：干净地关闭 httpx 连接池。
+            # 异步客户端：跳过——我们已在上面使 __del__ 无效化。
             try:
                 close_fn = getattr(client, "close", None)
                 if close_fn and not inspect.iscoroutinefunction(close_fn):
@@ -1997,12 +1982,12 @@ def shutdown_cached_clients() -> None:
 
 
 def cleanup_stale_async_clients() -> None:
-    """Force-close cached async clients whose event loop is closed.
+    """强制关闭事件循环已关闭的缓存异步客户端。
 
-    Call this after each agent turn to proactively clean up stale clients
-    before GC can trigger ``AsyncHttpxClientWrapper.__del__`` on them.
-    This is defense-in-depth — the primary fix is ``neuter_async_httpx_del``
-    which disables ``__del__`` entirely.
+    在每个代理回合后调用，主动清理过期客户端，
+    防止 GC 在它们上触发 ``AsyncHttpxClientWrapper.__del__``。
+    这是纵深防御——主要修复是 ``neuter_async_httpx_del``
+    它完全禁用了 ``__del__``。
     """
     with _client_cache_lock:
         stale_keys = []
@@ -2023,9 +2008,9 @@ def _is_openrouter_client(client: Any) -> bool:
 
 
 def _compat_model(client: Any, model: Optional[str], cached_default: Optional[str]) -> Optional[str]:
-    """Drop OpenRouter-format model slugs (with '/') for non-OpenRouter clients.
+    """对非 OpenRouter 客户端丢弃带 '/' 的 OpenRouter 格式模型标识符。
 
-    Mirrors the guard in resolve_provider_client() which is skipped on cache hits.
+    镜像 resolve_provider_client() 中在缓存命中时被跳过的保护。
     """
     if model and "/" in model and not _is_openrouter_client(client):
         return cached_default
@@ -2041,26 +2026,24 @@ def _get_cached_client(
     api_mode: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
-    """Get or create a cached client for the given provider.
+    """获取或创建给定提供者的缓存客户端。
 
-    Async clients (AsyncOpenAI) use httpx.AsyncClient internally, which
-    binds to the event loop that was current when the client was created.
-    Using such a client on a *different* loop causes deadlocks or
-    RuntimeError.  To prevent cross-loop issues, the cache validates on
-    every async hit that the cached loop is the *current, open* loop.
-    If the loop changed (e.g. a new gateway worker-thread loop), the stale
-    entry is replaced in-place rather than creating an additional entry.
+    异步客户端（AsyncOpenAI）内部使用 httpx.AsyncClient，它
+    绑定到客户端创建时的当前事件循环。在*不同*循环上使用
+    此类客户端会导致死锁或 RuntimeError。为防止跨循环问题，
+    缓存在每次异步命中时验证缓存的循环是当前*打开的*循环。
+    如果循环已更改（例如新的网关工作线程循环），过期条目
+    将被原地替换而非创建额外条目。
 
-    This keeps cache size bounded to one entry per unique provider config,
-    preventing the fd-exhaustion that previously occurred in long-running
-    gateways where recycled worker threads created unbounded entries (#10200).
+    这将缓存大小限制在每个唯一提供者配置一个条目，
+    防止之前长时间运行网关中回收的工作线程创建
+    无限条目导致的 fd 耗尽（#10200）。
     """
-    # Resolve the current event loop for async clients so we can validate
-    # cached entries.  Loop identity is NOT in the cache key — instead we
-    # check at hit time whether the cached loop is still current and open.
-    # This prevents unbounded cache growth from recycled worker-thread loops
-    # while still guaranteeing we never reuse a client on the wrong loop
-    # (which causes deadlocks, see #2681).
+    # 解析异步客户端的当前事件循环，以便验证缓存条目。
+    # Loop 标识不在缓存键中——而是在命中时检查缓存的
+    # loop 是否仍是当前且打开的。这防止回收的工作线程循环
+    # 导致的无限缓存增长，同时仍保证我们永远不会在错误的
+    # 循环上重用客户端（会导致死锁，参见 #2681）。
     current_loop = None
     if async_mode:
         try:
@@ -2075,9 +2058,9 @@ def _get_cached_client(
         if cache_key in _client_cache:
             cached_client, cached_default, cached_loop = _client_cache[cache_key]
             if async_mode:
-                # Validate: the cached client must be bound to the CURRENT,
-                # OPEN loop.  If the loop changed or was closed, the httpx
-                # transport inside is dead — force-close and replace.
+                # 验证：缓存的客户端必须绑定到当前、打开的循环。
+                # 如果循环已更改或已关闭，内部的 httpx 传输已死——
+                # 强制关闭并替换。
                 loop_ok = (
                     cached_loop is not None
                     and cached_loop is current_loop
@@ -2086,13 +2069,13 @@ def _get_cached_client(
                 if loop_ok:
                     effective = _compat_model(cached_client, model, cached_default)
                     return cached_client, effective
-                # Stale — evict and fall through to create a new client.
+                # 过期——淘汰并向下执行以创建新客户端。
                 _force_close_async_httpx(cached_client)
                 del _client_cache[cache_key]
             else:
                 effective = _compat_model(cached_client, model, cached_default)
                 return cached_client, effective
-    # Build outside the lock
+    # 在锁外构建
     client, default_model = resolve_provider_client(
         provider,
         model,
@@ -2103,13 +2086,13 @@ def _get_cached_client(
         main_runtime=runtime,
     )
     if client is not None:
-        # For async clients, remember which loop they were created on so we
-        # can detect stale entries later.
+        # 对异步客户端，记住它们创建时的循环，以便
+        # 稍后检测过期条目。
         bound_loop = current_loop
         with _client_cache_lock:
             if cache_key not in _client_cache:
-                # Safety belt: if the cache has grown beyond the max, evict
-                # the oldest entries (FIFO — dict preserves insertion order).
+                # 安全带：如果缓存增长超过最大值，淘汰
+                # 最旧的条目（FIFO——dict 保持插入顺序）。
                 while len(_client_cache) >= _CLIENT_CACHE_MAX_SIZE:
                     evict_key, evict_entry = next(iter(_client_cache.items()))
                     _force_close_async_httpx(evict_entry[0])
@@ -2127,17 +2110,17 @@ def _resolve_task_provider_model(
     base_url: str = None,
     api_key: str = None,
 ) -> Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
-    """Determine provider + model for a call.
+    """确定调用的提供者 + 模型。
 
-    Priority:
-      1. Explicit provider/model/base_url/api_key args (always win)
-      2. Config file (auxiliary.{task}.provider/model/base_url)
-      3. "auto" (full auto-detection chain)
+    优先级：
+      1. 显式的 provider/model/base_url/api_key 参数（始终优先）
+      2. 配置文件 (auxiliary.{task}.provider/model/base_url)
+      3. "auto"（完整自动检测链）
 
-    Returns (provider, model, base_url, api_key, api_mode) where model may
-    be None (use provider default). When base_url is set, provider is forced
-    to "custom" and the task uses that direct endpoint. api_mode is one of
-    "chat_completions", "codex_responses", or None (auto-detect).
+    返回 (provider, model, base_url, api_key, api_mode)，其中 model 可能
+    为 None（使用提供者默认值）。当设置了 base_url 时，provider 强制
+    为 "custom" 并且任务使用该直接端点。api_mode 为
+    "chat_completions"、"codex_responses" 或 None（自动检测）之一。
     """
     config = {}
     cfg_provider = None
@@ -2172,7 +2155,7 @@ def _resolve_task_provider_model(
         return provider, resolved_model, base_url, api_key, resolved_api_mode
 
     if task:
-        # Config.yaml is the primary source for per-task overrides.
+        # Config.yaml 是每任务覆盖的主要来源。
         if cfg_base_url:
             return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
         if cfg_provider and cfg_provider != "auto":
@@ -2187,7 +2170,7 @@ _DEFAULT_AUX_TIMEOUT = 30.0
 
 
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
-    """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*."""
+    """从配置的 auxiliary.{task}.timeout 读取超时，回退到 *default*。"""
     if not task:
         return default
     try:
@@ -2207,19 +2190,19 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
 
 
 # ---------------------------------------------------------------------------
-# Anthropic-compatible endpoint detection + image block conversion
+# Anthropic 兼容端点检测 + 图片块转换
 # ---------------------------------------------------------------------------
 
-# Providers that use Anthropic-compatible endpoints (via OpenAI SDK wrapper).
-# Their image content blocks must use Anthropic format, not OpenAI format.
+# 使用 Anthropic 兼容端点的提供者（通过 OpenAI SDK 包装器）。
+# 它们的图片内容块必须使用 Anthropic 格式，而非 OpenAI 格式。
 _ANTHROPIC_COMPAT_PROVIDERS = frozenset({"minimax", "minimax-cn"})
 
 
 def _is_anthropic_compat_endpoint(provider: str, base_url: str) -> bool:
-    """Detect if an endpoint expects Anthropic-format content blocks.
+    """检测端点是否期望 Anthropic 格式的内容块。
 
-    Returns True for known Anthropic-compatible providers (MiniMax) and
-    any endpoint whose URL contains ``/anthropic`` in the path.
+    对已知的 Anthropic 兼容提供者（MiniMax）以及 URL 路径中
+    包含 ``/anthropic`` 的任何端点返回 True。
     """
     if provider in _ANTHROPIC_COMPAT_PROVIDERS:
         return True
@@ -2228,10 +2211,10 @@ def _is_anthropic_compat_endpoint(provider: str, base_url: str) -> bool:
 
 
 def _convert_openai_images_to_anthropic(messages: list) -> list:
-    """Convert OpenAI ``image_url`` content blocks to Anthropic ``image`` blocks.
+    """将 OpenAI ``image_url`` 内容块转换为 Anthropic ``image`` 块。
 
-    Only touches messages that have list-type content with ``image_url`` blocks;
-    plain text messages pass through unchanged.
+    仅处理具有列表类型内容且包含 ``image_url`` 块的消息；
+    纯文本消息直接传递。
     """
     converted = []
     for msg in messages:
@@ -2245,7 +2228,7 @@ def _convert_openai_images_to_anthropic(messages: list) -> list:
             if block.get("type") == "image_url":
                 image_url_val = (block.get("image_url") or {}).get("url", "")
                 if image_url_val.startswith("data:"):
-                    # Parse data URI: data:<media_type>;base64,<data>
+                    # 解析 data URI: data:<media_type>;base64,<data>
                     header, _, b64data = image_url_val.partition(",")
                     media_type = "image/png"
                     if ":" in header and ";" in header:
@@ -2259,7 +2242,7 @@ def _convert_openai_images_to_anthropic(messages: list) -> list:
                         },
                     })
                 else:
-                    # URL-based image
+                    # 基于 URL 的图片
                     new_content.append({
                         "type": "image",
                         "source": {
@@ -2286,17 +2269,17 @@ def _build_call_kwargs(
     extra_body: Optional[dict] = None,
     base_url: Optional[str] = None,
 ) -> dict:
-    """Build kwargs for .chat.completions.create() with model/provider adjustments."""
+    """为 .chat.completions.create() 构建 kwargs，包含模型/提供者调整。"""
     kwargs: Dict[str, Any] = {
         "model": model,
         "messages": messages,
         "timeout": timeout,
     }
 
-    # Opus 4.7+ rejects any non-default temperature/top_p/top_k — silently
-    # drop here so auxiliary callers that hardcode temperature (e.g. 0.3 on
-    # flush_memories, 0 on structured-JSON extraction) don't 400 the moment
-    # the aux model is flipped to 4.7.
+    # Opus 4.7+ 拒绝任何非默认的 temperature/top_p/top_k——在此
+    # 静默丢弃，使硬编码 temperature 的辅助调用方（例如
+    # flush_memories 的 0.3、结构化 JSON 提取的 0）不会在
+    # 辅助模型切换到 4.7 时收到 400 错误。
     if temperature is not None:
         from agent.anthropic_adapter import _forbids_sampling_params
         if _forbids_sampling_params(model):
@@ -2306,8 +2289,8 @@ def _build_call_kwargs(
         kwargs["temperature"] = temperature
 
     if max_tokens is not None:
-        # Codex adapter handles max_tokens internally; OpenRouter/Nous use max_tokens.
-        # Direct OpenAI api.openai.com with newer models needs max_completion_tokens.
+        # Codex 适配器内部处理 max_tokens；OpenRouter/Nous 使用 max_tokens。
+        # 直接使用较新模型的 OpenAI api.openai.com 需要 max_completion_tokens。
         if provider == "custom":
             custom_base = base_url or _current_custom_base_url()
             if "api.openai.com" in custom_base.lower():
@@ -2320,7 +2303,7 @@ def _build_call_kwargs(
     if tools:
         kwargs["tools"] = tools
 
-    # Provider-specific extra_body
+    # 提供者特定的 extra_body
     merged_extra = dict(extra_body or {})
     if provider == "nous" or auxiliary_is_nous:
         merged_extra.setdefault("tags", []).extend(["product=hermes-agent"])
@@ -2331,20 +2314,20 @@ def _build_call_kwargs(
 
 
 def _validate_llm_response(response: Any, task: str = None) -> Any:
-    """Validate that an LLM response has the expected .choices[0].message shape.
+    """验证 LLM 响应具有预期的 .choices[0].message 结构。
 
-    Fails fast with a clear error instead of letting malformed payloads
-    propagate to downstream consumers where they crash with misleading
-    AttributeError (e.g. "'str' object has no attribute 'choices'").
+    通过清晰的错误快速失败，而不是让格式错误的负载
+    传播到下游使用者，在那里它们会因误导性的
+    AttributeError 崩溃（例如 "'str' object has no attribute 'choices'"）。
 
-    See #7264.
+    参见 #7264。
     """
     if response is None:
         raise RuntimeError(
             f"Auxiliary {task or 'call'}: LLM returned None response"
         )
-    # Allow SimpleNamespace responses from adapters (CodexAuxiliaryClient,
-    # AnthropicAuxiliaryClient) — they have .choices[0].message.
+    # 允许来自适配器（CodexAuxiliaryClient、
+    # AnthropicAuxiliaryClient）的 SimpleNamespace 响应——它们有 .choices[0].message。
     try:
         choices = response.choices
         if not choices or not hasattr(choices[0], "message"):
@@ -2376,29 +2359,29 @@ def call_llm(
     timeout: float = None,
     extra_body: dict = None,
 ) -> Any:
-    """Centralized synchronous LLM call.
+    """集中式同步 LLM 调用。
 
-    Resolves provider + model (from task config, explicit args, or auto-detect),
-    handles auth, request formatting, and model-specific arg adjustments.
+    解析提供者 + 模型（从任务配置、显式参数或自动检测），
+    处理认证、请求格式化和模型特定的参数调整。
 
-    Args:
-        task: Auxiliary task name ("compression", "vision", "web_extract",
-              "session_search", "skills_hub", "mcp", "flush_memories").
-              Reads provider:model from config/env. Ignored if provider is set.
-        provider: Explicit provider override.
-        model: Explicit model override.
-        messages: Chat messages list.
-        temperature: Sampling temperature (None = provider default).
-        max_tokens: Max output tokens (handles max_tokens vs max_completion_tokens).
-        tools: Tool definitions (for function calling).
-        timeout: Request timeout in seconds (None = read from auxiliary.{task}.timeout config).
-        extra_body: Additional request body fields.
+    参数:
+        task: 辅助任务名称（"compression"、"vision"、"web_extract"、
+              "session_search"、"skills_hub"、"mcp"、"flush_memories"）。
+              从配置/环境读取 provider:model。如果设置了 provider 则忽略。
+        provider: 显式提供者覆盖。
+        model: 显式模型覆盖。
+        messages: 聊天消息列表。
+        temperature: 采样温度（None = 提供者默认值）。
+        max_tokens: 最大输出 token 数（处理 max_tokens vs max_completion_tokens）。
+        tools: 工具定义（用于函数调用）。
+        timeout: 请求超时秒数（None = 从 auxiliary.{task}.timeout 配置读取）。
+        extra_body: 额外的请求体字段。
 
-    Returns:
-        Response object with .choices[0].message.content
+    返回:
+        带有 .choices[0].message.content 的响应对象
 
-    Raises:
-        RuntimeError: If no provider is configured.
+    抛出:
+        RuntimeError: 如果没有配置提供者。
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
@@ -2437,9 +2420,9 @@ def call_llm(
             main_runtime=main_runtime,
         )
         if client is None:
-            # When the user explicitly chose a non-OpenRouter provider but no
-            # credentials were found, fail fast instead of silently routing
-            # through OpenRouter (which causes confusing 404s).
+            # 当用户显式选择了非 OpenRouter 提供者但未找到凭证时，
+            # 快速失败，而不是静默地通过 OpenRouter 路由
+            # （会导致令人困惑的 404）。
             _explicit = (resolved_provider or "").strip().lower()
             if _explicit and _explicit not in ("auto", "openrouter", "custom"):
                 raise RuntimeError(
@@ -2447,11 +2430,11 @@ def call_llm(
                     f"was found. Set the {_explicit.upper()}_API_KEY environment "
                     f"variable, or switch to a different provider with `hermes model`."
                 )
-            # For auto/custom with no credentials, try the full auto chain
-            # rather than hardcoding OpenRouter (which may be depleted).
-            # Pass model=None so each provider uses its own default —
-            # resolved_model may be an OpenRouter-format slug that doesn't
-            # work on other providers.
+            # 对没有凭证的 auto/custom，尝试完整自动链
+            # 而不是硬编码 OpenRouter（可能已耗尽）。
+            # 传递 model=None 使每个提供者使用自己的默认值——
+            # resolved_model 可能是 OpenRouter 格式的标识符，
+            # 在其他提供者上不工作。
             if not resolved_base_url:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)
@@ -2463,7 +2446,7 @@ def call_llm(
 
     effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
 
-    # Log what we're about to do — makes auxiliary operations visible
+    # 记录即将执行的操作——使辅助操作可见
     _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
     if task:
         logger.info("Auxiliary %s: using %s (%s)%s",
@@ -2476,12 +2459,12 @@ def call_llm(
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
         base_url=resolved_base_url)
 
-    # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
+    # 为 Anthropic 兼容端点（例如 MiniMax）转换图片块
     _client_base = str(getattr(client, "base_url", "") or "")
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
 
-    # Handle max_tokens vs max_completion_tokens retry, then payment fallback.
+    # 处理 max_tokens vs max_completion_tokens 重试，然后支付回退。
     try:
         return _validate_llm_response(
             client.chat.completions.create(**kwargs), task)
@@ -2494,28 +2477,26 @@ def call_llm(
                 return _validate_llm_response(
                     client.chat.completions.create(**kwargs), task)
             except Exception as retry_err:
-                # If the max_tokens retry also hits a payment or connection
-                # error, fall through to the fallback chain below.
+                # 如果 max_tokens 重试也遇到支付或连接错误，
+                # 向下执行到下面的回退链。
                 if not (_is_payment_error(retry_err) or _is_connection_error(retry_err)):
                     raise
                 first_err = retry_err
 
-        # ── Payment / credit exhaustion fallback ──────────────────────
-        # When the resolved provider returns 402 or a credit-related error,
-        # try alternative providers instead of giving up.  This handles the
-        # common case where a user runs out of OpenRouter credits but has
-        # Codex OAuth or another provider available.
+        # ── 支付 / 额度耗尽回退 ──────────────────────
+        # 当解析的提供者返回 402 或额度相关错误时，
+        # 尝试替代提供者而不是放弃。这处理了用户耗尽
+        # OpenRouter 额度但有 Codex OAuth 或其他提供者
+        # 可用的常见情况。
         #
-        # ── Connection error fallback ────────────────────────────────
-        # When a provider endpoint is unreachable (DNS failure, connection
-        # refused, timeout), try alternative providers.  This handles stale
-        # Codex/OAuth tokens that authenticate but whose endpoint is down,
-        # and providers the user never configured that got picked up by
-        # the auto-detection chain.
+        # ── 连接错误回退 ────────────────────────────────
+        # 当提供者端点不可达时（DNS 失败、连接被拒绝、
+        # 超时），尝试替代提供者。这处理了认证有效但端点
+        # 宕机的过期 Codex/OAuth 令牌，以及用户从未配置但
+        # 被自动检测链选中的提供者。
         should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
-        # Only try alternative providers when the user didn't explicitly
-        # configure this task's provider.  Explicit provider = hard constraint;
-        # auto (the default) = best-effort fallback chain.  (#7559)
+        # 仅在用户没有显式配置此任务的提供者时才尝试替代提供者。
+        # 显式提供者 = 硬约束；auto（默认值）= 尽力回退链。（#7559）
         is_auto = resolved_provider in ("auto", "", None)
         if should_fallback and is_auto:
             reason = "payment error" if _is_payment_error(first_err) else "connection error"
@@ -2535,19 +2516,19 @@ def call_llm(
 
 
 def extract_content_or_reasoning(response) -> str:
-    """Extract content from an LLM response, falling back to reasoning fields.
+    """从 LLM 响应中提取内容，回退到推理字段。
 
-    Mirrors the main agent loop's behavior when a reasoning model (DeepSeek-R1,
-    Qwen-QwQ, etc.) returns ``content=None`` with reasoning in structured fields.
+    镜像主代理循环在推理模型（DeepSeek-R1、Qwen-QwQ 等）
+    返回 ``content=None`` 且推理在结构化字段中时的行为。
 
-    Resolution order:
-      1. ``message.content`` — strip inline think/reasoning blocks, check for
-         remaining non-whitespace text.
-      2. ``message.reasoning`` / ``message.reasoning_content`` — direct
-         structured reasoning fields (DeepSeek, Moonshot, Novita, etc.).
-      3. ``message.reasoning_details`` — OpenRouter unified array format.
+    解析顺序：
+      1. ``message.content`` —— 剥离内联 think/reasoning 块，检查
+         是否有剩余的非空白文本。
+      2. ``message.reasoning`` / ``message.reasoning_content`` —— 直接
+         结构化推理字段（DeepSeek、Moonshot、Novita 等）。
+      3. ``message.reasoning_details`` —— OpenRouter 统一数组格式。
 
-    Returns the best available text, or ``""`` if nothing found.
+    返回最佳可用文本，如果未找到则返回 ``""``。
     """
     import re
 
@@ -2555,7 +2536,7 @@ def extract_content_or_reasoning(response) -> str:
     content = (msg.content or "").strip()
 
     if content:
-        # Strip inline think/reasoning blocks (mirrors _strip_think_blocks)
+        # 剥离内联 think/reasoning 块（镜像 _strip_think_blocks）
         cleaned = re.sub(
             r"<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>"
             r".*?"
@@ -2565,7 +2546,7 @@ def extract_content_or_reasoning(response) -> str:
         if cleaned:
             return cleaned
 
-    # Content is empty or reasoning-only — try structured reasoning fields
+    # 内容为空或仅包含推理——尝试结构化推理字段
     reasoning_parts: list[str] = []
     for field in ("reasoning", "reasoning_content"):
         val = getattr(msg, field, None)
@@ -2604,9 +2585,9 @@ async def async_call_llm(
     timeout: float = None,
     extra_body: dict = None,
 ) -> Any:
-    """Centralized asynchronous LLM call.
+    """集中式异步 LLM 调用。
 
-    Same as call_llm() but async. See call_llm() for full documentation.
+    与 call_llm() 相同但为异步版本。完整文档见 call_llm()。
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
@@ -2669,7 +2650,7 @@ async def async_call_llm(
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
         base_url=resolved_base_url)
 
-    # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
+    # 为 Anthropic 兼容端点（例如 MiniMax）转换图片块
     _client_base = str(getattr(client, "base_url", "") or "")
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
@@ -2686,13 +2667,13 @@ async def async_call_llm(
                 return _validate_llm_response(
                     await client.chat.completions.create(**kwargs), task)
             except Exception as retry_err:
-                # If the max_tokens retry also hits a payment or connection
-                # error, fall through to the fallback chain below.
+                # 如果 max_tokens 重试也遇到支付或连接错误，
+                # 向下执行到下面的回退链。
                 if not (_is_payment_error(retry_err) or _is_connection_error(retry_err)):
                     raise
                 first_err = retry_err
 
-        # ── Payment / connection fallback (mirrors sync call_llm) ─────
+        # ── 支付 / 连接回退（镜像同步 call_llm）─────
         should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
         is_auto = resolved_provider in ("auto", "", None)
         if should_fallback and is_auto:
@@ -2707,7 +2688,7 @@ async def async_call_llm(
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
                     extra_body=extra_body)
-                # Convert sync fallback client to async
+                # 将同步回退客户端转换为异步
                 async_fb, async_fb_model = _to_async_client(fb_client, fb_model or "")
                 if async_fb_model and async_fb_model != fb_kwargs.get("model"):
                     fb_kwargs["model"] = async_fb_model

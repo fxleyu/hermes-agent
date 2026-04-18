@@ -1,16 +1,15 @@
-"""Progressive subdirectory hint discovery.
+"""渐进式子目录提示发现。
 
-As the agent navigates into subdirectories via tool calls (read_file, terminal,
-search_files, etc.), this module discovers and loads project context files
-(AGENTS.md, CLAUDE.md, .cursorrules) from those directories.  Discovered hints
-are appended to the tool result so the model gets relevant context at the moment
-it starts working in a new area of the codebase.
+当智能体通过工具调用（read_file、terminal、search_files 等）导航到子目录时，
+此模块会从这些目录中发现并加载项目上下文文件
+（AGENTS.md、CLAUDE.md、.cursorrules）。发现的提示会追加到工具结果中，
+使模型在开始处理代码库新区域时获得相关上下文。
 
-This complements the startup context loading in ``prompt_builder.py`` which only
-loads from the CWD.  Subdirectory hints are discovered lazily and injected into
-the conversation without modifying the system prompt (preserving prompt caching).
+这是对 ``prompt_builder.py`` 中启动上下文加载的补充，后者仅从
+当前工作目录加载。子目录提示是懒加载的，注入到对话中时不修改
+系统提示词（以保持提示词缓存的有效性）。
 
-Inspired by Block/goose's SubdirectoryHintTracker.
+灵感来源于 Block/goose 的 SubdirectoryHintTracker。
 """
 
 import logging
@@ -23,45 +22,45 @@ from agent.prompt_builder import _scan_context_content
 
 logger = logging.getLogger(__name__)
 
-# Context files to look for in subdirectories, in priority order.
-# Same filenames as prompt_builder.py but we load ALL found (not first-wins)
-# since different subdirectories may use different conventions.
+# 在子目录中查找的上下文文件，按优先级排列。
+# 文件名与 prompt_builder.py 相同，但我们加载所有找到的文件（非首个匹配优先），
+# 因为不同的子目录可能使用不同的约定。
 _HINT_FILENAMES = [
     "AGENTS.md", "agents.md",
     "CLAUDE.md", "claude.md",
     ".cursorrules",
 ]
 
-# Maximum chars per hint file to prevent context bloat
+# 每个提示文件的最大字符数，防止上下文膨胀
 _MAX_HINT_CHARS = 8_000
 
-# Tool argument keys that typically contain file paths
+# 工具参数中通常包含文件路径的键名
 _PATH_ARG_KEYS = {"path", "file_path", "workdir"}
 
-# Tools that take shell commands where we should extract paths
+# 接受 shell 命令的工具，需要从中提取路径
 _COMMAND_TOOLS = {"terminal"}
 
-# How many parent directories to walk up when looking for hints.
-# Prevents scanning all the way to / for deeply nested paths.
+# 查找提示时向上遍历的最大父目录层数。
+# 防止对深层嵌套路径一直扫描到根目录 /。
 _MAX_ANCESTOR_WALK = 5
 
 class SubdirectoryHintTracker:
-    """Track which directories the agent visits and load hints on first access.
+    """跟踪智能体访问的目录，并在首次访问时加载提示文件。
 
-    Usage::
+    用法::
 
         tracker = SubdirectoryHintTracker(working_dir="/path/to/project")
 
-        # After each tool call:
+        # 每次工具调用后：
         hints = tracker.check_tool_call("read_file", {"path": "backend/src/main.py"})
         if hints:
-            tool_result += hints  # append to the tool result string
+            tool_result += hints  # 追加到工具结果字符串
     """
 
     def __init__(self, working_dir: Optional[str] = None):
         self.working_dir = Path(working_dir or os.getcwd()).resolve()
         self._loaded_dirs: Set[Path] = set()
-        # Pre-mark the working dir as loaded (startup context handles it)
+        # 预先标记工作目录为已加载（启动上下文会处理它）
         self._loaded_dirs.add(self.working_dir)
 
     def check_tool_call(
@@ -69,9 +68,9 @@ class SubdirectoryHintTracker:
         tool_name: str,
         tool_args: Dict[str, Any],
     ) -> Optional[str]:
-        """Check tool call arguments for new directories and load any hint files.
+        """检查工具调用参数中的新目录，并加载任何提示文件。
 
-        Returns formatted hint text to append to the tool result, or None.
+        返回要追加到工具结果的格式化提示文本，或返回 None。
         """
         dirs = self._extract_directories(tool_name, tool_args)
         if not dirs:
@@ -91,16 +90,16 @@ class SubdirectoryHintTracker:
     def _extract_directories(
         self, tool_name: str, args: Dict[str, Any]
     ) -> list:
-        """Extract directory paths from tool call arguments."""
+        """从工具调用参数中提取目录路径。"""
         candidates: Set[Path] = set()
 
-        # Direct path arguments
+        # 直接路径参数
         for key in _PATH_ARG_KEYS:
             val = args.get(key)
             if isinstance(val, str) and val.strip():
                 self._add_path_candidate(val, candidates)
 
-        # Shell commands — extract path-like tokens
+        # Shell 命令——提取类路径的词元
         if tool_name in _COMMAND_TOOLS:
             cmd = args.get("command", "")
             if isinstance(cmd, str):
@@ -109,23 +108,23 @@ class SubdirectoryHintTracker:
         return list(candidates)
 
     def _add_path_candidate(self, raw_path: str, candidates: Set[Path]):
-        """Resolve a raw path and add its directory + ancestors to candidates.
+        """解析原始路径并将其目录及祖先目录添加到候选集。
 
-        Walks up from the resolved directory toward the filesystem root,
-        stopping at the first directory already in ``_loaded_dirs`` (or after
-        ``_MAX_ANCESTOR_WALK`` levels).  This ensures that reading
-        ``project/src/main.py`` discovers ``project/AGENTS.md`` even when
-        ``project/src/`` has no hint files of its own.
+        从解析后的目录向上遍历到文件系统根目录，
+        在遇到第一个已在 ``_loaded_dirs`` 中的目录时停止（或在
+        ``_MAX_ANCESTOR_WALK`` 层后停止）。这确保读取
+        ``project/src/main.py`` 时能发现 ``project/AGENTS.md``，
+        即使 ``project/src/`` 本身没有提示文件。
         """
         try:
             p = Path(raw_path).expanduser()
             if not p.is_absolute():
                 p = self.working_dir / p
             p = p.resolve()
-            # Use parent if it's a file path (has extension or doesn't exist as dir)
+            # 如果是文件路径（有扩展名或不作为目录存在），则使用其父目录
             if p.suffix or (p.exists() and p.is_file()):
                 p = p.parent
-            # Walk up ancestors — stop at already-loaded or root
+            # 向上遍历祖先目录——在已加载的目录或根目录处停止
             for _ in range(_MAX_ANCESTOR_WALK):
                 if p in self._loaded_dirs:
                     break
@@ -133,32 +132,32 @@ class SubdirectoryHintTracker:
                     candidates.add(p)
                 parent = p.parent
                 if parent == p:
-                    break  # filesystem root
+                    break  # 文件系统根目录
                 p = parent
         except (OSError, ValueError):
             pass
 
     def _extract_paths_from_command(self, cmd: str, candidates: Set[Path]):
-        """Extract path-like tokens from a shell command string."""
+        """从 shell 命令字符串中提取类路径的词元。"""
         try:
             tokens = shlex.split(cmd)
         except ValueError:
             tokens = cmd.split()
 
         for token in tokens:
-            # Skip flags
+            # 跳过标志参数
             if token.startswith("-"):
                 continue
-            # Must look like a path (contains / or .)
+            # 必须看起来像路径（包含 / 或 .）
             if "/" not in token and "." not in token:
                 continue
-            # Skip URLs
+            # 跳过 URL
             if token.startswith(("http://", "https://", "git@")):
                 continue
             self._add_path_candidate(token, candidates)
 
     def _is_valid_subdir(self, path: Path) -> bool:
-        """Check if path is a valid directory to scan for hints."""
+        """检查路径是否是可扫描提示文件的有效目录。"""
         try:
             if not path.is_dir():
                 return False
@@ -169,7 +168,8 @@ class SubdirectoryHintTracker:
         return True
 
     def _load_hints_for_directory(self, directory: Path) -> Optional[str]:
-        """Load hint files from a directory. Returns formatted text or None."""
+        """从目录加载提示文件。返回格式化文本或 None。"""
+        # 标记此目录为已加载，避免重复处理
         self._loaded_dirs.add(directory)
 
         found_hints = []
@@ -184,14 +184,14 @@ class SubdirectoryHintTracker:
                 content = hint_path.read_text(encoding="utf-8").strip()
                 if not content:
                     continue
-                # Same security scan as startup context loading
+                # 与启动上下文加载相同的安全扫描
                 content = _scan_context_content(content, filename)
                 if len(content) > _MAX_HINT_CHARS:
                     content = (
                         content[:_MAX_HINT_CHARS]
                         + f"\n\n[...truncated {filename}: {len(content):,} chars total]"
                     )
-                # Best-effort relative path for display
+                # 尽力获取相对路径用于显示
                 rel_path = str(hint_path)
                 try:
                     rel_path = str(hint_path.relative_to(self.working_dir))
@@ -200,9 +200,9 @@ class SubdirectoryHintTracker:
                         rel_path = str(hint_path.relative_to(Path.home()))
                         rel_path = "~/" + rel_path
                     except ValueError:
-                        pass  # keep absolute
+                        pass  # 保持绝对路径
                 found_hints.append((rel_path, content))
-                # First match wins per directory (like startup loading)
+                # 每个目录取第一个匹配（与启动加载一致）
                 break
             except Exception as exc:
                 logger.debug("Could not read %s: %s", hint_path, exc)

@@ -1,12 +1,12 @@
 """
-Unified tool configuration for Hermes Agent.
+Hermes Agent 的统一工具配置。
 
-`hermes tools` and `hermes setup tools` both enter this module.
-Select a platform → toggle toolsets on/off → for newly enabled tools
-that need API keys, run through provider-aware configuration.
+`hermes tools` 和 `hermes setup tools` 都进入此模块。
+选择平台 -> 切换工具集开关 -> 对新启用的需要 API 密钥的工具，
+运行提供商感知的配置流程。
 
-Saves per-platform tool configuration to ~/.hermes/config.yaml under
-the `platform_toolsets` key.
+将每个平台的工具配置保存到 ~/.hermes/config.yaml 的
+`platform_toolsets` 键下。
 """
 
 import json as _json
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 
-# ─── UI Helpers (shared with setup.py) ────────────────────────────────────────
+# ─── UI 辅助函数（与 setup.py 共享）────────────────────────────────────────
 
 from hermes_cli.cli_output import (  # noqa: E402 — late import block
     print_error as _print_error,
@@ -41,11 +41,11 @@ from hermes_cli.cli_output import (  # noqa: E402 — late import block
     prompt as _prompt,
 )
 
-# ─── Toolset Registry ─────────────────────────────────────────────────────────
+# ─── 工具集注册表 ─────────────────────────────────────────────────────────
 
-# Toolsets shown in the configurator, grouped for display.
-# Each entry: (toolset_name, label, description)
-# These map to keys in toolsets.py TOOLSETS dict.
+# 配置器中显示的工具集，按组分类。
+# 每个条目：(toolset_name, label, description)
+# 这些映射到 toolsets.py 中 TOOLSETS 字典的键。
 CONFIGURABLE_TOOLSETS = [
     ("web",             "🔍 Web Search & Scraping",    "web_search, web_extract"),
     ("browser",         "🌐 Browser Automation",       "navigate, click, type, scroll"),
@@ -68,17 +68,17 @@ CONFIGURABLE_TOOLSETS = [
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
 ]
 
-# Toolsets that are OFF by default for new installs.
-# They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
-# but the setup checklist won't pre-select them for first-time users.
+# 新安装时默认关闭的工具集。
+# 它们仍在 _HERMES_CORE_TOOLS 中（启用后运行时可用），
+# 但设置向导不会为首次用户预选它们。
 _DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl"}
 
 
 def _get_effective_configurable_toolsets():
-    """Return CONFIGURABLE_TOOLSETS + any plugin-provided toolsets.
+    """返回 CONFIGURABLE_TOOLSETS 加上任何插件提供的工具集。
 
-    Plugin toolsets are appended at the end so they appear after the
-    built-in toolsets in the TUI checklist.
+    插件工具集追加在末尾，因此在 TUI 勾选列表中
+    显示在内置工具集之后。
     """
     result = list(CONFIGURABLE_TOOLSETS)
     try:
@@ -91,7 +91,7 @@ def _get_effective_configurable_toolsets():
 
 
 def _get_plugin_toolset_keys() -> set:
-    """Return the set of toolset keys provided by plugins."""
+    """返回插件提供的工具集键集合。"""
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
         discover_plugins()  # idempotent — ensures plugins are loaded
@@ -99,9 +99,9 @@ def _get_plugin_toolset_keys() -> set:
     except Exception:
         return set()
 
-# Platform display config — derived from the canonical registry so every
-# module shares the same data.  Kept as dict-of-dicts for backward
-# compatibility with existing ``PLATFORMS[key]["label"]`` access patterns.
+# 平台显示配置——从规范注册表派生，
+# 所有模块共享相同数据。保持 dict-of-dicts 格式
+# 以与现有 ``PLATFORMS[key]["label"]`` 访问模式向后兼容。
 from hermes_cli.platforms import PLATFORMS as _PLATFORMS_REGISTRY
 
 PLATFORMS = {
@@ -110,10 +110,10 @@ PLATFORMS = {
 }
 
 
-# ─── Tool Categories (provider-aware configuration) ──────────────────────────
-# Maps toolset keys to their provider options. When a toolset is newly enabled,
-# we use this to show provider selection and prompt for the right API keys.
-# Toolsets not in this map either need no config or use the simple fallback.
+# ─── 工具分类（提供商感知配置）──────────────────────────
+# 将工具集键映射到其提供商选项。当工具集被新启用时，
+# 我们使用此映射显示提供商选择并提示输入正确的 API 密钥。
+# 不在此映射中的工具集要么不需要配置，要么使用简单回退。
 
 TOOL_CATEGORIES = {
     "tts": {
@@ -370,18 +370,18 @@ TOOL_CATEGORIES = {
     },
 }
 
-# Simple env-var requirements for toolsets NOT in TOOL_CATEGORIES.
-# Used as a fallback for tools like vision/moa that just need an API key.
+# 不在 TOOL_CATEGORIES 中的工具集的简单环境变量要求。
+# 用作仅需 API 密钥的工具（如 vision/moa）的回退。
 TOOLSET_ENV_REQUIREMENTS = {
     "vision":     [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
     "moa":        [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
 }
 
 
-# ─── Post-Setup Hooks ─────────────────────────────────────────────────────────
+# ─── 安装后钩子 ─────────────────────────────────────────────────────────
 
 def _run_post_setup(post_setup_key: str):
-    """Run post-setup hooks for tools that need extra installation steps."""
+    """为需要额外安装步骤的工具运行安装后钩子。"""
     import shutil
     if post_setup_key in ("agent_browser", "browserbase"):
         node_modules = PROJECT_ROOT / "node_modules" / "agent-browser"
@@ -452,10 +452,10 @@ def _run_post_setup(post_setup_key: str):
                 _print_info('      uv pip install -e "./tinker-atropos"')
 
 
-# ─── Platform / Toolset Helpers ───────────────────────────────────────────────
+# ─── 平台/工具集辅助函数 ───────────────────────────────────────────────
 
 def _get_enabled_platforms() -> List[str]:
-    """Return platform keys that are configured (have tokens or are CLI)."""
+    """返回已配置（拥有 token 或为 CLI）的平台键。"""
     enabled = ["cli"]
     if get_env_value("TELEGRAM_BOT_TOKEN"):
         enabled.append("telegram")
@@ -471,11 +471,10 @@ def _get_enabled_platforms() -> List[str]:
 
 
 def _platform_toolset_summary(config: dict, platforms: Optional[List[str]] = None) -> Dict[str, Set[str]]:
-    """Return a summary of enabled toolsets per platform.
+    """返回每个平台已启用工具集的摘要。
 
-    When ``platforms`` is None, this uses ``_get_enabled_platforms`` to
-    auto-detect platforms. Tests can pass an explicit list to avoid relying
-    on environment variables.
+    当 ``platforms`` 为 None 时，使用 ``_get_enabled_platforms`` 自动
+    检测平台。测试可传入显式列表以避免依赖环境变量。
     """
     if platforms is None:
         platforms = _get_enabled_platforms()
@@ -487,7 +486,7 @@ def _platform_toolset_summary(config: dict, platforms: Optional[List[str]] = Non
 
 
 def _parse_enabled_flag(value, default: bool = True) -> bool:
-    """Parse bool-like config values used by tool/platform settings."""
+    """解析工具/平台设置使用的布尔值形式的配置值。"""
     if value is None:
         return default
     if isinstance(value, bool):
@@ -509,7 +508,7 @@ def _get_platform_tools(
     *,
     include_default_mcp_servers: bool = True,
 ) -> Set[str]:
-    """Resolve which individual toolset names are enabled for a platform."""
+    """解析某个平台启用了哪些具体工具集名称。"""
     from toolsets import resolve_toolset
 
     platform_toolsets = config.get("platform_toolsets", {})
@@ -519,12 +518,17 @@ def _get_platform_tools(
         default_ts = PLATFORMS[platform]["default_toolset"]
         toolset_names = [default_ts]
 
+    # YAML 可能将裸数字名称（例如 ``12306:``）解析为 int。
+    # 归一化为 str 使下游 sorted() 不会混合类型。
     # YAML may parse bare numeric names (e.g. ``12306:``) as int.
     # Normalise to str so downstream sorted() never mixes types.
     toolset_names = [str(ts) for ts in toolset_names]
 
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
 
+    # 如果保存的列表直接包含任何可配置键，用户已显式配置此平台——使用直接成员关系。
+    # 这避免了子集推断错误，其中复合工具集如 "hermes-cli"
+    #（包含所有 _HERMES_CORE_TOOLS）会导致已禁用的工具集重新显示为已启用。
     # If the saved list contains any configurable keys directly, the user
     # has explicitly configured this platform — use direct membership.
     # This avoids the subset-inference bug where composite toolsets like
@@ -535,6 +539,8 @@ def _get_platform_tools(
     if has_explicit_config:
         enabled_toolsets = {ts for ts in toolset_names if ts in configurable_keys}
     else:
+        # 无显式配置——回退到解析复合工具集名称
+        #（例如 "hermes-cli"）为单个工具名称并反向映射。
         # No explicit config — fall back to resolving composite toolset names
         # (e.g. "hermes-cli") to individual tool names and reverse-mapping.
         all_tool_names = set()
@@ -547,6 +553,10 @@ def _get_platform_tools(
             if ts_tools and ts_tools.issubset(all_tool_names):
                 enabled_toolsets.add(ts_key)
 
+    # 插件工具集：除非显式禁用，否则默认启用。
+    # 一旦 `hermes tools` 为该平台保存过，插件工具集就变为该平台的"已知"项
+    #（通过 known_plugin_toolsets 跟踪）。
+    # 未知插件默认启用；已知但不存在 = 已禁用。
     # Plugin toolsets: enabled by default unless explicitly disabled.
     # A plugin toolset is "known" for a platform once `hermes tools`
     # has been saved for that platform (tracked via known_plugin_toolsets).
@@ -557,13 +567,18 @@ def _get_platform_tools(
         known_for_platform = set(known_map.get(platform, []))
         for pts in plugin_ts_keys:
             if pts in toolset_names:
+                # 显式列在配置中——已启用
                 # Explicitly listed in config — enabled
                 enabled_toolsets.add(pts)
             elif pts not in known_for_platform:
+                # 新插件尚未被 hermes tools 看到——默认启用
                 # New plugin not yet seen by hermes tools — default enabled
                 enabled_toolsets.add(pts)
+            # 否则：已知但不在配置中 = 用户已禁用
             # else: known but not in config = user disabled it
 
+    # 保留任何显式的非可配置工具集条目（例如，
+    # 保存在 platform_toolsets 中的自定义工具集或 MCP 服务器名称）。
     # Preserve any explicit non-configurable toolset entries (for example,
     # custom toolsets or MCP server names saved in platform_toolsets).
     platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
@@ -575,6 +590,10 @@ def _get_platform_tools(
         and ts not in platform_default_keys
     }
 
+    # MCP 服务器预期在所有平台上默认可用。
+    # 如果平台显式列出一个或多个 MCP 服务器名称，视为允许列表。
+    # 否则包含每个全局启用的 MCP 服务器。
+    # 特殊标记："no_mcp" 在工具集列表中禁用该平台的所有 MCP 服务器。
     # MCP servers are expected to be available on all platforms by default.
     # If the platform explicitly lists one or more MCP server names, treat that
     # as an allowlist. Otherwise include every globally enabled MCP server.
@@ -586,6 +605,7 @@ def _get_platform_tools(
         if isinstance(server_cfg, dict)
         and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
     }
+    # 允许 "no_mcp" 标记选择退出该平台的所有 MCP 服务器
     # Allow "no_mcp" sentinel to opt out of all MCP servers for this platform
     if "no_mcp" in toolset_names:
         explicit_mcp_servers = set()

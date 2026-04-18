@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""Google Workspace OAuth2 setup for Hermes Agent.
+"""Hermes Agent 的 Google Workspace OAuth2 设置。
 
-Fully non-interactive — designed to be driven by the agent via terminal commands.
-The agent mediates between this script and the user (works on CLI, Telegram, Discord, etc.)
+完全非交互式——设计为通过终端命令由 Agent 驱动。
+Agent 在此脚本和用户之间充当中介（适用于 CLI、Telegram、Discord 等）
 
-Commands:
-  setup.py --check                          # Is auth valid? Exit 0 = yes, 1 = no
-  setup.py --client-secret /path/to.json    # Store OAuth client credentials
-  setup.py --auth-url                       # Print the OAuth URL for user to visit
-  setup.py --auth-code CODE                 # Exchange auth code for token
-  setup.py --revoke                         # Revoke and delete stored token
-  setup.py --install-deps                   # Install Python dependencies only
+命令:
+  setup.py --check                          # 认证是否有效？退出码 0 = 是，1 = 否
+  setup.py --client-secret /path/to.json    # 存储 OAuth 客户端凭据
+  setup.py --auth-url                       # 打印 OAuth URL 供用户访问
+  setup.py --auth-code CODE                 # 用授权码交换令牌
+  setup.py --revoke                         # 吊销并删除存储的令牌
+  setup.py --install-deps                   # 仅安装 Python 依赖
 
-Agent workflow:
-  1. Run --check. If exit 0, auth is good — skip setup.
-  2. Ask user for client_secret.json path. Run --client-secret PATH.
-  3. Run --auth-url. Send the printed URL to the user.
-  4. User opens URL, authorizes, gets redirected to a page with a code.
-  5. User pastes the code. Agent runs --auth-code CODE.
-  6. Run --check to verify. Done.
+Agent 工作流程:
+  1. 运行 --check。如果退出码为 0，认证有效——跳过设置。
+  2. 向用户索取 client_secret.json 路径。运行 --client-secret PATH。
+  3. 运行 --auth-url。将打印的 URL 发送给用户。
+  4. 用户打开 URL，授权后重定向到包含授权码的页面。
+  5. 用户粘贴授权码。Agent 运行 --auth-code CODE。
+  6. 运行 --check 验证。完成。
 """
 
 import argparse
@@ -54,9 +54,9 @@ SCOPES = [
 
 REQUIRED_PACKAGES = ["google-api-python-client", "google-auth-oauthlib", "google-auth-httplib2"]
 
-# OAuth redirect for "out of band" manual code copy flow.
-# Google deprecated OOB, so we use a localhost redirect and tell the user to
-# copy the code from the browser's URL bar (or the page body).
+# OAuth "out of band" 手动授权码复制流程的重定向地址。
+# Google 已弃用 OOB，因此我们使用 localhost 重定向，并告知用户
+# 从浏览器的 URL 栏（或页面正文）中复制授权码。
 REDIRECT_URI = "http://localhost:1"
 
 
@@ -92,7 +92,7 @@ def _format_missing_scopes(missing_scopes: list[str]) -> str:
 
 
 def install_deps():
-    """Install Google API packages if missing. Returns True on success."""
+    """如果缺少 Google API 包则安装。成功返回 True。"""
     try:
         import googleapiclient  # noqa: F401
         import google_auth_oauthlib  # noqa: F401
@@ -116,7 +116,7 @@ def install_deps():
 
 
 def _ensure_deps():
-    """Check deps are available, install if not, exit on failure."""
+    """检查依赖是否可用，如果不可用则安装，失败时退出。"""
     try:
         import googleapiclient  # noqa: F401
         import google_auth_oauthlib  # noqa: F401
@@ -126,7 +126,7 @@ def _ensure_deps():
 
 
 def check_auth():
-    """Check if stored credentials are valid. Prints status, exits 0 or 1."""
+    """检查存储的凭据是否有效。打印状态，退出码 0 或 1。"""
     if not TOKEN_PATH.exists():
         print(f"NOT_AUTHENTICATED: No token at {TOKEN_PATH}")
         return False
@@ -136,10 +136,9 @@ def check_auth():
     from google.auth.transport.requests import Request
 
     try:
-        # Don't pass scopes — user may have authorized only a subset.
-        # Passing scopes forces google-auth to validate them on refresh,
-        # which fails with invalid_scope if the token has fewer scopes
-        # than requested.
+        # 不传入 scopes——用户可能只授权了部分权限。
+        # 传入 scopes 会强制 google-auth 在刷新时验证它们，
+        # 如果令牌的权限少于请求的权限，则会以 invalid_scope 失败。
         creds = Credentials.from_authorized_user_file(str(TOKEN_PATH))
     except Exception as e:
         print(f"TOKEN_CORRUPT: {e}")
@@ -180,7 +179,7 @@ def check_auth():
 
 
 def store_client_secret(path: str):
-    """Copy and validate client_secret.json to Hermes home."""
+    """复制并验证 client_secret.json 到 Hermes 主目录。"""
     src = Path(path).expanduser().resolve()
     if not src.exists():
         print(f"ERROR: File not found: {src}")
@@ -202,7 +201,7 @@ def store_client_secret(path: str):
 
 
 def _save_pending_auth(*, state: str, code_verifier: str):
-    """Persist the OAuth session bits needed for a later token exchange."""
+    """持久化后续令牌交换所需的 OAuth 会话数据。"""
     PENDING_AUTH_PATH.write_text(
         json.dumps(
             {
@@ -216,7 +215,7 @@ def _save_pending_auth(*, state: str, code_verifier: str):
 
 
 def _load_pending_auth() -> dict:
-    """Load the pending OAuth session created by get_auth_url()."""
+    """加载由 get_auth_url() 创建的待处理 OAuth 会话。"""
     if not PENDING_AUTH_PATH.exists():
         print("ERROR: No pending OAuth session found. Run --auth-url first.")
         sys.exit(1)
@@ -237,7 +236,7 @@ def _load_pending_auth() -> dict:
 
 
 def _extract_code_and_state(code_or_url: str) -> tuple[str, str | None]:
-    """Accept either a raw auth code or the full redirect URL pasted by the user."""
+    """接受原始授权码或用户粘贴的完整重定向 URL。"""
     if not code_or_url.startswith("http"):
         return code_or_url, None
 
@@ -254,7 +253,7 @@ def _extract_code_and_state(code_or_url: str) -> tuple[str, str | None]:
 
 
 def get_auth_url():
-    """Print the OAuth authorization URL. User visits this in a browser."""
+    """打印 OAuth 授权 URL。用户在浏览器中访问此 URL。"""
     if not CLIENT_SECRET_PATH.exists():
         print("ERROR: No client secret stored. Run --client-secret first.")
         sys.exit(1)
@@ -273,12 +272,12 @@ def get_auth_url():
         prompt="consent",
     )
     _save_pending_auth(state=state, code_verifier=flow.code_verifier)
-    # Print just the URL so the agent can extract it cleanly
+    # 仅打印 URL，以便 Agent 可以干净地提取
     print(auth_url)
 
 
 def exchange_auth_code(code: str):
-    """Exchange the authorization code for a token and save it."""
+    """用授权码交换令牌并保存。"""
     if not CLIENT_SECRET_PATH.exists():
         print("ERROR: No client secret stored. Run --client-secret first.")
         sys.exit(1)
@@ -293,11 +292,11 @@ def exchange_auth_code(code: str):
     from google_auth_oauthlib.flow import Flow
     from urllib.parse import parse_qs, urlparse
 
-    # Extract granted scopes from the callback URL if present
+    # 如果回调 URL 中存在已授权的权限范围，则提取
     if returned_state and "scope" in parse_qs(urlparse(code).query if isinstance(code, str) and code.startswith("http") else {}):
         granted_scopes = parse_qs(urlparse(code).query)["scope"][0].split()
     else:
-        # Try to extract from code_or_url parameter
+        # 尝试从 code_or_url 参数中提取
         if isinstance(code, str) and code.startswith("http"):
             params = parse_qs(urlparse(code).query)
             if "scope" in params:
@@ -316,7 +315,7 @@ def exchange_auth_code(code: str):
     )
 
     try:
-        # Accept partial scopes — user may deselect some permissions in the consent screen
+        # 接受部分权限——用户可能在同意页面取消选择了某些权限
         os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
         flow.fetch_token(code=code)
     except Exception as e:
@@ -327,14 +326,14 @@ def exchange_auth_code(code: str):
     creds = flow.credentials
     token_payload = _normalize_authorized_user_payload(json.loads(creds.to_json()))
 
-    # Store only the scopes actually granted by the user, not what was requested.
-    # creds.to_json() writes the requested scopes, which causes refresh to fail
-    # with invalid_scope if the user only authorized a subset.
+    # 仅存储用户实际授权的权限范围，而非请求的权限范围。
+    # creds.to_json() 写入的是请求的权限范围，如果用户只授权了部分权限，
+    # 刷新时会以 invalid_scope 失败。
     actually_granted = list(creds.granted_scopes or []) if hasattr(creds, "granted_scopes") and creds.granted_scopes else []
     if actually_granted:
         token_payload["scopes"] = actually_granted
     elif granted_scopes != SCOPES:
-        # granted_scopes was extracted from the callback URL
+        # granted_scopes 是从回调 URL 中提取的
         token_payload["scopes"] = granted_scopes
 
     missing_scopes = _missing_scopes_from_payload(token_payload)
@@ -349,7 +348,7 @@ def exchange_auth_code(code: str):
 
 
 def revoke():
-    """Revoke stored token and delete it."""
+    """吊销存储的令牌并删除。"""
     if not TOKEN_PATH.exists():
         print("No token to revoke.")
         return

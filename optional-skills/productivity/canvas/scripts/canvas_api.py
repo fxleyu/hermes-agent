@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Canvas LMS API CLI for Hermes Agent.
+"""Canvas LMS API CLI（Hermes Agent 专用）。
 
-A thin CLI wrapper around the Canvas REST API.
-Authenticates using a personal access token from environment variables.
+围绕 Canvas REST API 的轻量 CLI 封装。
+使用环境变量中的个人访问令牌进行认证。
 
-Usage:
+用法:
   python canvas_api.py list_courses [--per-page N] [--enrollment-state STATE]
   python canvas_api.py list_assignments COURSE_ID [--per-page N] [--order-by FIELD]
 """
@@ -21,7 +21,7 @@ CANVAS_BASE_URL = os.environ.get("CANVAS_BASE_URL", "").rstrip("/")
 
 
 def _check_config():
-    """Validate required environment variables are set."""
+    """验证必需的环境变量已设置。"""
     missing = []
     if not CANVAS_API_TOKEN:
         missing.append("CANVAS_API_TOKEN")
@@ -42,13 +42,13 @@ def _headers():
 
 
 def _paginated_get(url, params=None, max_items=200):
-    """Fetch all pages up to max_items, following Canvas Link headers."""
+    """获取所有分页数据（最多 max_items 条），跟踪 Canvas Link 头部。"""
     results = []
     while url and len(results) < max_items:
         resp = requests.get(url, headers=_headers(), params=params, timeout=30)
         resp.raise_for_status()
         results.extend(resp.json())
-        params = None  # params are included in the Link URL for subsequent pages
+        params = None  # 后续页面的参数已包含在 Link URL 中
         url = None
         link = resp.headers.get("Link", "")
         for part in link.split(","):
@@ -58,12 +58,12 @@ def _paginated_get(url, params=None, max_items=200):
 
 
 # =========================================================================
-# Commands
+# 命令
 # =========================================================================
 
 
 def list_courses(args):
-    """List enrolled courses."""
+    """列出已注册的课程。"""
     _check_config()
     url = f"{CANVAS_BASE_URL}/api/v1/courses"
     params = {"per_page": args.per_page}
@@ -90,7 +90,7 @@ def list_courses(args):
 
 
 def list_assignments(args):
-    """List assignments for a course."""
+    """列出课程的作业。"""
     _check_config()
     url = f"{CANVAS_BASE_URL}/api/v1/courses/{args.course_id}/assignments"
     params = {"per_page": args.per_page}
@@ -118,7 +118,7 @@ def list_assignments(args):
 
 
 # =========================================================================
-# CLI parser
+# 命令行解析器
 # =========================================================================
 
 

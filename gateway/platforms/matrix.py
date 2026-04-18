@@ -1,25 +1,24 @@
-"""Matrix gateway adapter.
+"""Matrix 网关适配器。
 
-Connects to any Matrix homeserver (self-hosted or matrix.org) via the
-mautrix Python SDK.  Supports optional end-to-end encryption (E2EE)
-when installed with ``pip install "mautrix[encryption]"``.
+通过 mautrix Python SDK 连接到任意 Matrix 主服务器（自托管或 matrix.org）。
+安装 ``pip install "mautrix[encryption]"`` 后可支持端到端加密（E2EE）。
 
-Environment variables:
-    MATRIX_HOMESERVER           Homeserver URL (e.g. https://matrix.example.org)
-    MATRIX_ACCESS_TOKEN         Access token (preferred auth method)
-    MATRIX_USER_ID              Full user ID (@bot:server) — required for password login
-    MATRIX_PASSWORD             Password (alternative to access token)
-    MATRIX_ENCRYPTION           Set "true" to enable E2EE
-    MATRIX_DEVICE_ID            Stable device ID for E2EE persistence across restarts
-    MATRIX_ALLOWED_USERS    Comma-separated Matrix user IDs (@user:server)
-    MATRIX_HOME_ROOM        Room ID for cron/notification delivery
-    MATRIX_REACTIONS        Set "false" to disable processing lifecycle reactions
-                            (eyes/checkmark/cross). Default: true
-    MATRIX_REQUIRE_MENTION      Require @mention in rooms (default: true)
-    MATRIX_FREE_RESPONSE_ROOMS  Comma-separated room IDs exempt from mention requirement
-    MATRIX_AUTO_THREAD          Auto-create threads for room messages (default: true)
-    MATRIX_RECOVERY_KEY         Recovery key for cross-signing verification after device key rotation
-    MATRIX_DM_MENTION_THREADS   Create a thread when bot is @mentioned in a DM (default: false)
+环境变量：
+    MATRIX_HOMESERVER           主服务器 URL（例如 https://matrix.example.org）
+    MATRIX_ACCESS_TOKEN         访问令牌（推荐的认证方式）
+    MATRIX_USER_ID              完整用户 ID（@bot:server）——密码登录时必填
+    MATRIX_PASSWORD             密码（访问令牌的替代方案）
+    MATRIX_ENCRYPTION           设置 "true" 启用 E2EE
+    MATRIX_DEVICE_ID            稳定的设备 ID，用于跨重启的 E2EE 持久化
+    MATRIX_ALLOWED_USERS    逗号分隔的 Matrix 用户 ID（@user:server）
+    MATRIX_HOME_ROOM        用于定时/通知消息投递的房间 ID
+    MATRIX_REACTIONS        设置 "false" 禁用处理生命周期反应
+                            （眼睛/勾选/叉号）。默认：true
+    MATRIX_REQUIRE_MENTION      在房间中要求 @提及（默认：true）
+    MATRIX_FREE_RESPONSE_ROOMS  逗号分隔的免提及要求的房间 ID
+    MATRIX_AUTO_THREAD          自动为房间消息创建线程（默认：true）
+    MATRIX_RECOVERY_KEY         跨签名验证的恢复密钥（设备密钥轮换后使用）
+    MATRIX_DM_MENTION_THREADS   在私信中被 @提及时创建线程（默认：false）
 """
 
 from __future__ import annotations
@@ -48,10 +47,9 @@ try:
         UserID,
     )
 except ImportError:
-    # Stubs so the module is importable without mautrix installed.
-    # check_matrix_requirements() will return False and the adapter
-    # won't be instantiated in production, but tests may exercise
-    # adapter methods so stubs must have the right attributes.
+    # 桩实现，使模块在未安装 mautrix 时仍可导入。
+    # check_matrix_requirements() 会返回 False，适配器不会在生产环境中实例化，
+    # 但测试可能会使用适配器方法，因此桩必须有正确的属性。
     ContentURI = EventID = RoomID = SyncToken = UserID = str  # type: ignore[misc,assignment]
 
     class _EventTypeStub:  # type: ignore[no-redef]
@@ -100,18 +98,18 @@ from gateway.platforms.helpers import ThreadParticipationTracker
 
 logger = logging.getLogger(__name__)
 
-# Matrix message size limit (4000 chars practical, spec has no hard limit
-# but clients render poorly above this).
+# Matrix 消息大小限制（实际 4000 字符，规范没有硬性限制，
+# 但客户端在超过此值时渲染效果不佳）。
 MAX_MESSAGE_LENGTH = 4000
 
-# Store directory for E2EE keys and sync state.
-# Uses get_hermes_home() so each profile gets its own Matrix store.
+# E2EE 密钥和同步状态的存储目录。
+# 使用 get_hermes_home()，每个配置文件有自己的 Matrix 存储。
 from hermes_constants import get_hermes_dir as _get_hermes_dir
 
 _STORE_DIR = _get_hermes_dir("platforms/matrix/store", "matrix/store")
 _CRYPTO_DB_PATH = _STORE_DIR / "crypto.db"
 
-# Grace period: ignore messages older than this many seconds before startup.
+# 启动宽限期：忽略启动前超过此秒数的旧消息。
 _STARTUP_GRACE_SECONDS = 5
 
 
@@ -121,7 +119,7 @@ _E2EE_INSTALL_HINT = (
 
 
 def _check_e2ee_deps() -> bool:
-    """Return True if mautrix E2EE dependencies (python-olm) are available."""
+    """检查 mautrix E2EE 依赖项（python-olm）是否可用。"""
     try:
         from mautrix.crypto import OlmMachine  # noqa: F401
 
@@ -131,7 +129,7 @@ def _check_e2ee_deps() -> bool:
 
 
 def check_matrix_requirements() -> bool:
-    """Return True if the Matrix adapter can be used."""
+    """检查 Matrix 适配器是否可用。"""
     token = os.getenv("MATRIX_ACCESS_TOKEN", "")
     password = os.getenv("MATRIX_PASSWORD", "")
     homeserver = os.getenv("MATRIX_HOMESERVER", "")
@@ -150,8 +148,8 @@ def check_matrix_requirements() -> bool:
         )
         return False
 
-    # If encryption is requested, verify E2EE deps are available at startup
-    # rather than silently degrading to plaintext-only at connect time.
+    # 如果请求加密，在启动时验证 E2EE 依赖是否可用，
+    # 而不是在连接时静默降级为纯文本。
     encryption_requested = os.getenv("MATRIX_ENCRYPTION", "").lower() in (
         "true",
         "1",
@@ -170,13 +168,12 @@ def check_matrix_requirements() -> bool:
 
 
 class _CryptoStateStore:
-    """Adapter that satisfies the mautrix crypto StateStore interface.
+    """满足 mautrix 加密 StateStore 接口的适配器。
 
-    OlmMachine requires a StateStore with ``is_encrypted``,
-    ``get_encryption_info``, and ``find_shared_rooms``.  The basic
-    ``MemoryStateStore`` from ``mautrix.client`` doesn't implement these,
-    so we provide simple implementations that consult the client's room
-    state.
+    OlmMachine 需要带有 ``is_encrypted``、``get_encryption_info``
+    和 ``find_shared_rooms`` 的 StateStore。``mautrix.client`` 的基础
+    ``MemoryStateStore`` 未实现这些方法，因此我们提供查询客户端
+    房间状态的简单实现。
     """
 
     def __init__(self, client_state_store: Any, joined_rooms: set):
@@ -192,16 +189,15 @@ class _CryptoStateStore:
         return None
 
     async def find_shared_rooms(self, user_id: str) -> list:
-        # Return all joined rooms — simple but correct for a single-user bot.
+        # 返回所有已加入的房间——简单但对于单用户机器人是正确的。
         return list(self._joined_rooms)
 
 
 class MatrixAdapter(BasePlatformAdapter):
-    """Gateway adapter for Matrix (any homeserver)."""
+    """Matrix（任意主服务器）网关适配器。"""
 
-    # Threshold for detecting Matrix client-side message splits.
-    # When a chunk is near the ~4000-char practical limit, a continuation
-    # is almost certain.
+    # 检测 Matrix 客户端侧消息分割的阈值。
+    # 当分块接近约 4000 字符的实际限制时，几乎必然有后续分块。
     _SPLIT_THRESHOLD = 3900
 
     def __init__(self, config: PlatformConfig):
@@ -231,23 +227,23 @@ class MatrixAdapter(BasePlatformAdapter):
         self._closing = False
         self._startup_ts: float = 0.0
 
-        # Cache: room_id → bool (is DM)
+        # 缓存：room_id → bool（是否为私信）
         self._dm_rooms: Dict[str, bool] = {}
-        # Set of room IDs we've joined
+        # 已加入的房间 ID 集合
         self._joined_rooms: Set[str] = set()
-        # Event deduplication (bounded deque keeps newest entries)
+        # 事件去重（有界 deque 保留最新条目）
         from collections import deque
 
         self._processed_events: deque = deque(maxlen=1000)
         self._processed_events_set: set = set()
 
-        # Buffer for undecrypted events pending key receipt.
-        # Each entry: (room_id, event, timestamp)
+        # 等待密钥接收的未解密事件缓冲区
+        # 每个条目：(room_id, event, timestamp)
 
-        # Thread participation tracking (for require_mention bypass)
+        # 线程参与跟踪（用于绕过 require_mention）
         self._threads = ThreadParticipationTracker("matrix")
 
-        # Mention/thread gating — parsed once from env vars.
+        # 提及/线程门控——从环境变量解析一次
         self._require_mention: bool = os.getenv(
             "MATRIX_REQUIRE_MENTION", "true"
         ).lower() not in ("false", "0", "no")
@@ -264,14 +260,14 @@ class MatrixAdapter(BasePlatformAdapter):
             "MATRIX_DM_MENTION_THREADS", "false"
         ).lower() in ("true", "1", "yes")
 
-        # Reactions: configurable via MATRIX_REACTIONS (default: true).
+        # 反应：通过 MATRIX_REACTIONS 配置（默认：true）
         self._reactions_enabled: bool = os.getenv(
             "MATRIX_REACTIONS", "true"
         ).lower() not in ("false", "0", "no")
         self._pending_reactions: dict[tuple[str, str], str] = {}
 
-        # Text batching: merge rapid successive messages (Telegram-style).
-        # Matrix clients split long messages around 4000 chars.
+        # 文本批处理：合并快速连续消息（Telegram 风格）。
+        # Matrix 客户端会在约 4000 字符处拆分长消息。
         self._text_batch_delay_seconds = float(
             os.getenv("HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS", "0.6")
         )
@@ -282,7 +278,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
 
     def _is_duplicate_event(self, event_id) -> bool:
-        """Return True if this event was already processed. Tracks the ID otherwise."""
+        """如果事件已处理过则返回 True，否则记录该 ID。"""
         if not event_id:
             return False
         if event_id in self._processed_events_set:
@@ -295,12 +291,12 @@ class MatrixAdapter(BasePlatformAdapter):
         return False
 
     # ------------------------------------------------------------------
-    # E2EE helpers
+    # E2EE 辅助方法
     # ------------------------------------------------------------------
 
     @staticmethod
     def _extract_server_ed25519(device_keys_obj: Any) -> Optional[str]:
-        """Extract the ed25519 identity key from a DeviceKeys object."""
+        """从 DeviceKeys 对象中提取 ed25519 身份密钥。"""
         for kid, kval in (getattr(device_keys_obj, "keys", {}) or {}).items():
             if str(kid).startswith("ed25519:"):
                 return str(kval)
@@ -309,7 +305,7 @@ class MatrixAdapter(BasePlatformAdapter):
     async def _reverify_keys_after_upload(
         self, client: Any, local_ed25519: str
     ) -> bool:
-        """Re-query the server after share_keys() and verify our ed25519 key matches."""
+        """在 share_keys() 后重新查询服务器并验证我们的 ed25519 密钥匹配。"""
         try:
             resp = await client.query_keys({client.mxid: [client.device_id]})
             dk = getattr(resp, "device_keys", {}) or {}
@@ -331,10 +327,10 @@ class MatrixAdapter(BasePlatformAdapter):
         return True
 
     async def _verify_device_keys_on_server(self, client: Any, olm: Any) -> bool:
-        """Verify our device keys are on the homeserver after loading crypto state.
+        """加载加密状态后验证设备密钥是否在主服务器上。
 
-        Returns True if keys are valid or were successfully re-uploaded.
-        Returns False if verification fails (caller should refuse E2EE).
+        密钥有效或成功重新上传时返回 True。
+        验证失败时返回 False（调用者应拒绝 E2EE）。
         """
         try:
             resp = await client.query_keys({client.mxid: [client.device_id]})
@@ -403,11 +399,11 @@ class MatrixAdapter(BasePlatformAdapter):
         return True
 
     # ------------------------------------------------------------------
-    # Required overrides
+    # 必需的方法覆盖
     # ------------------------------------------------------------------
 
     async def connect(self) -> bool:
-        """Connect to the Matrix homeserver and start syncing."""
+        """连接到 Matrix 主服务器并开始同步。"""
         from mautrix.api import HTTPAPI
         from mautrix.client import Client
         from mautrix.client.state_store import MemoryStateStore, MemorySyncStore
@@ -416,16 +412,16 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.error("Matrix: homeserver URL not configured")
             return False
 
-        # Ensure store dir exists for E2EE key persistence.
+        # 确保存储目录存在以持久化 E2EE 密钥
         _STORE_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Create the HTTP API layer.
+        # 创建 HTTP API 层
         api = HTTPAPI(
             base_url=self._homeserver,
             token=self._access_token or "",
         )
 
-        # Create the client.
+        # 创建客户端
         state_store = MemoryStateStore()
         sync_store = MemorySyncStore()
         client = Client(
@@ -438,11 +434,11 @@ class MatrixAdapter(BasePlatformAdapter):
 
         self._client = client
 
-        # Authenticate.
+        # 认证
         if self._access_token:
             api.token = self._access_token
 
-            # Validate the token and learn user_id / device_id.
+            # 验证令牌并获取 user_id / device_id
             try:
                 resp = await client.whoami()
                 resolved_user_id = getattr(resp, "user_id", "") or self._user_id
@@ -451,7 +447,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     self._user_id = str(resolved_user_id)
                     client.mxid = UserID(self._user_id)
 
-                # Prefer user-configured device_id for stable E2EE identity.
+                # 优先使用用户配置的 device_id 以保持稳定的 E2EE 身份
                 effective_device_id = self._device_id or resolved_device_id
                 if effective_device_id:
                     client.device_id = effective_device_id
@@ -490,7 +486,7 @@ class MatrixAdapter(BasePlatformAdapter):
             await api.session.close()
             return False
 
-        # Set up E2EE if requested.
+        # 如果请求了 E2EE 则进行设置
         if self._encryption:
             if not _check_e2ee_deps():
                 logger.error(
@@ -507,7 +503,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
                 _STORE_DIR.mkdir(parents=True, exist_ok=True)
 
-                # Remove legacy pickle file from pre-SQLite era.
+                # 删除 pre-SQLite 时代的旧 pickle 文件
                 legacy_pickle = _STORE_DIR / "crypto_store.pickle"
                 if legacy_pickle.exists():
                     logger.info(
@@ -515,7 +511,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     )
                     legacy_pickle.unlink()
 
-                # Open SQLite-backed crypto store.
+                # 打开 SQLite 支持的加密存储
                 crypto_db = Database.create(
                     f"sqlite:///{_CRYPTO_DB_PATH}",
                     upgrade_table=PgCryptoStore.upgrade_table,
@@ -535,26 +531,23 @@ class MatrixAdapter(BasePlatformAdapter):
                 crypto_state = _CryptoStateStore(state_store, self._joined_rooms)
                 olm = OlmMachine(client, crypto_store, crypto_state)
 
-                # Accept unverified devices so senders share Megolm
-                # session keys with us automatically.
+                # 接受未验证设备，以便发送者自动与我们共享 Megolm 会话密钥
                 olm.share_keys_min_trust = TrustState.UNVERIFIED
                 olm.send_keys_min_trust = TrustState.UNVERIFIED
 
                 await olm.load()
 
-                # Verify our device keys are still on the homeserver.
+                # 验证设备密钥是否仍在主服务器上
                 if not await self._verify_device_keys_on_server(client, olm):
                     await crypto_db.stop()
                     await api.session.close()
                     return False
 
-                # Proactively flush one-time keys to detect stale OTK
-                # conflicts early.  When crypto state is wiped but the
-                # same device ID is reused, the server may still hold OTKs
-                # signed with the old ed25519 key.  Identity key re-upload
-                # succeeds but OTK uploads fail ("already exists" with
-                # mismatched signature).  Peers then cannot establish Olm
-                # sessions and all new messages are undecryptable.
+                # 主动刷新一次性密钥以尽早检测过期的 OTK 冲突。
+                # 当加密状态被清除但复用相同的设备 ID 时，服务器可能仍持有
+                # 用旧 ed25519 密钥签名的 OTK。身份密钥重新上传成功但
+                # OTK 上传失败（"already exists"签名不匹配）。
+                # 此时对端无法建立 Olm 会话，所有新消息都无法解密。
                 try:
                     await olm.share_keys()
                 except Exception as exc:
@@ -572,18 +565,15 @@ class MatrixAdapter(BasePlatformAdapter):
                         await crypto_db.stop()
                         await api.session.close()
                         return False
-                    # Non-OTK errors are transient (network, etc.) — log
-                    # but allow startup to continue.
+                    # 非 OTK 错误是临时性的（网络等）——记录日志但允许启动继续
                     logger.warning(
                         "Matrix: share_keys() warning during startup: %s",
                         exc,
                     )
 
-                # Import cross-signing private keys from SSSS and self-sign
-                # the current device. Required after any device-key rotation
-                # (fresh crypto.db, share_keys re-upload) — otherwise the
-                # device's self-signing signature is stale and peers refuse
-                # to share Megolm sessions with the rotated device.
+                # 从 SSSS 导入跨签名私钥并自签当前设备。
+                # 在任何设备密钥轮换（全新 crypto.db、share_keys 重新上传）后必须执行——
+                # 否则设备的自签名签名过期，对端会拒绝与轮换后的设备共享 Megolm 会话。
                 recovery_key = os.getenv("MATRIX_RECOVERY_KEY", "").strip()
                 if recovery_key:
                     try:
@@ -609,18 +599,18 @@ class MatrixAdapter(BasePlatformAdapter):
                 await api.session.close()
                 return False
 
-        # Register event handlers.
+        # 注册事件处理器
         from mautrix.client import InternalEventType as IntEvt
         from mautrix.client.dispatcher import MembershipEventDispatcher
 
-        # Without this the INVITE handler below never fires.
+        # 没有这个，下面的 INVITE 处理器永远不会触发
         client.add_dispatcher(MembershipEventDispatcher)
 
         client.add_event_handler(EventType.ROOM_MESSAGE, self._on_room_message)
         client.add_event_handler(EventType.REACTION, self._on_reaction)
         client.add_event_handler(IntEvt.INVITE, self._on_invite)
 
-        # Initial sync to catch up, then start background sync.
+        # 初始同步以追赶进度，然后启动后台同步
         self._startup_ts = time.time()
         self._closing = False
 
@@ -639,7 +629,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     "Matrix: initial sync complete, joined %d rooms",
                     len(self._joined_rooms),
                 )
-                # Build DM room cache from m.direct account data.
+                # 从 m.direct 帐户数据构建私信房间缓存
                 await self._refresh_dm_cache()
 
                 # Dispatch events from the initial sync so the OlmMachine
@@ -658,20 +648,20 @@ class MatrixAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("Matrix: initial sync error: %s", exc)
 
-        # Share keys after initial sync if E2EE is enabled.
+        # 如果启用了 E2EE，在初始同步后共享密钥
         if self._encryption and getattr(client, "crypto", None):
             try:
                 await client.crypto.share_keys()
             except Exception as exc:
                 logger.warning("Matrix: initial key share failed: %s", exc)
 
-        # Start the sync loop.
+        # 启动同步循环
         self._sync_task = asyncio.create_task(self._sync_loop())
         self._mark_connected()
         return True
 
     async def disconnect(self) -> None:
-        """Disconnect from Matrix."""
+        """从 Matrix 断开连接。"""
         self._closing = True
 
         if self._sync_task and not self._sync_task.done():
@@ -681,7 +671,7 @@ class MatrixAdapter(BasePlatformAdapter):
             except (asyncio.CancelledError, Exception):
                 pass
 
-        # Close the SQLite crypto store database.
+        # 关闭 SQLite 加密存储数据库
         if hasattr(self, "_crypto_db") and self._crypto_db:
             try:
                 await self._crypto_db.stop()
@@ -704,7 +694,7 @@ class MatrixAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a message to a Matrix room."""
+        """向 Matrix 房间发送消息。"""
 
         if not content:
             return SendResult(success=True)
@@ -719,17 +709,17 @@ class MatrixAdapter(BasePlatformAdapter):
                 "body": chunk,
             }
 
-            # Convert markdown to HTML for rich rendering.
+            # 将 Markdown 转换为 HTML 以进行富文本渲染
             html = self._markdown_to_html(chunk)
             if html and html != chunk:
                 msg_content["format"] = "org.matrix.custom.html"
                 msg_content["formatted_body"] = html
 
-            # Reply-to support.
+            # 回复支持
             if reply_to:
                 msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
 
-            # Thread support: if metadata has thread_id, send as threaded reply.
+            # 线程支持：如果 metadata 中有 thread_id，则作为线程回复发送
             thread_id = (metadata or {}).get("thread_id")
             if thread_id:
                 relates_to = msg_content.get("m.relates_to", {})
@@ -752,7 +742,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 last_event_id = str(event_id)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
             except Exception as exc:
-                # On E2EE errors, retry after sharing keys.
+                # E2EE 错误时，在共享密钥后重试
                 if self._encryption and getattr(self._client, "crypto", None):
                     try:
                         await self._client.crypto.share_keys()
@@ -784,7 +774,7 @@ class MatrixAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id=last_event_id)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
-        """Return room name and type (dm/group)."""
+        """返回房间名称和类型（dm/group）。"""
         name = chat_id
         chat_type = "dm" if await self._is_dm_room(chat_id) else "group"
 
@@ -802,13 +792,13 @@ class MatrixAdapter(BasePlatformAdapter):
         return {"name": name, "type": chat_type}
 
     # ------------------------------------------------------------------
-    # Optional overrides
+    # 可选的方法覆盖
     # ------------------------------------------------------------------
 
     async def send_typing(
         self, chat_id: str, metadata: Optional[Dict[str, Any]] = None
     ) -> None:
-        """Send a typing indicator."""
+        """发送正在输入的指示器。"""
         if self._client:
             try:
                 await self._client.set_typing(RoomID(chat_id), timeout=30000)
@@ -816,7 +806,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 pass
 
     async def stop_typing(self, chat_id: str) -> None:
-        """Clear the typing indicator."""
+        """清除正在输入的指示器。"""
         if self._client:
             try:
                 await self._client.set_typing(RoomID(chat_id), timeout=0)
@@ -827,7 +817,7 @@ class MatrixAdapter(BasePlatformAdapter):
     async def edit_message(
         self, chat_id: str, message_id: str, content: str
     ) -> SendResult:
-        """Edit an existing message (via m.replace)."""
+        """编辑已有消息（通过 m.replace）。"""
 
         formatted = self.format_message(content)
         msg_content: Dict[str, Any] = {
@@ -868,7 +858,7 @@ class MatrixAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Download an image URL and upload it to Matrix."""
+        """下载图片 URL 并上传到 Matrix。"""
         from tools.url_safety import is_safe_url
 
         if not is_safe_url(image_url):
@@ -878,7 +868,7 @@ class MatrixAdapter(BasePlatformAdapter):
             )
 
         try:
-            # Try aiohttp first (always available), fall back to httpx
+            # 先尝试 aiohttp（始终可用），回退到 httpx
             try:
                 import aiohttp as _aiohttp
 
@@ -919,7 +909,7 @@ class MatrixAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Upload a local image file to Matrix."""
+        """上传本地图片文件到 Matrix。"""
         return await self._send_local_file(
             chat_id, image_path, "m.image", caption, reply_to, metadata=metadata
         )
@@ -933,7 +923,7 @@ class MatrixAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Upload a local file as a document."""
+        """上传本地文件作为文档。"""
         return await self._send_local_file(
             chat_id, file_path, "m.file", caption, reply_to, file_name, metadata
         )
@@ -946,7 +936,7 @@ class MatrixAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Upload an audio file as a voice message (MSC3245 native voice)."""
+        """上传音频文件作为语音消息（MSC3245 原生语音）。"""
         return await self._send_local_file(
             chat_id,
             audio_path,
@@ -965,19 +955,19 @@ class MatrixAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Upload a video file."""
+        """上传视频文件。"""
         return await self._send_local_file(
             chat_id, video_path, "m.video", caption, reply_to, metadata=metadata
         )
 
     def format_message(self, content: str) -> str:
-        """Pass-through — Matrix supports standard Markdown natively."""
-        # Strip image markdown; media is uploaded separately.
+        """直接透传——Matrix 原生支持标准 Markdown。"""
+        # 去除图片 Markdown；媒体文件单独上传
         content = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"\2", content)
         return content
 
     # ------------------------------------------------------------------
-    # File helpers
+    # 文件辅助方法
     # ------------------------------------------------------------------
 
     async def _upload_and_send(
@@ -992,7 +982,7 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         is_voice: bool = False,
     ) -> SendResult:
-        """Upload bytes to Matrix and send as a media message."""
+        """上传字节数据到 Matrix 并作为媒体消息发送。"""
 
         upload_data = data
         encrypted_file = None
@@ -1011,7 +1001,7 @@ class MatrixAdapter(BasePlatformAdapter):
                         logger.error("Matrix: attachment encryption failed: %s", exc)
                         return SendResult(success=False, error=str(exc))
 
-        # Upload to homeserver.
+        # 上传到主服务器
         try:
             mxc_url = await self._client.upload_media(
                 upload_data,
@@ -1023,7 +1013,7 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.error("Matrix: upload failed: %s", exc)
             return SendResult(success=False, error=str(exc))
 
-        # Build media message content.
+        # 构建媒体消息内容
         msg_content: Dict[str, Any] = {
             "msgtype": msgtype,
             "body": caption or filename,
@@ -1039,7 +1029,7 @@ class MatrixAdapter(BasePlatformAdapter):
         else:
             msg_content["url"] = str(mxc_url)
 
-        # Add MSC3245 voice flag for native voice messages.
+        # 为原生语音消息添加 MSC3245 语音标记
         if is_voice:
             msg_content["org.matrix.msc3245.voice"] = {}
 
@@ -1075,7 +1065,7 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         is_voice: bool = False,
     ) -> SendResult:
-        """Read a local file and upload it."""
+        """读取本地文件并上传。"""
         p = Path(file_path).expanduser()
         if not p.exists():
             return await self.send(
@@ -1091,13 +1081,13 @@ class MatrixAdapter(BasePlatformAdapter):
         )
 
     # ------------------------------------------------------------------
-    # Sync loop
+    # 同步循环
     # ------------------------------------------------------------------
 
     async def _sync_loop(self) -> None:
-        """Continuously sync with the homeserver."""
+        """持续与主服务器同步。"""
         client = self._client
-        # Resume from the token stored during the initial sync.
+        # 从初始同步期间存储的令牌恢复
         next_batch = await client.sync_store.get_next_batch()
         while not self._closing:
             try:
@@ -1106,8 +1096,8 @@ class MatrixAdapter(BasePlatformAdapter):
                     timeout=30000,
                 )
 
-                # nio returns SyncError objects (not exceptions) for auth
-                # failures like M_UNKNOWN_TOKEN.  Detect and stop immediately.
+                # nio 对认证失败（如 M_UNKNOWN_TOKEN）返回 SyncError 对象（而非异常）。
+                # 检测并立即停止。
                 _sync_msg = getattr(sync_data, "message", None)
                 if _sync_msg and isinstance(_sync_msg, str):
                     _lower = _sync_msg.lower()
@@ -1119,20 +1109,19 @@ class MatrixAdapter(BasePlatformAdapter):
                         return
 
                 if isinstance(sync_data, dict):
-                    # Update joined rooms from sync response.
+                    # 从同步响应更新已加入的房间
                     rooms_join = sync_data.get("rooms", {}).get("join", {})
                     if rooms_join:
                         self._joined_rooms.update(rooms_join.keys())
 
-                    # Advance the sync token so the next request is
-                    # incremental instead of a full initial sync.
+                    # 推进同步令牌以便下次请求是增量同步而非完整初始同步
                     nb = sync_data.get("next_batch")
                     if nb:
                         next_batch = nb
                         await client.sync_store.put_next_batch(nb)
 
-                    # Dispatch events to registered handlers so that
-                    # _on_room_message / _on_reaction / _on_invite fire.
+                    # 分发事件到已注册的处理器以便
+                    # _on_room_message / _on_reaction / _on_invite 触发
                     try:
                         tasks = client.handle_sync(sync_data)
                         if tasks:
@@ -1145,7 +1134,7 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception as exc:
                 if self._closing:
                     return
-                # Detect permanent auth/permission failures.
+                # 检测永久性认证/权限失败
                 err_str = str(exc).lower()
                 if (
                     "401" in err_str
@@ -1161,24 +1150,24 @@ class MatrixAdapter(BasePlatformAdapter):
                 await asyncio.sleep(5)
 
     # ------------------------------------------------------------------
-    # Event callbacks
+    # 事件回调
     # ------------------------------------------------------------------
 
     async def _on_room_message(self, event: Any) -> None:
-        """Handle incoming room message events (text, media)."""
+        """处理传入的房间消息事件（文本、媒体）。"""
         room_id = str(getattr(event, "room_id", ""))
         sender = str(getattr(event, "sender", ""))
 
-        # Ignore own messages.
+        # 忽略自己的消息
         if sender == self._user_id:
             return
 
-        # Deduplicate by event ID.
+        # 通过事件 ID 去重
         event_id = str(getattr(event, "event_id", ""))
         if self._is_duplicate_event(event_id):
             return
 
-        # Startup grace: ignore old messages from initial sync.
+        # 启动宽限期：忽略初始同步中的旧消息
         raw_ts = (
             getattr(event, "timestamp", None)
             or getattr(event, "server_timestamp", None)
@@ -1188,12 +1177,12 @@ class MatrixAdapter(BasePlatformAdapter):
         if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS:
             return
 
-        # Extract content from the event.
+        # 从事件中提取内容
         content = getattr(event, "content", None)
         if content is None:
             return
 
-        # Get msgtype — either from content object or raw dict.
+        # 获取 msgtype——从 content 对象或原始字典中获取
         if hasattr(content, "msgtype"):
             msgtype = str(content.msgtype)
         elif isinstance(content, dict):
@@ -1201,7 +1190,7 @@ class MatrixAdapter(BasePlatformAdapter):
         else:
             msgtype = ""
 
-        # Determine source content dict for relation/thread extraction.
+        # 确定用于关系/线程提取的源内容字典
         if isinstance(content, dict):
             source_content = content
         elif hasattr(content, "serialize"):
@@ -1211,16 +1200,16 @@ class MatrixAdapter(BasePlatformAdapter):
 
         relates_to = source_content.get("m.relates_to", {})
 
-        # Skip edits (m.replace relation).
+        # 跳过编辑（m.replace 关系）
         if relates_to.get("rel_type") == "m.replace":
             return
 
-        # Ignore m.notice to prevent bot-to-bot loops (m.notice is the
-        # conventional msgtype for bot responses in the Matrix ecosystem).
+        # 忽略 m.notice 以防止机器人之间的循环
+        # （m.notice 是 Matrix 生态系统中机器人响应的惯用 msgtype）
         if msgtype == "m.notice":
             return
 
-        # Dispatch by msgtype.
+        # 按 msgtype 分发
         media_msgtypes = ("m.image", "m.audio", "m.video", "m.file")
         if msgtype in media_msgtypes:
             await self._handle_media_message(
@@ -1240,10 +1229,10 @@ class MatrixAdapter(BasePlatformAdapter):
         source_content: dict,
         relates_to: dict,
     ) -> Optional[tuple]:
-        """Shared mention/thread/DM gating for text and media handlers.
+        """文本和媒体处理器共享的提及/线程/私信门控逻辑。
 
-        Returns (body, is_dm, chat_type, thread_id, display_name, source)
-        or None if the message should be dropped (mention gating).
+        返回 (body, is_dm, chat_type, thread_id, display_name, source)
+        或当消息应被丢弃时（提及门控）返回 None。
         """
         is_dm = await self._is_dm_room(room_id)
         chat_type = "dm" if is_dm else "group"
@@ -1253,14 +1242,14 @@ class MatrixAdapter(BasePlatformAdapter):
             thread_id = relates_to.get("event_id")
 
         formatted_body = source_content.get("formatted_body")
-        # m.mentions.user_ids (MSC3952 / Matrix v1.7) — authoritative mention signal.
+        # m.mentions.user_ids（MSC3952 / Matrix v1.7）——权威的提及信号
         mentions_block = source_content.get("m.mentions") or {}
         mention_user_ids = (
             mentions_block.get("user_ids") if isinstance(mentions_block, dict) else None
         )
         is_mentioned = self._is_bot_mentioned(body, formatted_body, mention_user_ids)
 
-        # Require-mention gating.
+        # 要求提及门控
         if not is_dm:
             is_free_room = room_id in self._free_rooms
             in_bot_thread = bool(thread_id and thread_id in self._threads)
@@ -1268,16 +1257,16 @@ class MatrixAdapter(BasePlatformAdapter):
                 if not is_mentioned:
                     return None
 
-        # DM mention-thread.
+        # 私信提及线程
         if is_dm and not thread_id and self._dm_mention_threads and is_mentioned:
             thread_id = event_id
             self._threads.mark(thread_id)
 
-        # Strip mention from body (only when mention-gating is active).
+        # 从正文中去除提及（仅在提及门控激活时）
         if is_mentioned and self._require_mention:
             body = self._strip_mention(body)
 
-        # Auto-thread.
+        # 自动创建线程
         if not is_dm and not thread_id and self._auto_thread:
             thread_id = event_id
             self._threads.mark(thread_id)
@@ -1307,7 +1296,7 @@ class MatrixAdapter(BasePlatformAdapter):
         source_content: dict,
         relates_to: dict,
     ) -> None:
-        """Process a text message event."""
+        """处理文本消息事件。"""
         body = source_content.get("body", "") or ""
         if not body:
             return
@@ -1324,13 +1313,13 @@ class MatrixAdapter(BasePlatformAdapter):
             return
         body, is_dm, chat_type, thread_id, display_name, source = ctx
 
-        # Reply-to detection.
+        # 回复检测
         reply_to = None
         in_reply_to = relates_to.get("m.in_reply_to", {})
         if in_reply_to:
             reply_to = in_reply_to.get("event_id")
 
-        # Strip reply fallback from body.
+        # 从正文中去除回复引用
         if reply_to and body.startswith("> "):
             lines = body.split("\n")
             stripped = []
@@ -1374,22 +1363,22 @@ class MatrixAdapter(BasePlatformAdapter):
         relates_to: dict,
         msgtype: str,
     ) -> None:
-        """Process a media message event (image, audio, video, file)."""
+        """处理媒体消息事件（图片、音频、视频、文件）。"""
         body = source_content.get("body", "") or ""
         url = source_content.get("url", "")
 
-        # Convert mxc:// to HTTP URL for downstream processing.
+        # 将 mxc:// 转换为 HTTP URL 供下游处理
         http_url = ""
         if url and url.startswith("mxc://"):
             http_url = self._mxc_to_http(url)
 
-        # Extract MIME type from content info.
+        # 从内容 info 中提取 MIME 类型
         content_info = source_content.get("info", {})
         if not isinstance(content_info, dict):
             content_info = {}
         event_mimetype = content_info.get("mimetype", "")
 
-        # For encrypted media, the URL may be in file.url.
+        # 对于加密媒体，URL 可能在 file.url 中
         file_content = source_content.get("file", {})
         if not url and isinstance(file_content, dict):
             url = file_content.get("url", "") or ""
@@ -1420,7 +1409,7 @@ class MatrixAdapter(BasePlatformAdapter):
         elif event_mimetype:
             media_type = event_mimetype
 
-        # Cache media locally when downstream tools need a real file path.
+        # 当下游工具需要真实文件路径时，将媒体缓存到本地
         cached_path = None
         should_cache_locally = msg_type in (
             MessageType.PHOTO, MessageType.AUDIO, MessageType.VIDEO, MessageType.DOCUMENT,
@@ -1541,7 +1530,7 @@ class MatrixAdapter(BasePlatformAdapter):
         await self.handle_message(msg_event)
 
     async def _on_invite(self, event: Any) -> None:
-        """Auto-join rooms when invited."""
+        """被邀请时自动加入房间。"""
 
         room_id = str(getattr(event, "room_id", ""))
 
@@ -1558,7 +1547,7 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.warning("Matrix: error joining %s: %s", room_id, exc)
 
     # ------------------------------------------------------------------
-    # Reactions (send, receive, processing lifecycle)
+    # 反应（发送、接收、处理生命周期）
     # ------------------------------------------------------------------
 
     async def _send_reaction(
@@ -1567,8 +1556,8 @@ class MatrixAdapter(BasePlatformAdapter):
         event_id: str,
         emoji: str,
     ) -> Optional[str]:
-        """Send an emoji reaction to a message in a room.
-        Returns the reaction event_id on success, None on failure.
+        """向房间中的消息发送 emoji 反应。
+        成功时返回反应 event_id，失败时返回 None。
         """
 
         if not self._client:
@@ -1598,11 +1587,11 @@ class MatrixAdapter(BasePlatformAdapter):
         reaction_event_id: str,
         reason: str = "",
     ) -> bool:
-        """Remove a reaction by redacting its event."""
+        """通过撤回事件来移除反应。"""
         return await self.redact_message(room_id, reaction_event_id, reason)
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add eyes reaction when the agent starts processing a message."""
+        """当智能体开始处理消息时添加眼睛反应。"""
         if not self._reactions_enabled:
             return
         msg_id = event.message_id
@@ -1617,7 +1606,7 @@ class MatrixAdapter(BasePlatformAdapter):
         event: MessageEvent,
         outcome: ProcessingOutcome,
     ) -> None:
-        """Replace eyes with checkmark (success) or cross (failure)."""
+        """将眼睛替换为勾选（成功）或叉号（失败）。"""
         if not self._reactions_enabled:
             return
         msg_id = event.message_id
@@ -1638,7 +1627,7 @@ class MatrixAdapter(BasePlatformAdapter):
         )
 
     async def _on_reaction(self, event: Any) -> None:
-        """Handle incoming reaction events."""
+        """处理传入的反应事件。"""
         sender = str(getattr(event, "sender", ""))
         if sender == self._user_id:
             return
@@ -1671,11 +1660,11 @@ class MatrixAdapter(BasePlatformAdapter):
             )
 
     # ------------------------------------------------------------------
-    # Text message aggregation (handles Matrix client-side splits)
+    # 文本消息聚合（处理 Matrix 客户端侧的消息分割）
     # ------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching."""
+        """基于会话作用域的文本消息批处理键。"""
         from gateway.session import build_session_key
 
         return build_session_key(
@@ -1689,7 +1678,7 @@ class MatrixAdapter(BasePlatformAdapter):
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
-        """Buffer a text event and reset the flush timer."""
+        """缓冲文本事件并重置刷新计时器。"""
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
         chunk_len = len(event.text or "")
@@ -1714,7 +1703,7 @@ class MatrixAdapter(BasePlatformAdapter):
         )
 
     async def _flush_text_batch(self, key: str) -> None:
-        """Wait for the quiet period then dispatch the aggregated text."""
+        """等待静默期结束后分发聚合的文本。"""
         current_task = asyncio.current_task()
         try:
             pending = self._pending_text_batches.get(key)
@@ -1738,11 +1727,11 @@ class MatrixAdapter(BasePlatformAdapter):
                 self._pending_text_batch_tasks.pop(key, None)
 
     # ------------------------------------------------------------------
-    # Read receipts
+    # 已读回执
     # ------------------------------------------------------------------
 
     def _background_read_receipt(self, room_id: str, event_id: str) -> None:
-        """Fire-and-forget read receipt with error logging."""
+        """后台发送已读回执，带错误日志记录。"""
 
         async def _send() -> None:
             try:
@@ -1753,7 +1742,7 @@ class MatrixAdapter(BasePlatformAdapter):
         asyncio.ensure_future(_send())
 
     async def send_read_receipt(self, room_id: str, event_id: str) -> bool:
-        """Send a read receipt (m.read) for an event."""
+        """发送事件的已读回执（m.read）。"""
         if not self._client:
             return False
         try:
@@ -1779,7 +1768,7 @@ class MatrixAdapter(BasePlatformAdapter):
             return False
 
     # ------------------------------------------------------------------
-    # Message redaction
+    # 消息撤回
     # ------------------------------------------------------------------
 
     async def redact_message(
@@ -1788,7 +1777,7 @@ class MatrixAdapter(BasePlatformAdapter):
         event_id: str,
         reason: str = "",
     ) -> bool:
-        """Redact (delete) a message or event from a room."""
+        """撤回（删除）房间中的消息或事件。"""
         if not self._client:
             return False
         try:
@@ -1804,7 +1793,7 @@ class MatrixAdapter(BasePlatformAdapter):
             return False
 
     # ------------------------------------------------------------------
-    # Room creation & management
+    # 房间创建和管理
     # ------------------------------------------------------------------
 
     async def create_room(
@@ -1815,7 +1804,7 @@ class MatrixAdapter(BasePlatformAdapter):
         is_direct: bool = False,
         preset: str = "private_chat",
     ) -> Optional[str]:
-        """Create a new Matrix room."""
+        """创建新的 Matrix 房间。"""
         if not self._client:
             return None
         try:
@@ -1841,7 +1830,7 @@ class MatrixAdapter(BasePlatformAdapter):
             return None
 
     async def invite_user(self, room_id: str, user_id: str) -> bool:
-        """Invite a user to a room."""
+        """邀请用户加入房间。"""
         if not self._client:
             return False
         try:
@@ -1853,13 +1842,13 @@ class MatrixAdapter(BasePlatformAdapter):
             return False
 
     # ------------------------------------------------------------------
-    # Presence
+    # 在线状态
     # ------------------------------------------------------------------
 
     _VALID_PRESENCE_STATES = frozenset(("online", "offline", "unavailable"))
 
     async def set_presence(self, state: str = "online", status_msg: str = "") -> bool:
-        """Set the bot's presence status."""
+        """设置机器人的在线状态。"""
         if not self._client:
             return False
         if state not in self._VALID_PRESENCE_STATES:
@@ -1882,7 +1871,7 @@ class MatrixAdapter(BasePlatformAdapter):
             return False
 
     # ------------------------------------------------------------------
-    # Emote & notice message types
+    # Emote 和 Notice 消息类型
     # ------------------------------------------------------------------
 
     async def _send_simple_message(
@@ -1891,7 +1880,7 @@ class MatrixAdapter(BasePlatformAdapter):
         text: str,
         msgtype: str,
     ) -> SendResult:
-        """Send a simple message (emote, notice) with optional HTML formatting."""
+        """发送简单消息（emote、notice），可选 HTML 格式化。"""
         if not self._client or not text:
             return SendResult(success=False, error="No client or empty text")
 
@@ -1912,14 +1901,14 @@ class MatrixAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     # ------------------------------------------------------------------
-    # Helpers
+    # 辅助方法
     # ------------------------------------------------------------------
 
     async def _is_dm_room(self, room_id: str) -> bool:
-        """Check if a room is a DM."""
+        """检查房间是否为私信。"""
         if self._dm_rooms.get(room_id, False):
             return True
-        # Fallback: check member count via state store.
+        # 回退：通过状态存储检查成员数量
         state_store = (
             getattr(self._client, "state_store", None) if self._client else None
         )
@@ -1933,7 +1922,7 @@ class MatrixAdapter(BasePlatformAdapter):
         return False
 
     async def _refresh_dm_cache(self) -> None:
-        """Refresh the DM room cache from m.direct account data."""
+        """从 m.direct 帐户数据刷新私信房间缓存。"""
         if not self._client:
             return
 
@@ -1959,7 +1948,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._dm_rooms = {rid: (rid in dm_room_ids) for rid in self._joined_rooms}
 
     # ------------------------------------------------------------------
-    # Mention detection helpers
+    # 提及检测辅助方法
     # ------------------------------------------------------------------
 
     def _is_bot_mentioned(
@@ -1968,16 +1957,14 @@ class MatrixAdapter(BasePlatformAdapter):
         formatted_body: Optional[str] = None,
         mention_user_ids: Optional[list] = None,
     ) -> bool:
-        """Return True if the bot is mentioned in the message.
+        """检查消息中是否提及了机器人。
 
-        Per MSC3952, ``m.mentions.user_ids`` is the authoritative mention
-        signal in the Matrix spec.  When the sender's client populates that
-        field with the bot's user-id, we trust it — even when the visible
-        body text does not contain an explicit ``@bot`` string (some clients
-        only render mention "pills" in ``formatted_body`` or use display
-        names).
+        根据 MSC3952，``m.mentions.user_ids`` 是 Matrix 规范中的权威提及信号。
+        当发送者的客户端在该字段中包含机器人的用户 ID 时，我们信任它——
+        即使可见的正文文本中没有显式的 ``@bot`` 字符串（某些客户端
+        仅在 ``formatted_body`` 中渲染提及"标签"或使用显示名称）。
         """
-        # m.mentions.user_ids — authoritative per MSC3952 / Matrix v1.7.
+        # m.mentions.user_ids——根据 MSC3952 / Matrix v1.7 具有权威性
         if mention_user_ids and self._user_id and self._user_id in mention_user_ids:
             return True
         if not body and not formatted_body:
@@ -1996,17 +1983,17 @@ class MatrixAdapter(BasePlatformAdapter):
         return False
 
     def _strip_mention(self, body: str) -> str:
-        """Strip the bot's full MXID (``@user:server``) from *body*.
+        """从 *body* 中去除机器人的完整 MXID（``@user:server``）。
 
-        The bare localpart is intentionally *not* stripped — it would
-        mangle file paths like ``/home/hermes/media/file.png``.
+        有意不去除纯本地部分——否则会破坏文件路径
+        如 ``/home/hermes/media/file.png``。
         """
         if self._user_id:
             body = body.replace(self._user_id, "")
         return body.strip()
 
     async def _get_display_name(self, room_id: str, user_id: str) -> str:
-        """Get a user's display name in a room, falling back to user_id."""
+        """获取用户在房间中的显示名称，回退到 user_id。"""
         state_store = (
             getattr(self._client, "state_store", None) if self._client else None
         )
@@ -2017,26 +2004,25 @@ class MatrixAdapter(BasePlatformAdapter):
                     return member.displayname
             except Exception:
                 pass
-        # Strip the @...:server format to just the localpart.
+        # 去除 @...:server 格式，只保留本地部分
         if user_id.startswith("@") and ":" in user_id:
             return user_id[1:].split(":")[0]
         return user_id
 
     def _mxc_to_http(self, mxc_url: str) -> str:
-        """Convert mxc://server/media_id to an HTTP download URL."""
+        """将 mxc://server/media_id 转换为 HTTP 下载 URL。"""
         if not mxc_url.startswith("mxc://"):
             return mxc_url
         parts = mxc_url[6:]  # strip mxc://
         return f"{self._homeserver}/_matrix/client/v1/media/download/{parts}"
 
     def _markdown_to_html(self, text: str) -> str:
-        """Convert Markdown to Matrix-compatible HTML (org.matrix.custom.html).
+        """将 Markdown 转换为 Matrix 兼容的 HTML（org.matrix.custom.html）。
 
-        Uses the ``markdown`` library when available (installed with the
-        ``matrix`` extra).  Falls back to a comprehensive regex converter
-        that handles fenced code blocks, inline code, headers, bold,
-        italic, strikethrough, links, blockquotes, lists, and horizontal
-        rules — everything the Matrix HTML spec allows.
+        在 ``markdown`` 库可用时使用（随 ``matrix`` extra 安装）。
+        回退到全面的正则表达式转换器，处理围栏代码块、行内代码、
+        标题、粗体、斜体、删除线、链接、块引用、列表和水平分隔线——
+        Matrix HTML 规范允许的所有内容。
         """
         try:
             import markdown as _md
@@ -2059,12 +2045,12 @@ class MatrixAdapter(BasePlatformAdapter):
         return self._markdown_to_html_fallback(text)
 
     # ------------------------------------------------------------------
-    # Regex-based Markdown -> HTML (no extra dependencies)
+    # 基于正则的 Markdown -> HTML（无额外依赖）
     # ------------------------------------------------------------------
 
     @staticmethod
     def _sanitize_link_url(url: str) -> str:
-        """Sanitize a URL for use in an href attribute."""
+        """清洗 URL 以用于 href 属性。"""
         stripped = url.strip()
         scheme = stripped.split(":", 1)[0].lower().strip() if ":" in stripped else ""
         if scheme in ("javascript", "data", "vbscript"):
@@ -2073,7 +2059,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _markdown_to_html_fallback(text: str) -> str:
-        """Comprehensive regex Markdown-to-HTML for Matrix."""
+        """为 Matrix 提供全面的正则 Markdown 到 HTML 转换。"""
         placeholders: list = []
 
         def _protect_html(html_fragment: str) -> str:
@@ -2081,7 +2067,7 @@ class MatrixAdapter(BasePlatformAdapter):
             placeholders.append(html_fragment)
             return f"\x00PROTECTED{idx}\x00"
 
-        # Fenced code blocks: ```lang\n...\n```
+        # 围栏代码块：```lang\n...\n```
         result = re.sub(
             r"```(\w*)\n(.*?)```",
             lambda m: _protect_html(
@@ -2094,14 +2080,14 @@ class MatrixAdapter(BasePlatformAdapter):
             flags=re.DOTALL,
         )
 
-        # Inline code: `code`
+        # 行内代码：`code`
         result = re.sub(
             r"`([^`\n]+)`",
             lambda m: _protect_html(f"<code>{_html_escape(m.group(1))}</code>"),
             result,
         )
 
-        # Extract and protect markdown links before escaping.
+        # 在转义前提取并保护 Markdown 链接
         result = re.sub(
             r"\[([^\]]+)\]\(([^)]+)\)",
             lambda m: _protect_html(
@@ -2113,27 +2099,27 @@ class MatrixAdapter(BasePlatformAdapter):
             result,
         )
 
-        # HTML-escape remaining text.
+        # 对剩余文本进行 HTML 转义
         parts = re.split(r"(\x00PROTECTED\d+\x00)", result)
         for idx, part in enumerate(parts):
             if not part.startswith("\x00PROTECTED"):
                 parts[idx] = _html_escape(part)
         result = "".join(parts)
 
-        # Block-level transforms (line-oriented).
+        # 块级转换（按行处理）
         lines = result.split("\n")
         out_lines: list = []
         i = 0
         while i < len(lines):
             line = lines[i]
 
-            # Horizontal rule
+            # 水平分隔线
             if re.match(r"^[\s]*([-*_])\s*\1\s*\1[\s\-*_]*$", line):
                 out_lines.append("<hr>")
                 i += 1
                 continue
 
-            # Headers
+            # 标题
             hdr = re.match(r"^(#{1,6})\s+(.+)$", line)
             if hdr:
                 level = len(hdr.group(1))
@@ -2141,7 +2127,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 i += 1
                 continue
 
-            # Blockquote
+            # 块引用
             if (
                 line.startswith("&gt; ")
                 or line == "&gt;"
@@ -2166,7 +2152,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 out_lines.append(f"<blockquote>{'<br>'.join(bq_lines)}</blockquote>")
                 continue
 
-            # Unordered list
+            # 无序列表
             ul_match = re.match(r"^[\s]*[-*+]\s+(.+)$", line)
             if ul_match:
                 items = []
@@ -2177,7 +2163,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 out_lines.append(f"<ul>{li}</ul>")
                 continue
 
-            # Ordered list
+            # 有序列表
             ol_match = re.match(r"^[\s]*\d+[.)]\s+(.+)$", line)
             if ol_match:
                 items = []
@@ -2193,7 +2179,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
         result = "\n".join(out_lines)
 
-        # Inline transforms.
+        # 行内转换
         result = re.sub(
             r"\*\*(.+?)\*\*", r"<strong>\1</strong>", result, flags=re.DOTALL
         )
@@ -2209,7 +2195,7 @@ class MatrixAdapter(BasePlatformAdapter):
         )
         result = re.sub(r"(</(?:pre|blockquote|h[1-6]|ul|ol|li)>)<br>", r"\1", result)
 
-        # Restore protected regions.
+        # 恢复受保护的区域
         for idx, original in enumerate(placeholders):
             result = result.replace(f"\x00PROTECTED{idx}\x00", original)
 

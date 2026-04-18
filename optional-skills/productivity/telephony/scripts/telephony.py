@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Telephony helper for the Hermes optional telephony skill.
+"""Hermes 可选电话技能的电话助手。
 
-Capabilities:
-- Persist telephony provider credentials to ~/.hermes/.env
-- Search for, buy, and remember Twilio phone numbers
-- Make direct Twilio calls (TwiML <Say> or <Play>)
-- Send SMS / MMS via Twilio
-- Poll inbound SMS for an owned Twilio number using only this script + state
-- Import a Twilio number into Vapi and persist the returned Vapi phone_number_id
-- Make outbound AI voice calls via Bland.ai or Vapi
+功能:
+- 将电话服务商凭据持久化到 ~/.hermes/.env
+- 搜索、购买和记住 Twilio 电话号码
+- 发起直接的 Twilio 通话（TwiML <Say> 或 <Play>）
+- 通过 Twilio 发送 SMS / MMS
+- 使用本脚本 + 状态文件轮询已拥有 Twilio 号码的入站 SMS
+- 将 Twilio 号码导入 Vapi 并持久化返回的 Vapi phone_number_id
+- 通过 Bland.ai 或 Vapi 发起出站 AI 语音通话
 
-This file intentionally uses Python stdlib HTTP clients so the skill can run in a
-minimal environment with no extra pip installs.
+本文件特意使用 Python 标准库 HTTP 客户端，以便该技能在无需额外 pip 安装的
+最小环境中运行。
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ STATE_VERSION = 1
 
 
 class TelephonyError(RuntimeError):
-    """Domain-specific failure surfaced to the skill/user."""
+    """特定领域的错误，暴露给技能/用户。"""
 
 
 @dataclass

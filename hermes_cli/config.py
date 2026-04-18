@@ -1,15 +1,15 @@
 """
-Configuration management for Hermes Agent.
+Hermes Agent 的配置管理。
 
-Config files are stored in ~/.hermes/ for easy access:
-- ~/.hermes/config.yaml  - All settings (model, toolsets, terminal, etc.)
-- ~/.hermes/.env         - API keys and secrets
+配置文件存储在 ~/.hermes/ 目录下，便于访问:
+- ~/.hermes/config.yaml  - 所有设置（模型、工具集、终端等）
+- ~/.hermes/.env         - API 密钥和敏感信息
 
-This module provides:
-- hermes config          - Show current configuration
-- hermes config edit     - Open config in editor
-- hermes config set      - Set a specific value
-- hermes config wizard   - Re-run setup wizard
+本模块提供:
+- hermes config          - 显示当前配置
+- hermes config edit     - 在编辑器中打开配置
+- hermes config set      - 设置特定的值
+- hermes config wizard   - 重新运行配置向导
 """
 
 import os
@@ -26,8 +26,8 @@ from typing import Dict, Any, Optional, List, Tuple
 
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-# Env var names written to .env that aren't in OPTIONAL_ENV_VARS
-# (managed by setup/provider flows directly).
+# 写入 .env 但不在 OPTIONAL_ENV_VARS 中的环境变量名
+# （由 setup/provider 流程直接管理）。
 _EXTRA_ENV_KEYS = frozenset({
     "OPENAI_API_KEY", "OPENAI_BASE_URL",
     "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
@@ -61,7 +61,7 @@ from hermes_cli.default_soul import DEFAULT_SOUL_MD
 
 
 # =============================================================================
-# Managed mode (NixOS declarative config)
+# 托管模式（NixOS 声明式配置）
 # =============================================================================
 
 _MANAGED_TRUE_VALUES = ("true", "1", "yes")
@@ -74,7 +74,7 @@ _MANAGED_SYSTEM_NAMES = {
 
 
 def get_managed_system() -> Optional[str]:
-    """Return the package manager owning this install, if any."""
+    """返回管理此安装的包管理器名称（如有）。"""
     raw = os.getenv("HERMES_MANAGED", "").strip()
     if raw:
         normalized = raw.lower()
@@ -89,17 +89,17 @@ def get_managed_system() -> Optional[str]:
 
 
 def is_managed() -> bool:
-    """Check if Hermes is running in package-manager-managed mode.
+    """检查 Hermes 是否运行在包管理器托管模式下。
 
-    Two signals: the HERMES_MANAGED env var (set by the systemd service),
-    or a .managed marker file in HERMES_HOME (set by the NixOS activation
-    script, so interactive shells also see it).
+    两个信号源：HERMES_MANAGED 环境变量（由 systemd 服务设置），
+    或 HERMES_HOME 中的 .managed 标记文件（由 NixOS 激活脚本设置，
+    这样交互式 shell 也能检测到）。
     """
     return get_managed_system() is not None
 
 
 def get_managed_update_command() -> Optional[str]:
-    """Return the preferred upgrade command for a managed install."""
+    """返回托管安装的首选升级命令。"""
     managed_system = get_managed_system()
     if managed_system == "Homebrew":
         return "brew upgrade hermes-agent"
@@ -109,12 +109,12 @@ def get_managed_update_command() -> Optional[str]:
 
 
 def recommended_update_command() -> str:
-    """Return the best update command for the current installation."""
+    """返回当前安装方式下最佳的更新命令。"""
     return get_managed_update_command() or "hermes update"
 
 
 def format_managed_message(action: str = "modify this Hermes installation") -> str:
-    """Build a user-facing error for managed installs."""
+    """为托管安装生成面向用户的错误信息。"""
     managed_system = get_managed_system() or "a package manager"
     raw = os.getenv("HERMES_MANAGED", "").strip().lower()
 
@@ -142,24 +142,22 @@ def format_managed_message(action: str = "modify this Hermes installation") -> s
     )
 
 def managed_error(action: str = "modify configuration"):
-    """Print user-friendly error for managed mode."""
+    """在托管模式下打印友好的错误信息。"""
     print(format_managed_message(action), file=sys.stderr)
 
 
 # =============================================================================
-# Container-aware CLI (NixOS container mode)
+# 容器感知 CLI（NixOS 容器模式）
 # =============================================================================
 
 def get_container_exec_info() -> Optional[dict]:
-    """Read container mode metadata from HERMES_HOME/.container-mode.
+    """从 HERMES_HOME/.container-mode 读取容器模式元数据。
 
-    Returns a dict with keys: backend, container_name, exec_user, hermes_bin
-    or None if container mode is not active, we're already inside the
-    container, or HERMES_DEV=1 is set.
+    返回包含 backend、container_name、exec_user、hermes_bin 键的字典，
+    如果容器模式未激活、当前已在容器内部或设置了 HERMES_DEV=1 则返回 None。
 
-    The .container-mode file is written by the NixOS activation script when
-    container.enable = true. It tells the host CLI to exec into the container
-    instead of running locally.
+    .container-mode 文件由 NixOS 激活脚本在 container.enable = true 时写入。
+    它告知宿主机 CLI 应该 exec 进入容器而非在本地运行。
     """
     if os.environ.get("HERMES_DEV") == "1":
         return None
@@ -180,7 +178,7 @@ def get_container_exec_info() -> Optional[dict]:
                     info[key.strip()] = value.strip()
     except FileNotFoundError:
         return None
-    # All other exceptions (PermissionError, malformed data, etc.) propagate
+    # 所有其他异常（PermissionError、数据格式错误等）向上传播
 
     backend = info.get("backend", "docker")
     container_name = info.get("container_name", "hermes-agent")
@@ -196,36 +194,34 @@ def get_container_exec_info() -> Optional[dict]:
 
 
 # =============================================================================
-# Config paths
+# 配置路径
 # =============================================================================
 
-# Re-export from hermes_constants — canonical definition lives there.
+# 从 hermes_constants 重新导出 -- 规范定义在那里。
 from hermes_constants import get_hermes_home  # noqa: F811,E402
 
 def get_config_path() -> Path:
-    """Get the main config file path."""
+    """获取主配置文件路径。"""
     return get_hermes_home() / "config.yaml"
 
 def get_env_path() -> Path:
-    """Get the .env file path (for API keys)."""
+    """获取 .env 文件路径（用于 API 密钥）。"""
     return get_hermes_home() / ".env"
 
 def get_project_root() -> Path:
-    """Get the project installation directory."""
+    """获取项目安装目录。"""
     return Path(__file__).parent.parent.resolve()
 
 def _secure_dir(path):
-    """Set directory to owner-only access (0700 by default). No-op on Windows.
+    """将目录设置为仅所有者访问（默认 0700）。Windows 上无操作。
 
-    Skipped in managed mode — the NixOS module sets group-readable
-    permissions (0750) so interactive users in the hermes group can
-    share state with the gateway service.
+    在托管模式下跳过 -- NixOS 模块设置组可读权限（0750），
+    以便 hermes 组中的交互式用户可以与网关服务共享状态。
 
-    The mode can be overridden via the HERMES_HOME_MODE environment variable
-    (e.g. HERMES_HOME_MODE=0701) for deployments where a web server (nginx,
-    caddy, etc.) needs to traverse HERMES_HOME to reach a served subdirectory.
-    The execute-only bit on a directory permits cd-through without exposing
-    directory listings.
+    可通过 HERMES_HOME_MODE 环境变量覆盖模式
+    （如 HERMES_HOME_MODE=0701），适用于 Web 服务器（nginx、caddy 等）
+    需要遍历 HERMES_HOME 以访问子目录的部署场景。
+    目录上的仅执行位允许 cd 穿过但不暴露目录列表。
     """
     if is_managed():
         return
@@ -241,20 +237,19 @@ def _secure_dir(path):
 
 
 def _is_container() -> bool:
-    """Detect if we're running inside a Docker/Podman/LXC container.
+    """检测当前是否运行在 Docker/Podman/LXC 容器内。
 
-    When Hermes runs in a container with volume-mounted config files, forcing
-    0o600 permissions breaks multi-process setups where the gateway and
-    dashboard run as different UIDs or the volume mount requires broader
-    permissions.
+    当 Hermes 在挂载了配置文件的容器中运行时，强制 0o600 权限会
+    破坏网关和仪表板以不同 UID 运行的多进程部署，或卷挂载需要
+    更宽松权限的场景。
     """
-    # Explicit opt-out
+    # 显式关闭权限检查
     if os.environ.get("HERMES_CONTAINER") or os.environ.get("HERMES_SKIP_CHMOD"):
         return True
-    # Docker / Podman marker file
+    # Docker / Podman 标记文件
     if os.path.exists("/.dockerenv"):
         return True
-    # LXC / cgroup-based detection
+    # LXC / 基于 cgroup 的检测
     try:
         with open("/proc/1/cgroup", "r") as f:
             cgroup_content = f.read()
@@ -266,13 +261,13 @@ def _is_container() -> bool:
 
 
 def _secure_file(path):
-    """Set file to owner-only read/write (0600). No-op on Windows.
+    """将文件设置为仅所有者可读写（0600）。Windows 上无操作。
 
-    Skipped in managed mode — the NixOS activation script sets
-    group-readable permissions (0640) on config files.
+    在托管模式下跳过 -- NixOS 激活脚本在配置文件上设置
+    组可读权限（0640）。
 
-    Skipped in containers — Docker/Podman volume mounts often need broader
-    permissions.  Set HERMES_SKIP_CHMOD=1 to force-skip on other systems.
+    在容器中跳过 -- Docker/Podman 卷挂载通常需要更宽松的权限。
+    在其他系统上设置 HERMES_SKIP_CHMOD=1 强制跳过。
     """
     if is_managed() or _is_container():
         return
@@ -284,7 +279,7 @@ def _secure_file(path):
 
 
 def _ensure_default_soul_md(home: Path) -> None:
-    """Seed a default SOUL.md into HERMES_HOME if the user doesn't have one yet."""
+    """如果用户还没有 SOUL.md，则在 HERMES_HOME 中写入默认值。"""
     soul_path = home / "SOUL.md"
     if soul_path.exists():
         return
@@ -293,11 +288,10 @@ def _ensure_default_soul_md(home: Path) -> None:
 
 
 def ensure_hermes_home():
-    """Ensure ~/.hermes directory structure exists with secure permissions.
+    """确保 ~/.hermes 目录结构存在并具有安全的权限。
 
-    In managed mode (NixOS), dirs are created by the activation script with
-    setgid + group-writable (2770). We skip mkdir and set umask(0o007) so
-    any files created (e.g. SOUL.md) are group-writable (0660).
+    在托管模式（NixOS）下，目录由激活脚本创建，带有 setgid + 组可写权限（2770）。
+    我们跳过 mkdir 并设置 umask(0o007)，以便创建的文件（如 SOUL.md）是组可写的（0660）。
     """
     home = get_hermes_home()
     if is_managed():
@@ -317,7 +311,7 @@ def ensure_hermes_home():
 
 
 def _ensure_hermes_home_managed(home: Path):
-    """Managed-mode variant: verify dirs exist (activation creates them), seed SOUL.md."""
+    """托管模式变体：验证目录存在（激活时创建），初始化 SOUL.md。"""
     if not home.is_dir():
         raise RuntimeError(
             f"HERMES_HOME {home} does not exist. "
@@ -330,12 +324,12 @@ def _ensure_hermes_home_managed(home: Path):
                 f"{d} does not exist. "
                 "Run 'sudo nixos-rebuild switch' first."
             )
-    # Inside umask(0o007) scope — SOUL.md will be created as 0660
+    # 在 umask(0o007) 作用域内 — SOUL.md 将以 0660 权限创建
     _ensure_default_soul_md(home)
 
 
 # =============================================================================
-# Config loading/saving
+# 配置加载/保存
 # =============================================================================
 
 DEFAULT_CONFIG = {
@@ -346,119 +340,117 @@ DEFAULT_CONFIG = {
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
-        # Inactivity timeout for gateway agent execution (seconds).
-        # The agent can run indefinitely as long as it's actively calling
-        # tools or receiving API responses.  Only fires when the agent has
-        # been completely idle for this duration.  0 = unlimited.
+        # 网关 agent 执行的空闲超时（秒）。
+        # agent 可以无限运行，只要它正在主动调用工具或接收 API 响应。
+        # 仅在 agent 完全空闲达到此时长时触发。0 = 无限制。
         "gateway_timeout": 1800,
-        # Graceful drain timeout for gateway stop/restart (seconds).
-        # The gateway stops accepting new work, waits for running agents
-        # to finish, then interrupts any remaining runs after the timeout.
-        # 0 = no drain, interrupt immediately.
+        # 网关停止/重启的优雅排空超时（秒）。
+        # 网关停止接受新任务，等待运行中的 agent 完成，
+        # 超时后中断剩余运行。0 = 不排空，立即中断。
         "restart_drain_timeout": 60,
         "service_tier": "",
-        # Tool-use enforcement: injects system prompt guidance that tells the
-        # model to actually call tools instead of describing intended actions.
-        # Values: "auto" (default — applies to gpt/codex models), true/false
-        # (force on/off for all models), or a list of model-name substrings
-        # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
+        # 工具使用强制：注入系统提示引导，告诉模型
+        # 实际调用工具而非描述预期操作。
+        # 值："auto"（默认 — 应用于 gpt/codex 模型），true/false
+        #（对所有模型强制开/关），或模型名称子字符串列表
+        # 用于匹配（例如 ["gpt", "codex", "gemini", "qwen"]）。
         "tool_use_enforcement": "auto",
-        # Staged inactivity warning: send a warning to the user at this
-        # threshold before escalating to a full timeout.  The warning fires
-        # once per run and does not interrupt the agent.  0 = disable warning.
+        # 分阶段空闲警告：在此阈值处向用户发送警告，
+        # 然后再升级为完全超时。警告每次运行只触发一次，
+        # 不会中断 agent。0 = 禁用警告。
         "gateway_timeout_warning": 900,
-        # Periodic "still working" notification interval (seconds).
-        # Sends a status message every N seconds so the user knows the
-        # agent hasn't died during long tasks.  0 = disable notifications.
+        # 定期"仍在工作"通知间隔（秒）。
+        # 每 N 秒发送一条状态消息，让用户知道
+        # agent 在长时间任务中没有死掉。0 = 禁用通知。
         "gateway_notify_interval": 600,
     },
     
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",
-        "cwd": ".",  # Use current directory
+        "cwd": ".",  # 使用当前目录
         "timeout": 180,
-        # Environment variables to pass through to sandboxed execution
-        # (terminal and execute_code).  Skill-declared required_environment_variables
-        # are passed through automatically; this list is for non-skill use cases.
+        # 传递到沙箱执行环境的环境变量
+        # （终端和 execute_code）。技能声明的 required_environment_variables
+        # 会自动传递；此列表用于非技能用例。
         "env_passthrough": [],
         "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "docker_forward_env": [],
-        # Explicit environment variables to set inside Docker containers.
-        # Unlike docker_forward_env (which reads values from the host process),
-        # docker_env lets you specify exact key-value pairs — useful when Hermes
-        # runs as a systemd service without access to the user's shell environment.
-        # Example: {"SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock"}
+        # 在 Docker 容器内设置的显式环境变量。
+        # 与 docker_forward_env（从主机进程读取值）不同，
+        # docker_env 允许指定精确的键值对 — 适用于 Hermes
+        # 作为 systemd 服务运行且无法访问用户 shell 环境的场景。
+        # 示例：{"SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock"}
         "docker_env": {},
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh)
+        # 容器资源限制（docker、singularity、modal、daytona — 对 local/ssh 无效）
         "container_cpu": 1,
-        "container_memory": 5120,       # MB (default 5GB)
-        "container_disk": 51200,        # MB (default 50GB)
-        "container_persistent": True,   # Persist filesystem across sessions
-        # Docker volume mounts — share host directories with the container.
-        # Each entry is "host_path:container_path" (standard Docker -v syntax).
-        # Example: ["/home/user/projects:/workspace/projects", "/data:/data"]
+        "container_memory": 5120,       # MB（默认 5GB）
+        "container_disk": 51200,        # MB（默认 50GB）
+        "container_persistent": True,   # 跨会话持久化文件系统
+        # Docker 卷挂载 — 与容器共享主机目录。
+        # 每个条目为 "host_path:container_path"（标准 Docker -v 语法）。
+        # 示例：["/home/user/projects:/workspace/projects", "/data:/data"]
         "docker_volumes": [],
-        # Explicit opt-in: mount the host cwd into /workspace for Docker sessions.
-        # Default off because passing host directories into a sandbox weakens isolation.
+        # 显式选择加入：将主机 cwd 挂载到 Docker 会话的 /workspace。
+        # 默认关闭，因为将主机目录传入沙箱会削弱隔离性。
         "docker_mount_cwd_to_workspace": False,
-        # Persistent shell — keep a long-lived bash shell across execute() calls
-        # so cwd/env vars/shell variables survive between commands.
-        # Enabled by default for non-local backends (SSH); local is always opt-in
-        # via TERMINAL_LOCAL_PERSISTENT env var.
+        # 持久化 shell — 在 execute() 调用之间保持长期运行的 bash shell，
+        # 使 cwd/环境变量/shell 变量在命令之间保持不变。
+        # 非本地后端（SSH）默认启用；本地模式始终需要通过
+        # TERMINAL_LOCAL_PERSISTENT 环境变量显式选择加入。
         "persistent_shell": True,
     },
     
     "browser": {
         "inactivity_timeout": 120,
-        "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
-        "record_sessions": False,  # Auto-record browser sessions as WebM videos
-        "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
+        "command_timeout": 30,  # 浏览器命令超时秒数（截图、导航等）
+        "record_sessions": False,  # 自动录制浏览器会话为 WebM 视频
+        "allow_private_urls": False,  # 允许导航到私有/内部 IP（localhost、192.168.x.x 等）
         "camofox": {
-            # When true, Hermes sends a stable profile-scoped userId to Camofox
-            # so the server maps it to a persistent Firefox profile automatically.
-            # When false (default), each session gets a random userId (ephemeral).
+            # 为 true 时，Hermes 向 Camofox 发送稳定的 profile 级别 userId，
+            # 使服务器自动映射到持久化的 Firefox 配置文件。
+            # 为 false（默认）时，每个会话获得随机 userId（临时性的）。
             "managed_persistence": False,
         },
     },
 
-    # Filesystem checkpoints — automatic snapshots before destructive file ops.
-    # When enabled, the agent takes a snapshot of the working directory once per
-    # conversation turn (on first write_file/patch call).  Use /rollback to restore.
+    # 文件系统检查点 — 破坏性文件操作前的自动快照。
+    # 启用时，agent 在每个对话轮次中（首次 write_file/patch 调用时）
+    # 对工作目录进行一次快照。使用 /rollback 恢复。
     "checkpoints": {
         "enabled": True,
-        "max_snapshots": 50,  # Max checkpoints to keep per directory
+        "max_snapshots": 50,  # 每个目录保留的最大检查点数
     },
 
-    # Maximum characters returned by a single read_file call.  Reads that
-    # exceed this are rejected with guidance to use offset+limit.
-    # 100K chars ≈ 25–35K tokens across typical tokenisers.
+    # 单次 read_file 调用返回的最大字符数。超过此限制的读取
+    # 将被拒绝并引导使用 offset+limit。
+    # 100K 字符 ≈ 在典型分词器中约 25-35K token。
     "file_read_max_chars": 100_000,
     
     "compression": {
         "enabled": True,
-        "threshold": 0.50,            # compress when context usage exceeds this ratio
-        "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
-        "protect_last_n": 20,         # minimum recent messages to keep uncompressed
+        "threshold": 0.50,            # 上下文使用率超过此比例时压缩
+        "target_ratio": 0.20,         # 保留为最近尾部的阈值比例
+        "protect_last_n": 20,         # 保持不压缩的最少最近消息数
 
     },
 
-    # AWS Bedrock provider configuration.
-    # Only used when model.provider is "bedrock".
+    # AWS Bedrock 提供者配置。
+    # 仅在 model.provider 为 "bedrock" 时使用。
     "bedrock": {
-        "region": "",  # AWS region for Bedrock API calls (empty = AWS_REGION env var → us-east-1)
+        "region": "",  # Bedrock API 调用的 AWS 区域（空 = AWS_REGION 环境变量 → us-east-1）
         "discovery": {
-            "enabled": True,           # Auto-discover models via ListFoundationModels
-            "provider_filter": [],     # Only show models from these providers (e.g. ["anthropic", "amazon"])
-            "refresh_interval": 3600,  # Cache discovery results for this many seconds
+            "enabled": True,           # 通过 ListFoundationModels 自动发现模型
+            "provider_filter": [],     # 仅显示这些提供者的模型（例如 ["anthropic", "amazon"]）
+            "refresh_interval": 3600,  # 缓存发现结果的秒数
         },
         "guardrail": {
-            # Amazon Bedrock Guardrails — content filtering and safety policies.
-            # Create a guardrail in the Bedrock console, then set the ID and version here.
-            # See: https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html
+            # Amazon Bedrock Guardrails — 内容过滤和安全策略。
+            # 在 Bedrock 控制台创建 guardrail，然后在此设置 ID 和版本。
+            # 参见：https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html
             "guardrail_identifier": "",  # e.g. "abc123def456"
             "guardrail_version": "",     # e.g. "1" or "DRAFT"
             "stream_processing_mode": "async",  # "sync" or "async"
@@ -473,34 +465,34 @@ DEFAULT_CONFIG = {
         "cheap_model": {},
     },
     
-    # Auxiliary model config — provider:model for each side task.
-    # Format: provider is the provider name, model is the model slug.
-    # "auto" for provider = auto-detect best available provider.
-    # Empty model = use provider's default auxiliary model.
-    # All tasks fall back to openrouter:google/gemini-3-flash-preview if
-    # the configured provider is unavailable.
+    # 辅助模型配置 — 每个辅助任务的 provider:model。
+    # 格式：provider 是提供者名称，model 是模型标识符。
+    # provider 为 "auto" = 自动检测最佳可用提供者。
+    # model 为空 = 使用提供者的默认辅助模型。
+    # 如果配置的提供者不可用，所有任务回退到
+    # openrouter:google/gemini-3-flash-preview。
     "auxiliary": {
         "vision": {
             "provider": "auto",    # auto | openrouter | nous | codex | custom
-            "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
-            "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
-            "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY)
-            "timeout": 120,        # seconds — LLM API call timeout; vision payloads need generous timeout
-            "download_timeout": 30,  # seconds — image HTTP download timeout; increase for slow connections
+            "model": "",           # 例如 "google/gemini-2.5-flash"、"gpt-4o"
+            "base_url": "",        # 直接的 OpenAI 兼容端点（优先于 provider）
+            "api_key": "",         # base_url 的 API 密钥（回退到 OPENAI_API_KEY）
+            "timeout": 120,        # 秒 — LLM API 调用超时；视觉负载需要较长超时
+            "download_timeout": 30,  # 秒 — 图像 HTTP 下载超时；慢连接时增大此值
         },
         "web_extract": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
-            "timeout": 360,        # seconds (6min) — per-attempt LLM summarization timeout; increase for slow local models
+            "timeout": 360,        # 秒（6分钟）— 每次尝试的 LLM 摘要超时；慢速本地模型时增大此值
         },
         "compression": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
-            "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
+            "timeout": 120,        # 秒 — 压缩会摘要大型上下文；本地模型时增大此值
         },
         "session_search": {
             "provider": "auto",
@@ -518,7 +510,7 @@ DEFAULT_CONFIG = {
         },
         "approval": {
             "provider": "auto",
-            "model": "",           # fast/cheap model recommended (e.g. gemini-flash, haiku)
+            "model": "",           # 推荐使用快速/低成本模型（例如 gemini-flash、haiku）
             "base_url": "",
             "api_key": "",
             "timeout": 30,
@@ -547,32 +539,32 @@ DEFAULT_CONFIG = {
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,
-        "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
-        "show_cost": False,       # Show $ cost in the status bar (off by default)
+        "inline_diffs": True,     # 为写入操作显示内联差异预览（write_file、patch、skill_manage）
+        "show_cost": False,       # 在状态栏显示 $ 费用（默认关闭）
         "skin": "default",
-        "interim_assistant_messages": True,  # Gateway: show natural mid-turn assistant status messages
-        "tool_progress_command": False,  # Enable /verbose command in messaging gateway
-        "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
-        "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
-        "platforms": {},  # Per-platform display overrides: {"telegram": {"tool_progress": "all"}, "slack": {"tool_progress": "off"}}
+        "interim_assistant_messages": True,  # 网关：显示自然的中间轮次助手状态消息
+        "tool_progress_command": False,  # 在消息网关中启用 /verbose 命令
+        "tool_progress_overrides": {},  # 已弃用 — 使用 display.platforms 替代
+        "tool_preview_length": 0,  # 工具调用预览的最大字符数（0 = 无限制，显示完整路径/命令）
+        "platforms": {},  # 每平台显示覆盖：{"telegram": {"tool_progress": "all"}, "slack": {"tool_progress": "off"}}
     },
 
-    # Web dashboard settings
+    # Web 仪表板设置
     "dashboard": {
-        "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
+        "theme": "default",  # 仪表板视觉主题："default"、"midnight"、"ember"、"mono"、"cyberpunk"、"rose"
     },
 
-    # Privacy settings
+    # 隐私设置
     "privacy": {
-        "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
+        "redact_pii": False,  # 为 True 时，对用户 ID 进行哈希处理并从 LLM 上下文中去除电话号码
     },
-    
-    # Text-to-speech configuration
+
+    # 文本转语音配置
     "tts": {
         "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "neutts" (local)
         "edge": {
             "voice": "en-US-AriaNeural",
-            # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
+            # 热门语音：AriaNeural、JennyNeural、AndrewNeural、BrianNeural、SoniaNeural
         },
         "elevenlabs": {
             "voice_id": "pNInz6obpgDQGcFmaJgB",  # Adam
@@ -581,7 +573,7 @@ DEFAULT_CONFIG = {
         "openai": {
             "model": "gpt-4o-mini-tts",
             "voice": "alloy",
-            # Voices: alloy, echo, fable, onyx, nova, shimmer
+            # 语音选项：alloy、echo、fable、onyx、nova、shimmer
         },
         "xai": {
             "voice_id": "eve",
@@ -594,10 +586,10 @@ DEFAULT_CONFIG = {
             "voice_id": "c69964a6-ab8b-4f8a-9465-ec0925096ec8",  # Paul - Neutral
         },
         "neutts": {
-            "ref_audio": "",  # Path to reference voice audio (empty = bundled default)
-            "ref_text": "",   # Path to reference voice transcript (empty = bundled default)
-            "model": "neuphonic/neutts-air-q4-gguf",  # HuggingFace model repo
-            "device": "cpu",  # cpu, cuda, or mps
+            "ref_audio": "",  # 参考语音音频路径（空 = 内置默认值）
+            "ref_text": "",   # 参考语音文本路径（空 = 内置默认值）
+            "model": "neuphonic/neutts-air-q4-gguf",  # HuggingFace 模型仓库
+            "device": "cpu",  # cpu、cuda 或 mps
         },
     },
     
@@ -620,8 +612,8 @@ DEFAULT_CONFIG = {
         "record_key": "ctrl+b",
         "max_recording_seconds": 120,
         "auto_tts": False,
-        "silence_threshold": 200,     # RMS below this = silence (0-32767)
-        "silence_duration": 3.0,      # Seconds of silence before auto-stop
+        "silence_threshold": 200,     # 低于此 RMS 值为静音（0-32767）
+        "silence_duration": 3.0,      # 自动停止前的静音秒数
     },
     
     "human_delay": {
@@ -630,66 +622,65 @@ DEFAULT_CONFIG = {
         "max_ms": 2500,
     },
     
-    # Context engine -- controls how the context window is managed when
-    # approaching the model's token limit.
-    # "compressor" = built-in lossy summarization (default).
-    # Set to a plugin name to activate an alternative engine (e.g. "lcm"
-    # for Lossless Context Management).  The engine must be installed as
-    # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
+    # 上下文引擎 -- 控制接近模型 token 限制时如何管理上下文窗口。
+    # "compressor" = 内置有损摘要（默认）。
+    # 设置为插件名称以激活替代引擎（例如 "lcm"
+    # 用于无损上下文管理）。引擎必须作为插件安装在
+    # plugins/context_engine/<name>/ 或 ~/.hermes/plugins/ 中。
     "context": {
         "engine": "compressor",
     },
 
-    # Persistent memory -- bounded curated memory injected into system prompt
+    # 持久化记忆 -- 注入系统提示的有界策展记忆
     "memory": {
         "memory_enabled": True,
         "user_profile_enabled": True,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
-        # External memory provider plugin (empty = built-in only).
-        # Set to a provider name to activate: "openviking", "mem0",
-        # "hindsight", "holographic", "retaindb", "byterover".
-        # Only ONE external provider is allowed at a time.
+        # 外部记忆提供者插件（空 = 仅内置）。
+        # 设置为提供者名称以激活："openviking"、"mem0"、
+        # "hindsight"、"holographic"、"retaindb"、"byterover"。
+        # 同时只允许一个外部提供者。
         "provider": "",
     },
 
-    # Subagent delegation — override the provider:model used by delegate_task
-    # so child agents can run on a different (cheaper/faster) provider and model.
-    # Uses the same runtime provider resolution as CLI/gateway startup, so all
-    # configured providers (OpenRouter, Nous, Z.ai, Kimi, etc.) are supported.
+    # 子 agent 委派 — 覆盖 delegate_task 使用的 provider:model，
+    # 使子 agent 可以在不同的（更便宜/更快的）提供者和模型上运行。
+    # 使用与 CLI/网关启动相同的运行时提供者解析，因此所有
+    # 已配置的提供者（OpenRouter、Nous、Z.ai、Kimi 等）都支持。
     "delegation": {
-        "model": "",       # e.g. "google/gemini-3-flash-preview" (empty = inherit parent model)
-        "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
-        "base_url": "",    # direct OpenAI-compatible endpoint for subagents
-        "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
-        "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
-                               # independent of the parent's max_iterations)
-        "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
-                                 # "low", "minimal", "none" (empty = inherit parent's level)
+        "model": "",       # 例如 "google/gemini-3-flash-preview"（空 = 继承父 agent 模型）
+        "provider": "",    # 例如 "openrouter"（空 = 继承父 agent 提供者 + 凭证）
+        "base_url": "",    # 子 agent 的直接 OpenAI 兼容端点
+        "api_key": "",     # delegation.base_url 的 API 密钥（回退到 OPENAI_API_KEY）
+        "max_iterations": 50,  # 每个子 agent 的迭代上限（每个子 agent 有独立预算，
+                               # 与父 agent 的 max_iterations 无关）
+        "reasoning_effort": "",  # 子 agent 的推理力度："xhigh"、"high"、"medium"、
+                                 # "low"、"minimal"、"none"（空 = 继承父 agent 级别）
     },
 
-    # Ephemeral prefill messages file — JSON list of {role, content} dicts
-    # injected at the start of every API call for few-shot priming.
-    # Never saved to sessions, logs, or trajectories.
+    # 临时预填充消息文件 — {role, content} 字典的 JSON 列表，
+    # 在每次 API 调用开始时注入，用于少样本预热。
+    # 不会保存到会话、日志或轨迹中。
     "prefill_messages_file": "",
     
-    # Skills — external skill directories for sharing skills across tools/agents.
-    # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
-    # always goes to ~/.hermes/skills/.
+    # 技能 — 用于跨工具/agent 共享技能的外部技能目录。
+    # 每个路径会被展开（~、${VAR}）并解析。只读 — 技能创建
+    # 始终写入 ~/.hermes/skills/。
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
     },
 
-    # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
-    # This section is only needed for hermes-specific overrides; everything else
-    # (apiKey, workspace, peerName, sessions, enabled) comes from the global config.
+    # Honcho AI 原生记忆 -- 以 ~/.honcho/config.json 为唯一数据源。
+    # 此部分仅用于 hermes 特定的覆盖；其他所有内容
+    #（apiKey、workspace、peerName、sessions、enabled）来自全局配置。
     "honcho": {},
 
-    # IANA timezone (e.g. "Asia/Kolkata", "America/New_York").
-    # Empty string means use server-local time.
+    # IANA 时区（例如 "Asia/Kolkata"、"America/New_York"）。
+    # 空字符串表示使用服务器本地时间。
     "timezone": "",
 
-    # Discord platform settings (gateway mode)
+    # Discord 平台设置（网关模式）
     "discord": {
         "require_mention": True,       # Require @mention to respond in server channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
@@ -699,48 +690,48 @@ DEFAULT_CONFIG = {
         "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
     },
 
-    # WhatsApp platform settings (gateway mode)
+    # WhatsApp 平台设置（网关模式）
     "whatsapp": {
-        # Reply prefix prepended to every outgoing WhatsApp message.
-        # Default (None) uses the built-in "⚕ *Hermes Agent*" header.
-        # Set to "" (empty string) to disable the header entirely.
-        # Supports \n for newlines, e.g. "🤖 *My Bot*\n──────\n"
+        # 每条 WhatsApp 外发消息前置的回复前缀。
+        # 默认（None）使用内置的 "⚕ *Hermes Agent*" 标题。
+        # 设为 ""（空字符串）可完全禁用标题。
+        # 支持 \n 换行，例如 "🤖 *My Bot*\n──────\n"
     },
 
-    # Telegram platform settings (gateway mode)
+    # Telegram 平台设置（网关模式）
     "telegram": {
         "channel_prompts": {},         # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
     },
 
-    # Slack platform settings (gateway mode)
+    # Slack 平台设置（网关模式）
     "slack": {
         "channel_prompts": {},         # Per-channel ephemeral system prompts
     },
 
-    # Mattermost platform settings (gateway mode)
+    # Mattermost 平台设置（网关模式）
     "mattermost": {
         "channel_prompts": {},         # Per-channel ephemeral system prompts
     },
 
-    # Approval mode for dangerous commands:
-    #   manual — always prompt the user (default)
-    #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk
-    #   off    — skip all approval prompts (equivalent to --yolo)
+    # 危险命令审批模式：
+    #   manual — 始终提示用户（默认）
+    #   smart  — 使用辅助 LLM 自动批准低风险命令，高风险时提示
+    #   off    — 跳过所有审批提示（等同于 --yolo）
     "approvals": {
         "mode": "manual",
         "timeout": 60,
     },
 
-    # Permanently allowed dangerous command patterns (added via "always" approval)
+    # 永久允许的危险命令模式（通过 "always" 审批添加）
     "command_allowlist": [],
-    # User-defined quick commands that bypass the agent loop (type: exec only)
+    # 用户定义的快速命令，绕过 agent 循环（仅限 type: exec）
     "quick_commands": {},
-    # Custom personalities — add your own entries here
-    # Supports string format: {"name": "system prompt"}
-    # Or dict format: {"name": {"description": "...", "system_prompt": "...", "tone": "...", "style": "..."}}
+    # 自定义人格 — 在此添加自定义条目
+    # 支持字符串格式：{"name": "system prompt"}
+    # 或字典格式：{"name": {"description": "...", "system_prompt": "...", "tone": "...", "style": "..."}}
     "personalities": {},
 
-    # Pre-exec security scanning via tirith
+    # 通过 tirith 进行预执行安全扫描
     "security": {
         "redact_secrets": True,
         "tirith_enabled": True,
@@ -755,37 +746,37 @@ DEFAULT_CONFIG = {
     },
 
     "cron": {
-        # Wrap delivered cron responses with a header (task name) and footer
-        # ("The agent cannot see this message").  Set to false for clean output.
+        # 将已投递的 cron 响应包装上标题（任务名称）和页脚
+        # （"The agent cannot see this message"）。设为 false 可获得干净输出。
         "wrap_response": True,
     },
 
-    # Logging — controls file logging to ~/.hermes/logs/.
-    # agent.log captures INFO+ (all agent activity); errors.log captures WARNING+.
+    # 日志 — 控制文件日志记录到 ~/.hermes/logs/。
+    # agent.log 捕获 INFO+（所有 agent 活动）；errors.log 捕获 WARNING+。
     "logging": {
-        "level": "INFO",       # Minimum level for agent.log: DEBUG, INFO, WARNING
-        "max_size_mb": 5,      # Max size per log file before rotation
-        "backup_count": 3,     # Number of rotated backup files to keep
+        "level": "INFO",       # agent.log 的最低级别：DEBUG、INFO、WARNING
+        "max_size_mb": 5,      # 轮转前每个日志文件的最大大小
+        "backup_count": 3,     # 保留的轮转备份文件数量
     },
 
-    # Network settings — workarounds for connectivity issues.
+    # 网络设置 — 连接问题的解决方案。
     "network": {
-        # Force IPv4 connections.  On servers with broken or unreachable IPv6,
-        # Python tries AAAA records first and hangs for the full TCP timeout
-        # before falling back to IPv4.  Set to true to skip IPv6 entirely.
+        # 强制使用 IPv4 连接。在 IPv6 不可达或损坏的服务器上，
+        # Python 会先尝试 AAAA 记录并在整个 TCP 超时期间挂起，
+        # 然后才回退到 IPv4。设为 true 可完全跳过 IPv6。
         "force_ipv4": False,
     },
 
-    # Config schema version - bump this when adding new required fields
+    # 配置 schema 版本 - 添加新的必需字段时递增此值
     "_config_version": 18,
 }
 
 # =============================================================================
-# Config Migration System
+# 配置迁移系统
 # =============================================================================
 
-# Track which env vars were introduced in each config version.
-# Migration only mentions vars new since the user's previous version.
+# 跟踪每个配置版本引入了哪些环境变量。
+# 迁移仅提及自用户上一版本以来新增的变量。
 ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     3: ["FIRECRAWL_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAL_KEY"],
     4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
@@ -795,13 +786,13 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     11: ["TERMINAL_MODAL_MODE"],
 }
 
-# Required environment variables with metadata for migration prompts.
-# LLM provider is required but handled in the setup wizard's provider
-# selection step (Nous Portal / OpenRouter / Custom endpoint), so this
-# dict is intentionally empty — no single env var is universally required.
+# 带有迁移提示元数据的必需环境变量。
+# LLM 提供者是必需的，但在设置向导的提供者选择步骤中处理
+#（Nous Portal / OpenRouter / 自定义端点），因此此字典故意为空 —
+# 没有单个环境变量是普遍必需的。
 REQUIRED_ENV_VARS = {}
 
-# Optional environment variables that enhance functionality
+# 增强功能的可选环境变量
 OPTIONAL_ENV_VARS = {
     # ── Provider (handled in provider selection, not shown in checklists) ──
     "NOUS_BASE_URL": {
@@ -1681,12 +1672,12 @@ def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
     """
     missing = []
     
-    # Check required vars
+    # 检查必需变量
     for var_name, info in REQUIRED_ENV_VARS.items():
         if not get_env_value(var_name):
             missing.append({"name": var_name, **info, "is_required": True})
     
-    # Check optional vars (if not required_only)
+    # 检查可选变量（如果不是 required_only）
     if not required_only:
         for var_name, info in OPTIONAL_ENV_VARS.items():
             if not get_env_value(var_name):
@@ -1696,10 +1687,10 @@ def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
 
 
 def _set_nested(config: dict, dotted_key: str, value):
-    """Set a value at an arbitrarily nested dotted key path.
+    """在任意嵌套的点分隔键路径上设置值。
 
-    Creates intermediate dicts as needed, e.g. ``_set_nested(c, "a.b.c", 1)``
-    ensures ``c["a"]["b"]["c"] == 1``.
+    根据需要创建中间字典，例如 ``_set_nested(c, "a.b.c", 1)``
+    确保 ``c["a"]["b"]["c"] == 1``。
     """
     parts = dotted_key.split(".")
     current = config
@@ -1712,10 +1703,10 @@ def _set_nested(config: dict, dotted_key: str, value):
 
 def get_missing_config_fields() -> List[Dict[str, Any]]:
     """
-    Check which config fields are missing or outdated (recursive).
-    
-    Walks the DEFAULT_CONFIG tree at arbitrary depth and reports any keys
-    present in defaults but absent from the user's loaded config.
+    检查哪些配置字段缺失或过时（递归检查）。
+
+    以任意深度遍历 DEFAULT_CONFIG 树，报告默认配置中存在
+    但用户已加载配置中缺失的键。
     """
     config = load_config()
     missing = []
@@ -1739,11 +1730,11 @@ def get_missing_config_fields() -> List[Dict[str, Any]]:
 
 
 def get_missing_skill_config_vars() -> List[Dict[str, Any]]:
-    """Return skill-declared config vars that are missing or empty in config.yaml.
+    """返回 config.yaml 中缺失或为空的技能声明配置变量。
 
-    Scans all enabled skills for ``metadata.hermes.config`` entries, then checks
-    which ones are absent or empty under ``skills.config.<key>`` in the user's
-    config.yaml.  Returns a list of dicts suitable for prompting.
+    扫描所有已启用技能的 ``metadata.hermes.config`` 条目，然后检查
+    用户 config.yaml 中 ``skills.config.<key>`` 下哪些条目缺失或为空。
+    返回适合提示的字典列表。
     """
     try:
         from agent.skill_utils import discover_all_skill_config_vars, SKILL_CONFIG_PREFIX
@@ -1757,7 +1748,7 @@ def get_missing_skill_config_vars() -> List[Dict[str, Any]]:
     config = load_config()
     missing: List[Dict[str, Any]] = []
     for var in all_vars:
-        # Skill config is stored under skills.config.<logical_key>
+        # 技能配置存储在 skills.config.<logical_key> 下
         storage_key = f"{SKILL_CONFIG_PREFIX}.{var['key']}"
         parts = storage_key.split(".")
         current = config
@@ -1780,7 +1771,7 @@ def _normalize_custom_provider_entry(
     *,
     provider_key: str = "",
 ) -> Optional[Dict[str, Any]]:
-    """Return a runtime-compatible custom provider entry or ``None``."""
+    """返回运行时兼容的自定义提供者条目，或返回 ``None``。"""
     if not isinstance(entry, dict):
         return None
 
@@ -1843,7 +1834,7 @@ def _normalize_custom_provider_entry(
 
 
 def providers_dict_to_custom_providers(providers_dict: Any) -> List[Dict[str, Any]]:
-    """Normalize ``providers`` config entries into the legacy custom-provider shape."""
+    """将 ``providers`` 配置条目标准化为旧版自定义提供者格式。"""
     if not isinstance(providers_dict, dict):
         return []
 
@@ -1859,12 +1850,12 @@ def providers_dict_to_custom_providers(providers_dict: Any) -> List[Dict[str, An
 def get_compatible_custom_providers(
     config: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    """Return a deduplicated custom-provider view across legacy and v12+ config.
+    """返回跨旧版和 v12+ 配置的去重自定义提供者视图。
 
-    ``custom_providers`` remains the on-disk legacy format, while ``providers``
-    is the newer keyed schema.  Runtime and picker flows still need a single
-    list-shaped view, but we should not materialise that compatibility layer
-    back into config.yaml because it duplicates entries in UIs.
+    ``custom_providers`` 仍为磁盘上的旧版格式，而 ``providers``
+    是较新的键控 schema。运行时和选择器流程仍需要单一的
+    列表形视图，但不应将此兼容层写回 config.yaml，
+    因为这会在 UI 中产生重复条目。
     """
     if config is None:
         config = load_config()
@@ -1908,9 +1899,9 @@ def get_compatible_custom_providers(
 
 def check_config_version() -> Tuple[int, int]:
     """
-    Check config version.
-    
-    Returns (current_version, latest_version).
+    检查配置版本。
+
+    返回 (current_version, latest_version)。
     """
     config = load_config()
     current = config.get("_config_version", 0)
@@ -1919,10 +1910,10 @@ def check_config_version() -> Tuple[int, int]:
 
 
 # =============================================================================
-# Config structure validation
+# 配置结构验证
 # =============================================================================
 
-# Fields that are valid at root level of config.yaml
+# config.yaml 根级别有效的字段
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
@@ -1930,19 +1921,19 @@ _KNOWN_ROOT_KEYS = {
     "auxiliary", "custom_providers", "context", "memory", "gateway",
 }
 
-# Valid fields inside a custom_providers list entry
+# custom_providers 列表条目中的有效字段
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
     "context_length", "rate_limit_delay",
 }
 
-# Fields that look like they should be inside custom_providers, not at root
+# 看起来应该在 custom_providers 内部而非根级别的字段
 _CUSTOM_PROVIDER_LIKE_FIELDS = {"base_url", "api_key", "rate_limit_delay", "api_mode"}
 
 
 @dataclass
 class ConfigIssue:
-    """A detected config structure problem."""
+    """检测到的配置结构问题。"""
 
     severity: str  # "error", "warning"
     message: str
@@ -1950,12 +1941,12 @@ class ConfigIssue:
 
 
 def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["ConfigIssue"]:
-    """Validate config.yaml structure and return a list of detected issues.
+    """验证 config.yaml 结构并返回检测到的问题列表。
 
-    Catches common YAML formatting mistakes that produce confusing runtime
-    errors (like "Unknown provider") instead of clear diagnostics.
+    捕获常见的 YAML 格式错误，这些错误会产生令人困惑的运行时
+    错误（如 "Unknown provider"），而非清晰的诊断信息。
 
-    Can be called with a pre-loaded config dict, or will load from disk.
+    可以使用预加载的配置字典调用，或从磁盘加载。
     """
     if config is None:
         try:
@@ -2072,11 +2063,11 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
 
 
 def print_config_warnings(config: Optional[Dict[str, Any]] = None) -> None:
-    """Print config structure warnings to stderr at startup.
+    """在启动时将配置结构警告打印到 stderr。
 
-    Called early in CLI and gateway init so users see problems before
-    they hit cryptic "Unknown provider" errors.  Prints nothing if
-    config is healthy.
+    在 CLI 和网关初始化早期调用，使用户在遇到
+    难以理解的 "Unknown provider" 错误之前看到问题。
+    如果配置正常则不打印任何内容。
     """
     try:
         issues = validate_config_structure(config)
@@ -2095,10 +2086,10 @@ def print_config_warnings(config: Optional[Dict[str, Any]] = None) -> None:
 
 
 def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> None:
-    """Warn if MESSAGING_CWD or TERMINAL_CWD is set in .env instead of config.yaml.
+    """当 MESSAGING_CWD 或 TERMINAL_CWD 设置在 .env 而非 config.yaml 中时发出警告。
 
-    These env vars are deprecated — the canonical setting is terminal.cwd
-    in config.yaml.  Prints a migration hint to stderr.
+    这些环境变量已弃用 — 规范设置为 config.yaml 中的 terminal.cwd。
+    将迁移提示打印到 stderr。
     """
     import os, sys
     messaging_cwd = os.environ.get("MESSAGING_CWD")
@@ -2112,7 +2103,7 @@ def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> Non
 
     terminal_cfg = config.get("terminal", {})
     config_cwd = terminal_cfg.get("cwd", ".") if isinstance(terminal_cfg, dict) else "."
-    # Only warn if config.yaml doesn't have an explicit path
+    # 仅在 config.yaml 没有显式路径时发出警告
     config_has_explicit_cwd = config_cwd not in (".", "auto", "cwd", "")
 
     lines: list[str] = []
@@ -2161,7 +2152,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     except Exception:
         pass  # best-effort; don't block migration on sanitize failure
 
-    # Check config version
+    # 检查配置版本
     current_ver, latest_ver = check_config_version()
     
     # ── Version 3 → 4: migrate tool progress from .env to config.yaml ──
@@ -2421,7 +2412,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     
-    # Check for missing required env vars
+    # 检查缺失的必需环境变量
     missing_env = get_missing_env_vars(required_only=True)
     
     if missing_env and not quiet:
@@ -2449,7 +2440,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 results["warnings"].append(f"Skipped {var['name']} - some features may not work")
             print()
     
-    # Check for missing optional env vars and offer to configure interactively
+    # 检查缺失的可选环境变量并提供交互式配置
     # Skip "advanced" vars (like OPENAI_BASE_URL) -- those are for power users
     missing_optional = get_missing_env_vars(required_only=False)
     required_names = {v["name"] for v in missing_env} if missing_env else set()
@@ -2571,11 +2562,11 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
-    """Recursively merge *override* into *base*, preserving nested defaults.
+    """递归地将 *override* 合并到 *base* 中，保留嵌套的默认值。
 
-    Keys in *override* take precedence. If both values are dicts the merge
-    recurses, so a user who overrides only ``tts.elevenlabs.voice_id`` will
-    keep the default ``tts.elevenlabs.model_id`` intact.
+    *override* 中的键优先。如果两个值都是字典则递归合并，
+    因此只覆盖 ``tts.elevenlabs.voice_id`` 的用户将
+    保持默认的 ``tts.elevenlabs.model_id`` 不变。
     """
     result = base.copy()
     for key, value in override.items():
@@ -2591,11 +2582,11 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 def _expand_env_vars(obj):
-    """Recursively expand ``${VAR}`` references in config values.
+    """递归展开配置值中的 ``${VAR}`` 引用。
 
-    Only string values are processed; dict keys, numbers, booleans, and
-    None are left untouched.  Unresolved references (variable not in
-    ``os.environ``) are kept verbatim so callers can detect them.
+    仅处理字符串值；字典键、数字、布尔值和
+    None 保持不变。未解析的引用（变量不在
+    ``os.environ`` 中）保持原样，以便调用者可以检测到。
     """
     if isinstance(obj, str):
         return re.sub(
@@ -2611,14 +2602,13 @@ def _expand_env_vars(obj):
 
 
 def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Move stale root-level provider/base_url into model section.
+    """将过时的根级别 provider/base_url 移动到 model 部分。
 
-    Some users (or older code) placed ``provider:`` and ``base_url:`` at the
-    config root instead of inside ``model:``.  These root-level keys are only
-    used as a fallback when the corresponding ``model.*`` key is empty — they
-    never override an existing ``model.provider`` or ``model.base_url``.
-    After migration the root-level keys are removed so they can't cause
-    confusion on subsequent loads.
+    某些用户（或旧版代码）将 ``provider:`` 和 ``base_url:`` 放在
+    配置根级别而非 ``model:`` 内部。这些根级别键仅在
+    相应的 ``model.*`` 键为空时作为回退使用 — 它们
+    永远不会覆盖已有的 ``model.provider`` 或 ``model.base_url``。
+    迁移后根级别键被移除，以免在后续加载中造成混淆。
     """
     # Only act if there are root-level keys to migrate
     has_root = any(config.get(k) for k in ("provider", "base_url"))
@@ -2641,7 +2631,7 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Normalize legacy root-level max_turns into agent.max_turns."""
+    """将旧版根级别 max_turns 标准化到 agent.max_turns。"""
     config = dict(config)
     agent_config = dict(config.get("agent") or {})
 
@@ -2658,12 +2648,11 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def read_raw_config() -> Dict[str, Any]:
-    """Read ~/.hermes/config.yaml as-is, without merging defaults or migrating.
+    """原样读取 ~/.hermes/config.yaml，不合并默认值或迁移。
 
-    Returns the raw YAML dict, or ``{}`` if the file doesn't exist or can't
-    be parsed.  Use this for lightweight config reads where you just need a
-    single value and don't want the overhead of ``load_config()``'s deep-merge
-    + migration pipeline.
+    返回原始 YAML 字典，如果文件不存在或无法解析则返回 ``{}``。
+    适用于只需要单个值且不想承受 ``load_config()`` 的深度合并
+    + 迁移管道开销的轻量级配置读取。
     """
     try:
         config_path = get_config_path()
@@ -2676,7 +2665,7 @@ def read_raw_config() -> Dict[str, Any]:
 
 
 def load_config() -> Dict[str, Any]:
-    """Load configuration from ~/.hermes/config.yaml."""
+    """从 ~/.hermes/config.yaml 加载配置。"""
     import copy
     ensure_hermes_home()
     config_path = get_config_path()
@@ -2800,7 +2789,7 @@ _COMMENTED_SECTIONS = """
 
 
 def save_config(config: Dict[str, Any]):
-    """Save configuration to ~/.hermes/config.yaml."""
+    """将配置保存到 ~/.hermes/config.yaml。"""
     if is_managed():
         managed_error("save configuration")
         return
@@ -2829,12 +2818,11 @@ def save_config(config: Dict[str, Any]):
 
 
 def load_env() -> Dict[str, str]:
-    """Load environment variables from ~/.hermes/.env.
+    """从 ~/.hermes/.env 加载环境变量。
 
-    Sanitizes lines before parsing so that corrupted files (e.g.
-    concatenated KEY=VALUE pairs on a single line) are handled
-    gracefully instead of producing mangled values such as duplicated
-    bot tokens.  See #8908.
+    在解析前清理行，以便损坏的文件（例如
+    在单行上连接的 KEY=VALUE 对）能被优雅处理，
+    而不是产生错乱的值（如重复的 bot token）。参见 #8908。
     """
     env_path = get_env_path()
     env_vars = {}
@@ -2858,16 +2846,16 @@ def load_env() -> Dict[str, str]:
 
 
 def _sanitize_env_lines(lines: list) -> list:
-    """Fix corrupted .env lines before reading or writing.
+    """在读取或写入前修复损坏的 .env 行。
 
-    Handles two known corruption patterns:
-    1. Concatenated KEY=VALUE pairs on a single line (missing newline between
-       entries, e.g. ``ANTHROPIC_API_KEY=sk-...OPENAI_BASE_URL=https://...``).
-    2. Stale ``KEY=***`` placeholder entries left by incomplete setup runs.
+    处理两种已知的损坏模式：
+    1. 单行上连接的 KEY=VALUE 对（条目之间缺少换行，
+       例如 ``ANTHROPIC_API_KEY=sk-...OPENAI_BASE_URL=https://...``）。
+    2. 不完整设置运行留下的过时 ``KEY=***`` 占位符条目。
 
-    Uses a known-keys set (OPTIONAL_ENV_VARS + _EXTRA_ENV_KEYS) so we only
-    split on real Hermes env var names, avoiding false positives from values
-    that happen to contain uppercase text with ``=``.
+    使用已知键集（OPTIONAL_ENV_VARS + _EXTRA_ENV_KEYS），因此只在
+    真实的 Hermes 环境变量名上拆分，避免值中恰好包含
+    带 ``=`` 的大写文本时的误报。
     """
     # Build the known keys set lazily from OPTIONAL_ENV_VARS + extras.
     # Done inside the function so OPTIONAL_ENV_VARS is guaranteed to be defined.
@@ -2909,10 +2897,10 @@ def _sanitize_env_lines(lines: list) -> list:
 
 
 def sanitize_env_file() -> int:
-    """Read, sanitize, and rewrite ~/.hermes/.env in place.
+    """读取、清理并原地重写 ~/.hermes/.env。
 
-    Returns the number of lines that were fixed (concatenation splits +
-    placeholder removals).  Returns 0 when no changes are needed.
+    返回修复的行数（连接拆分 + 占位符移除）。
+    不需要更改时返回 0。
     """
     env_path = get_env_path()
     if not env_path.exists():
@@ -2954,17 +2942,16 @@ def sanitize_env_file() -> int:
 
 
 def _check_non_ascii_credential(key: str, value: str) -> str:
-    """Warn and strip non-ASCII characters from credential values.
+    """警告并从凭证值中去除非 ASCII 字符。
 
-    API keys and tokens must be pure ASCII — they are sent as HTTP header
-    values which httpx/httpcore encode as ASCII.  Non-ASCII characters
-    (commonly introduced by copy-pasting from rich-text editors or PDFs
-    that substitute lookalike Unicode glyphs for ASCII letters) cause
-    ``UnicodeEncodeError: 'ascii' codec can't encode character`` at
-    request time.
+    API 密钥和 token 必须是纯 ASCII — 它们作为 HTTP 头部值发送，
+    httpx/httpcore 将其编码为 ASCII。非 ASCII 字符
+    （通常由从富文本编辑器或 PDF 中复制粘贴引入，
+    这些编辑器用相似的 Unicode 字形替代 ASCII 字母）会在
+    请求时导致 ``UnicodeEncodeError: 'ascii' codec can't encode character``。
 
-    Returns the sanitized (ASCII-only) value.  Prints a warning if any
-    non-ASCII characters were found and removed.
+    返回清理后的（仅 ASCII）值。如果发现并移除了
+    非 ASCII 字符则打印警告。
     """
     try:
         value.encode("ascii")
@@ -2995,7 +2982,7 @@ def _check_non_ascii_credential(key: str, value: str) -> str:
 
 
 def save_env_value(key: str, value: str):
-    """Save or update a value in ~/.hermes/.env."""
+    """在 ~/.hermes/.env 中保存或更新一个值。"""
     if is_managed():
         managed_error(f"set {key}")
         return
@@ -3065,7 +3052,7 @@ def save_env_value(key: str, value: str):
 
 
 def remove_env_value(key: str) -> bool:
-    """Remove a key from ~/.hermes/.env and os.environ.
+    """从 ~/.hermes/.env 和 os.environ 中移除一个键。
 
     Returns True if the key was found and removed, False otherwise.
     """
@@ -3121,21 +3108,21 @@ def remove_env_value(key: str) -> bool:
 
 
 def save_anthropic_oauth_token(value: str, save_fn=None):
-    """Persist an Anthropic OAuth/setup token and clear the API-key slot."""
+    """持久化 Anthropic OAuth/setup token 并清除 API 密钥槽。"""
     writer = save_fn or save_env_value
     writer("ANTHROPIC_TOKEN", value)
     writer("ANTHROPIC_API_KEY", "")
 
 
 def use_anthropic_claude_code_credentials(save_fn=None):
-    """Use Claude Code's own credential files instead of persisting env tokens."""
+    """使用 Claude Code 自己的凭证文件，而非持久化环境 token。"""
     writer = save_fn or save_env_value
     writer("ANTHROPIC_TOKEN", "")
     writer("ANTHROPIC_API_KEY", "")
 
 
 def save_anthropic_api_key(value: str, save_fn=None):
-    """Persist an Anthropic API key and clear the OAuth/setup-token slot."""
+    """持久化 Anthropic API 密钥并清除 OAuth/setup-token 槽。"""
     writer = save_fn or save_env_value
     writer("ANTHROPIC_API_KEY", value)
     writer("ANTHROPIC_TOKEN", "")
@@ -3152,11 +3139,11 @@ def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:
 
 
 def reload_env() -> int:
-    """Re-read ~/.hermes/.env into os.environ. Returns count of vars updated.
+    """重新读取 ~/.hermes/.env 到 os.environ。返回更新的变量数。
 
-    Adds/updates vars that changed and removes vars that were deleted from
-    the .env file (but only vars known to Hermes — OPTIONAL_ENV_VARS and
-    _EXTRA_ENV_KEYS — to avoid clobbering unrelated environment).
+    添加/更新已更改的变量，并移除已从 .env 文件中删除的变量
+    （但仅限 Hermes 已知的变量 — OPTIONAL_ENV_VARS 和
+    _EXTRA_ENV_KEYS — 以避免覆盖无关的环境变量）。
     """
     env_vars = load_env()
     known_keys = set(OPTIONAL_ENV_VARS.keys()) | _EXTRA_ENV_KEYS
@@ -3174,7 +3161,7 @@ def reload_env() -> int:
 
 
 def get_env_value(key: str) -> Optional[str]:
-    """Get a value from ~/.hermes/.env or environment."""
+    """从 ~/.hermes/.env 或环境变量获取一个值。"""
     # Check environment first
     if key in os.environ:
         return os.environ[key]
@@ -3185,11 +3172,11 @@ def get_env_value(key: str) -> Optional[str]:
 
 
 # =============================================================================
-# Config display
+# 配置显示
 # =============================================================================
 
 def redact_key(key: str) -> str:
-    """Redact an API key for display."""
+    """脱敏 API 密钥以供显示。"""
     if not key:
         return color("(not set)", Colors.DIM)
     if len(key) < 12:
@@ -3198,7 +3185,7 @@ def redact_key(key: str) -> str:
 
 
 def show_config():
-    """Display current configuration."""
+    """显示当前配置。"""
     config = load_config()
     
     print()
@@ -3360,7 +3347,7 @@ def show_config():
 
 
 def edit_config():
-    """Open config file in user's editor."""
+    """在用户编辑器中打开配置文件。"""
     if is_managed():
         managed_error("edit configuration")
         return
@@ -3392,7 +3379,7 @@ def edit_config():
 
 
 def set_config_value(key: str, value: str):
-    """Set a configuration value."""
+    """设置一个配置值。"""
     if is_managed():
         managed_error("set configuration values")
         return
@@ -3479,11 +3466,11 @@ def set_config_value(key: str, value: str):
 
 
 # =============================================================================
-# Command handler
+# 命令处理器
 # =============================================================================
 
 def config_command(args):
-    """Handle config subcommands."""
+    """处理配置子命令。"""
     subcmd = getattr(args, 'config_command', None)
     
     if subcmd is None or subcmd == "show":

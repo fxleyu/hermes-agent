@@ -1,8 +1,8 @@
-"""Singularity/Apptainer persistent container environment.
+"""Singularity/Apptainer 持久化容器环境。
 
-Security-hardened with --containall, --no-home, capability dropping.
-Supports configurable resource limits and optional filesystem persistence
-via writable overlay directories that survive across sessions.
+通过 --containall、--no-home、权限丢弃等方式进行安全加固。
+支持可配置的资源限制，并通过可写 overlay 目录实现可选的文件系统持久化，
+overlay 目录在多次会话间保持不变。
 """
 
 import logging
@@ -28,7 +28,7 @@ _SNAPSHOT_STORE = get_hermes_home() / "singularity_snapshots.json"
 
 
 def _find_singularity_executable() -> str:
-    """Locate the apptainer or singularity CLI binary."""
+    """查找 apptainer 或 singularity CLI 二进制文件。"""
     if shutil.which("apptainer"):
         return "apptainer"
     if shutil.which("singularity"):
@@ -41,7 +41,7 @@ def _find_singularity_executable() -> str:
 
 
 def _ensure_singularity_available() -> str:
-    """Preflight check: resolve the executable and verify it responds."""
+    """预检：解析可执行文件并验证其能正常响应。"""
     exe = _find_singularity_executable()
     try:
         result = subprocess.run(
@@ -154,11 +154,12 @@ def _get_or_build_sif(image: str, executable: str = "apptainer") -> str:
 
 
 class SingularityEnvironment(BaseEnvironment):
-    """Hardened Singularity/Apptainer container with resource limits and persistence.
+    """安全加固的 Singularity/Apptainer 容器，支持资源限制和持久化。
 
-    Spawn-per-call: every execute() spawns a fresh ``apptainer exec ... bash -c`` process.
-    Session snapshot preserves env vars across calls.
-    CWD persists via in-band stdout markers.
+    每次调用创建新进程：每次 execute() 都启动一个新的
+    ``apptainer exec ... bash -c`` 进程。
+    会话快照在调用间保持环境变量。
+    工作目录通过标准输出中的标记来持久化。
     """
 
     def __init__(
@@ -230,7 +231,7 @@ class SingularityEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
-        """Spawn a bash process inside the Singularity instance."""
+        """在 Singularity 实例内启动一个 bash 进程。"""
         if not self._instance_started:
             raise RuntimeError("Singularity instance not started")
 
@@ -244,7 +245,7 @@ class SingularityEnvironment(BaseEnvironment):
         return _popen_bash(cmd, stdin_data)
 
     def cleanup(self):
-        """Stop the instance. If persistent, the overlay dir survives."""
+        """停止实例。如果启用了持久化，overlay 目录会保留。"""
         if self._instance_started:
             try:
                 subprocess.run(

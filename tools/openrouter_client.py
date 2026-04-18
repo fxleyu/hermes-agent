@@ -1,9 +1,8 @@
-"""Shared OpenRouter API client for Hermes tools.
+"""Hermes 工具的共享 OpenRouter API 客户端。
 
-Provides a single lazy-initialized AsyncOpenAI client that all tool modules
-can share.  Routes through the centralized provider router in
-agent/auxiliary_client.py so auth, headers, and API format are handled
-consistently.
+提供一个延迟初始化的共享 AsyncOpenAI 客户端供所有工具模块使用。
+通过 agent/auxiliary_client.py 中的集中式提供者路由，
+统一处理认证、请求头和 API 格式。
 """
 
 import os
@@ -12,11 +11,11 @@ _client = None
 
 
 def get_async_client():
-    """Return a shared async OpenAI-compatible client for OpenRouter.
+    """返回一个用于 OpenRouter 的共享异步 OpenAI 兼容客户端。
 
-    The client is created lazily on first call and reused thereafter.
-    Uses the centralized provider router for auth and client construction.
-    Raises ValueError if OPENROUTER_API_KEY is not set.
+    客户端在首次调用时延迟创建，之后复用同一实例。
+    使用集中式提供者路由进行认证和客户端构造。
+    如果 OPENROUTER_API_KEY 未设置，则抛出 ValueError。
     """
     global _client
     if _client is None:
@@ -29,5 +28,5 @@ def get_async_client():
 
 
 def check_api_key() -> bool:
-    """Check whether the OpenRouter API key is present."""
+    """检查 OpenRouter API 密钥是否存在。"""
     return bool(os.getenv("OPENROUTER_API_KEY"))

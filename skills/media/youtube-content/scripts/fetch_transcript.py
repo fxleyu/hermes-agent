@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-Fetch a YouTube video transcript and output it as structured JSON.
+获取 YouTube 视频字幕并以结构化 JSON 格式输出。
 
-Usage:
+用法:
     python fetch_transcript.py <url_or_video_id> [--language en,tr] [--timestamps]
 
-Output (JSON):
+输出 (JSON):
     {
         "video_id": "...",
         "language": "en",
         "segments": [{"text": "...", "start": 0.0, "duration": 2.5}, ...],
-        "full_text": "complete transcript as plain text",
-        "timestamped_text": "00:00 first line\n00:05 second line\n..."
+        "full_text": "完整字幕的纯文本",
+        "timestamped_text": "00:00 第一行\n00:05 第二行\n..."
     }
 
-Install dependency:  pip install youtube-transcript-api
+安装依赖:  pip install youtube-transcript-api
 """
 
 import argparse
@@ -24,7 +24,7 @@ import sys
 
 
 def extract_video_id(url_or_id: str) -> str:
-    """Extract the 11-character video ID from various YouTube URL formats."""
+    """从各种 YouTube URL 格式中提取 11 个字符的视频 ID。"""
     url_or_id = url_or_id.strip()
     patterns = [
         r'(?:v=|youtu\.be/|shorts/|embed/|live/)([a-zA-Z0-9_-]{11})',
@@ -38,7 +38,7 @@ def extract_video_id(url_or_id: str) -> str:
 
 
 def format_timestamp(seconds: float) -> str:
-    """Convert seconds to HH:MM:SS or MM:SS format."""
+    """将秒数转换为 HH:MM:SS 或 MM:SS 格式。"""
     total = int(seconds)
     h, remainder = divmod(total, 3600)
     m, s = divmod(remainder, 60)
@@ -48,10 +48,10 @@ def format_timestamp(seconds: float) -> str:
 
 
 def fetch_transcript(video_id: str, languages: list = None):
-    """Fetch transcript segments from YouTube.
+    """从 YouTube 获取字幕片段。
 
-    Returns a list of dicts with 'text', 'start', and 'duration' keys.
-    Compatible with youtube-transcript-api v1.x.
+    返回包含 'text'、'start' 和 'duration' 键的字典列表。
+    兼容 youtube-transcript-api v1.x。
     """
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
@@ -66,7 +66,7 @@ def fetch_transcript(video_id: str, languages: list = None):
     else:
         result = api.fetch(video_id)
 
-    # v1.x returns FetchedTranscriptSnippet objects; normalize to dicts
+    # v1.x 返回 FetchedTranscriptSnippet 对象；标准化为字典
     return [
         {"text": seg.text, "start": seg.start, "duration": seg.duration}
         for seg in result

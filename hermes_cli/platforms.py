@@ -1,10 +1,9 @@
 """
-Shared platform registry for Hermes Agent.
+Hermes Agent 的共享平台注册表。
 
-Single source of truth for platform metadata consumed by both
-skills_config (label display) and tools_config (default toolset
-resolution).  Import ``PLATFORMS`` from here instead of maintaining
-duplicate dicts in each module.
+作为平台元数据的唯一真实来源，被 skills_config（标签展示）和
+tools_config（默认工具集解析）共同使用。应从此处导入 ``PLATFORMS``，
+而不是在各个模块中维护重复的字典。
 """
 
 from collections import OrderedDict
@@ -12,12 +11,12 @@ from typing import NamedTuple
 
 
 class PlatformInfo(NamedTuple):
-    """Metadata for a single platform entry."""
+    """单个平台条目的元数据。"""
     label: str
     default_toolset: str
 
 
-# Ordered so that TUI menus are deterministic.
+# 使用有序字典，确保 TUI 菜单的显示顺序是确定的。
 PLATFORMS: OrderedDict[str, PlatformInfo] = OrderedDict([
     ("cli",            PlatformInfo(label="🖥️  CLI",            default_toolset="hermes-cli")),
     ("telegram",       PlatformInfo(label="📱 Telegram",        default_toolset="hermes-telegram")),
@@ -42,6 +41,6 @@ PLATFORMS: OrderedDict[str, PlatformInfo] = OrderedDict([
 
 
 def platform_label(key: str, default: str = "") -> str:
-    """Return the display label for a platform key, or *default*."""
+    """返回平台键对应的显示标签，如果未找到则返回 *default*。"""
     info = PLATFORMS.get(key)
     return info.label if info is not None else default

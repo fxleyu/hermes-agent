@@ -1,9 +1,8 @@
-"""Shared file sync manager for remote execution backends.
+"""远程执行后端的共享文件同步管理器。
 
-Tracks local file changes via mtime+size, detects deletions, and
-syncs to remote environments transactionally.  Used by SSH, Modal,
-and Daytona.  Docker and Singularity use bind mounts (live host FS
-view) and don't need this.
+通过 mtime+文件大小 跟踪本地文件变更，检测删除操作，并以事务方式同步到远程环境。
+SSH、Modal 和 Daytona 后端使用此模块。Docker 和 Singularity 使用 bind mount
+（直接映射宿主机文件系统），因此不需要文件同步。
 """
 
 import hashlib
@@ -20,7 +19,7 @@ import time
 try:
     import fcntl
 except ImportError:
-    fcntl = None  # Windows — file locking skipped
+    fcntl = None  # Windows 系统 - 跳过文件锁定
 from pathlib import Path
 from typing import Callable
 
@@ -32,24 +31,23 @@ logger = logging.getLogger(__name__)
 _SYNC_INTERVAL_SECONDS = 5.0
 _FORCE_SYNC_ENV = "HERMES_FORCE_FILE_SYNC"
 
-# Transport callbacks provided by each backend
-UploadFn = Callable[[str, str], None]  # (host_path, remote_path) -> raises on failure
-BulkUploadFn = Callable[[list[tuple[str, str]]], None]  # [(host_path, remote_path), ...] -> raises on failure
-BulkDownloadFn = Callable[[Path], None]  # (dest_tar_path) -> writes tar archive, raises on failure
-DeleteFn = Callable[[list[str]], None]  # (remote_paths) -> raises on failure
-GetFilesFn = Callable[[], list[tuple[str, str]]]  # () -> [(host_path, remote_path), ...]
+# 各后端提供的传输回调函数
+UploadFn = Callable[[str, str], None]  # (宿主机路径, 远程路径) -> 失败时抛异常
+BulkUploadFn = Callable[[list[tuple[str, str]]], None]  # [(宿主机路径, 远程路径), ...] -> 失败时抛异常
+BulkDownloadFn = Callable[[Path], None]  # (目标tar路径) -> 写入tar归档，失败时抛异常
+DeleteFn = Callable[[list[str]], None]  # (远程路径列表) -> 失败时抛异常
+GetFilesFn = Callable[[], list[tuple[str, str]]]  # () -> [(宿主机路径, 远程路径), ...]
 
 
 def iter_sync_files(container_base: str = "/root/.hermes") -> list[tuple[str, str]]:
-    """Enumerate all files that should be synced to a remote environment.
+    """枚举所有应同步到远程环境的文件。
 
-    Combines credentials, skills, and cache into a single flat list of
-    (host_path, remote_path) pairs.  Credential paths are remapped from
-    the hardcoded /root/.hermes to *container_base* because the remote
-    user's home may differ (e.g. /home/daytona, /home/user).
+    将凭证、技能和缓存合并到一个扁平的 (宿主机路径, 远程路径) 对列表中。
+    凭证路径从硬编码的 /root/.hermes 重新映射到 *container_base*，
+    因为远程用户的 home 目录可能不同（例如 /home/daytona、/home/user）。
     """
-    # Late import: credential_files imports agent modules that create
-    # circular dependencies if loaded at file_sync module level.
+    # 延迟导入：credential_files 导入的 agent 模块会产生循环依赖，
+    # 如果在 file_sync 模块级别加载的话。
     from tools.credential_files import (
         get_credential_file_mounts,
         iter_cache_files,
@@ -70,22 +68,22 @@ def iter_sync_files(container_base: str = "/root/.hermes") -> list[tuple[str, st
 
 
 def quoted_rm_command(remote_paths: list[str]) -> str:
-    """Build a shell ``rm -f`` command for a batch of remote paths."""
+    """构建用于批量删除远程路径的 shell ``rm -f`` 命令。"""
     return "rm -f " + " ".join(shlex.quote(p) for p in remote_paths)
 
 
 def quoted_mkdir_command(dirs: list[str]) -> str:
-    """Build a shell ``mkdir -p`` command for a batch of directories."""
+    """构建用于批量创建目录的 shell ``mkdir -p`` 命令。"""
     return "mkdir -p " + " ".join(shlex.quote(d) for d in dirs)
 
 
 def unique_parent_dirs(files: list[tuple[str, str]]) -> list[str]:
-    """Extract sorted unique parent directories from (host, remote) pairs."""
+    """从 (宿主机路径, 远程路径) 对中提取排序后的唯一父目录列表。"""
     return sorted({str(Path(remote).parent) for _, remote in files})
 
 
 def _sha256_file(path: str) -> str:
-    """Return hex SHA-256 digest of a file."""
+    """返回文件的十六进制 SHA-256 摘要。"""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
@@ -94,19 +92,18 @@ def _sha256_file(path: str) -> str:
 
 
 _SYNC_BACK_MAX_RETRIES = 3
-_SYNC_BACK_BACKOFF = (2, 4, 8)  # seconds between retries
-_SYNC_BACK_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB — refuse to extract larger tars
+_SYNC_BACK_BACKOFF = (2, 4, 8)  # 重试之间等待的秒数
+_SYNC_BACK_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB - 拒绝解压更大的 tar 文件
 
 
 class FileSyncManager:
-    """Tracks local file changes and syncs to a remote environment.
+    """跟踪本地文件变更并同步到远程环境。
 
-    Backends instantiate this with transport callbacks (upload, delete)
-    and a file-source callable.  The manager handles mtime-based change
-    detection, deletion tracking, rate limiting, and transactional state.
+    后端使用传输回调（upload、delete）和文件来源可调用对象来实例化此类。
+    管理器负责基于 mtime 的变更检测、删除跟踪、频率限制和事务性状态管理。
 
-    Not used by bind-mount backends (Docker, Singularity) — those get
-    live host FS views and don't need file sync.
+    bind mount 后端（Docker、Singularity）不使用此类 - 它们可以直接
+    看到宿主机文件系统，不需要文件同步。
     """
 
     def __init__(
@@ -123,19 +120,19 @@ class FileSyncManager:
         self._bulk_upload_fn = bulk_upload_fn
         self._bulk_download_fn = bulk_download_fn
         self._delete_fn = delete_fn
-        self._synced_files: dict[str, tuple[float, int]] = {}  # remote_path -> (mtime, size)
-        self._pushed_hashes: dict[str, str] = {}  # remote_path -> sha256 hex digest
-        self._last_sync_time: float = 0.0  # monotonic; 0 ensures first sync runs
+        self._synced_files: dict[str, tuple[float, int]] = {}  # 远程路径 -> (mtime, size)
+        self._pushed_hashes: dict[str, str] = {}  # 远程路径 -> sha256 十六进制摘要
+        self._last_sync_time: float = 0.0  # 单调时钟；0 确保首次同步会执行
         self._sync_interval = sync_interval
 
     def sync(self, *, force: bool = False) -> None:
-        """Run a sync cycle: upload changed files, delete removed files.
+        """运行一次同步周期：上传变更的文件，删除已移除的文件。
 
-        Rate-limited to once per ``sync_interval`` unless *force* is True
-        or ``HERMES_FORCE_FILE_SYNC=1`` is set.
+        除非 *force* 为 True 或设置了 ``HERMES_FORCE_FILE_SYNC=1``，
+        否则频率限制为每 ``sync_interval`` 秒一次。
 
-        Transactional: state only committed if ALL operations succeed.
-        On failure, state rolls back so the next cycle retries everything.
+        事务性操作：仅当所有操作成功时才提交状态。
+        失败时回滚状态，下次周期会重试所有操作。
         """
         if not force and not os.environ.get(_FORCE_SYNC_ENV):
             now = time.monotonic()
@@ -145,7 +142,7 @@ class FileSyncManager:
         current_files = self._get_files_fn()
         current_remote_paths = {remote for _, remote in current_files}
 
-        # --- Uploads: new or changed files ---
+        # --- 上传：新增或变更的文件 ---
         to_upload: list[tuple[str, str]] = []
         new_files = dict(self._synced_files)
         for host_path, remote_path in current_files:
@@ -157,14 +154,14 @@ class FileSyncManager:
             to_upload.append((host_path, remote_path))
             new_files[remote_path] = file_key
 
-        # --- Deletes: synced paths no longer in current set ---
+        # --- 删除：已同步但不再存在于当前集合中的路径 ---
         to_delete = [p for p in self._synced_files if p not in current_remote_paths]
 
         if not to_upload and not to_delete:
             self._last_sync_time = time.monotonic()
             return
 
-        # Snapshot for rollback (only when there's work to do)
+        # 保存快照以便回滚（仅在有工作要做时）
         prev_files = dict(self._synced_files)
         prev_hashes = dict(self._pushed_hashes)
 
@@ -186,7 +183,7 @@ class FileSyncManager:
                 self._delete_fn(to_delete)
                 logger.debug("file_sync: deleted %s", to_delete)
 
-            # --- Commit (all succeeded) ---
+            # --- 提交（所有操作成功） ---
             for host_path, remote_path in to_upload:
                 self._pushed_hashes[remote_path] = _sha256_file(host_path)
 
@@ -204,25 +201,23 @@ class FileSyncManager:
             logger.warning("file_sync: sync failed, rolled back state: %s", exc)
 
     # ------------------------------------------------------------------
-    # Sync-back: pull remote changes to host on teardown
+    # 反向同步：在关闭时将远程变更拉回宿主机
     # ------------------------------------------------------------------
 
     def sync_back(self, hermes_home: Path | None = None) -> None:
-        """Pull remote changes back to the host filesystem.
+        """将远程变更拉回宿主机文件系统。
 
-        Downloads the remote ``.hermes/`` directory as a tar archive,
-        unpacks it, and applies only files that differ from what was
-        originally pushed (based on SHA-256 content hashes).
+        将远程 ``.hermes/`` 目录作为 tar 归档下载，解压后仅应用与最初
+        推送的内容不同的文件（基于 SHA-256 内容哈希比较）。
 
-        Protected against SIGINT (defers the signal until complete) and
-        serialized across concurrent gateway sandboxes via file lock.
+        受 SIGINT 保护（延迟信号直到完成），并通过文件锁在并发网关沙箱间
+        实现串行化。
         """
         if self._bulk_download_fn is None:
             return
 
-        # Nothing was ever committed through this manager — the initial
-        # push failed or never ran. Skip sync_back to avoid retry storms
-        # against an uninitialized remote .hermes/ directory.
+        # 从未通过此管理器提交过内容 - 初始推送失败或从未运行。
+        # 跳过 sync_back 以避免对未初始化的远程 .hermes/ 目录发起重试风暴。
         if not self._pushed_hashes and not self._synced_files:
             logger.debug("sync_back: no prior push state — skipping")
             return
@@ -248,10 +243,9 @@ class FileSyncManager:
         logger.warning("sync_back: all %d attempts failed: %s", _SYNC_BACK_MAX_RETRIES, last_exc)
 
     def _sync_back_once(self, lock_path: Path) -> None:
-        """Single sync-back attempt with SIGINT protection and file lock."""
-        # signal.signal() only works from the main thread. In gateway
-        # contexts cleanup() may run from a worker thread — skip SIGINT
-        # deferral there rather than crashing.
+        """单次反向同步尝试，带有 SIGINT 保护和文件锁。"""
+        # signal.signal() 只能在主线程中使用。在网关上下文中，cleanup()
+        # 可能从工作线程运行 - 此时跳过 SIGINT 延迟而非崩溃。
         on_main_thread = threading.current_thread() is threading.main_thread()
 
         deferred_sigint: list[object] = []
@@ -273,9 +267,9 @@ class FileSyncManager:
                     os.kill(os.getpid(), signal.SIGINT)
 
     def _sync_back_locked(self, lock_path: Path) -> None:
-        """Sync-back under file lock (serializes concurrent gateways)."""
+        """在文件锁保护下执行反向同步（串行化并发网关）。"""
         if fcntl is None:
-            # Windows: no flock — run without serialization
+            # Windows: 无 flock - 在没有串行化的情况下运行
             self._sync_back_impl()
             return
         lock_fd = open(lock_path, "w")
@@ -287,11 +281,11 @@ class FileSyncManager:
             lock_fd.close()
 
     def _sync_back_impl(self) -> None:
-        """Download, diff, and apply remote changes to host."""
+        """下载、比较差异并将远程变更应用到宿主机。"""
         if self._bulk_download_fn is None:
             raise RuntimeError("_sync_back_impl called without bulk_download_fn")
 
-        # Cache file mapping once to avoid O(n*m) from repeated iteration
+        # 缓存文件映射以避免重复遍历时的 O(n*m) 复杂度
         try:
             file_mapping = list(self._get_files_fn())
         except Exception:
@@ -300,8 +294,8 @@ class FileSyncManager:
         with tempfile.NamedTemporaryFile(suffix=".tar") as tf:
             self._bulk_download_fn(Path(tf.name))
 
-            # Defensive size cap: a misbehaving sandbox could produce an
-            # arbitrarily large tar. Refuse to extract if it exceeds the cap.
+            # 防御性大小限制：异常的沙箱可能生成任意大的 tar。
+            # 超过上限时拒绝解压。
             try:
                 tar_size = os.path.getsize(tf.name)
             except OSError:
@@ -326,15 +320,15 @@ class FileSyncManager:
 
                         pushed_hash = self._pushed_hashes.get(remote_path)
 
-                        # Skip hashing for files unchanged from push
+                        # 跳过未变更的已推送文件的哈希计算
                         if pushed_hash is not None:
                             remote_hash = _sha256_file(staged_file)
                             if remote_hash == pushed_hash:
                                 continue
                         else:
-                            remote_hash = None  # new remote file
+                            remote_hash = None  # 远程新增文件
 
-                        # Resolve host path from cached mapping
+                        # 从缓存的映射中解析宿主机路径
                         host_path = self._resolve_host_path(remote_path, file_mapping)
                         if host_path is None:
                             host_path = self._infer_host_path(remote_path, file_mapping)
@@ -366,7 +360,7 @@ class FileSyncManager:
 
     def _resolve_host_path(self, remote_path: str,
                            file_mapping: list[tuple[str, str]] | None = None) -> str | None:
-        """Find the host path for a known remote path from the file mapping."""
+        """从文件映射中查找已知远程路径对应的宿主机路径。"""
         mapping = file_mapping if file_mapping is not None else []
         for host, remote in mapping:
             if remote == remote_path:
@@ -375,13 +369,12 @@ class FileSyncManager:
 
     def _infer_host_path(self, remote_path: str,
                          file_mapping: list[tuple[str, str]] | None = None) -> str | None:
-        """Infer a host path for a new remote file by matching path prefixes.
+        """通过匹配路径前缀来推断新远程文件的宿主机路径。
 
-        Uses the existing file mapping to find a remote->host directory
-        pair, then applies the same prefix substitution to the new file.
-        For example, if the mapping has ``/root/.hermes/skills/a.md`` →
-        ``~/.hermes/skills/a.md``, a new remote file at
-        ``/root/.hermes/skills/b.md`` maps to ``~/.hermes/skills/b.md``.
+        利用已有的文件映射找到远程->宿主机目录对，然后对新文件应用相同的
+        前缀替换。例如，如果映射中有 ``/root/.hermes/skills/a.md`` ->
+        ``~/.hermes/skills/a.md``，那么新的远程文件
+        ``/root/.hermes/skills/b.md`` 映射到 ``~/.hermes/skills/b.md``。
         """
         mapping = file_mapping if file_mapping is not None else []
         for host, remote in mapping:

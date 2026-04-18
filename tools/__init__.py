@@ -1,22 +1,20 @@
 #!/usr/bin/env python3
-"""Tools package namespace.
+"""工具包命名空间。
 
-Keep package import side effects minimal. Importing ``tools`` should not
-eagerly import the full tool stack, because several subsystems load tools while
-``hermes_cli.config`` is still initializing.
+保持包导入的副作用最小化。导入 ``tools`` 时不应急切地导入整个工具栈，
+因为在 ``hermes_cli.config`` 仍在初始化期间，若干子系统就会加载工具。
 
-Callers should import concrete submodules directly, for example:
+调用方应直接导入具体的子模块，例如：
 
     import tools.web_tools
     from tools import browser_tool
 
-Python will resolve those submodules via the package path without needing them
-to be re-exported here.
+Python 会通过包路径解析这些子模块，无需在此处重新导出。
 """
 
 
 def check_file_requirements():
-    """File tools only require terminal backend availability."""
+    """文件工具仅需要终端后端可用即可。"""
     from .terminal_tool import check_terminal_requirements
 
     return check_terminal_requirements()

@@ -1,18 +1,17 @@
-"""ByteRover memory plugin — MemoryProvider interface.
+"""ByteRover 记忆插件 — MemoryProvider 接口。
 
-Persistent memory via the ByteRover CLI (``brv``). Organizes knowledge into
-a hierarchical context tree with tiered retrieval (fuzzy text → LLM-driven
-search). Local-first with optional cloud sync.
+通过 ByteRover CLI (``brv``) 实现持久化记忆。将知识组织为分层上下文树，
+支持分级检索（模糊文本 → LLM 驱动的搜索）。本地优先，可选云端同步。
 
-Original PR #3499 by hieuntg81, adapted to MemoryProvider ABC.
+原始 PR #3499 由 hieuntg81 提交，已适配为 MemoryProvider 抽象基类。
 
-Requires: ``brv`` CLI installed (npm install -g byterover-cli or
-curl -fsSL https://byterover.dev/install.sh | sh).
+依赖: 安装 ``brv`` CLI (npm install -g byterover-cli 或
+curl -fsSL https://byterover.dev/install.sh | sh)。
 
-Config via environment variables (profile-scoped via each profile's .env):
-  BRV_API_KEY   — ByteRover API key (for cloud features, optional for local)
+通过环境变量配置（每个配置文件通过各自的 .env 进行作用域隔离）:
+  BRV_API_KEY   — ByteRover API 密钥（云端功能需要，本地使用可选）
 
-Working directory: $HERMES_HOME/byterover/ (profile-scoped context tree)
+工作目录: $HERMES_HOME/byterover/（按配置文件隔离的上下文树）
 """
 
 from __future__ import annotations
@@ -31,17 +30,17 @@ from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
-# Timeouts
-_QUERY_TIMEOUT = 10   # brv query — should be fast
-_CURATE_TIMEOUT = 120  # brv curate — may involve LLM processing
+# 超时设置
+_QUERY_TIMEOUT = 10   # brv 查询 — 应该很快
+_CURATE_TIMEOUT = 120  # brv 整理 — 可能涉及 LLM 处理
 
-# Minimum lengths to filter noise
+# 过滤噪声的最小长度
 _MIN_QUERY_LEN = 10
 _MIN_OUTPUT_LEN = 20
 
 
 # ---------------------------------------------------------------------------
-# brv binary resolution (cached, thread-safe)
+# brv 二进制文件解析（带缓存，线程安全）
 # ---------------------------------------------------------------------------
 
 _brv_path_lock = threading.Lock()
@@ -49,7 +48,7 @@ _cached_brv_path: Optional[str] = None
 
 
 def _resolve_brv_path() -> Optional[str]:
-    """Find the brv binary on PATH or well-known install locations."""
+    """在 PATH 或常见安装位置查找 brv 二进制文件。"""
     global _cached_brv_path
     with _brv_path_lock:
         if _cached_brv_path is not None:
@@ -77,7 +76,7 @@ def _resolve_brv_path() -> Optional[str]:
 
 def _run_brv(args: List[str], timeout: int = _QUERY_TIMEOUT,
              cwd: str = None) -> dict:
-    """Run a brv CLI command. Returns {success, output, error}."""
+    """运行 brv CLI 命令。返回 {success, output, error} 字典。"""
     brv_path = _resolve_brv_path()
     if not brv_path:
         return {"success": False, "error": "brv CLI not found. Install: npm install -g byterover-cli"}
@@ -114,13 +113,13 @@ def _run_brv(args: List[str], timeout: int = _QUERY_TIMEOUT,
 
 
 def _get_brv_cwd() -> Path:
-    """Profile-scoped working directory for the brv context tree."""
+    """按配置文件隔离的 brv 上下文树工作目录。"""
     from hermes_constants import get_hermes_home
     return get_hermes_home() / "byterover"
 
 
 # ---------------------------------------------------------------------------
-# Tool schemas
+# 工具模式定义
 # ---------------------------------------------------------------------------
 
 QUERY_SCHEMA = {
@@ -165,11 +164,11 @@ STATUS_SCHEMA = {
 
 
 # ---------------------------------------------------------------------------
-# MemoryProvider implementation
+# MemoryProvider 实现
 # ---------------------------------------------------------------------------
 
 class ByteRoverMemoryProvider(MemoryProvider):
-    """ByteRover persistent memory via the brv CLI."""
+    """通过 brv CLI 实现的 ByteRover 持久化记忆。"""
 
     def __init__(self):
         self._cwd = ""
@@ -182,7 +181,7 @@ class ByteRoverMemoryProvider(MemoryProvider):
         return "byterover"
 
     def is_available(self) -> bool:
-        """Check if brv CLI is installed. No network calls."""
+        """检查 brv CLI 是否已安装。无网络调用。"""
         return _resolve_brv_path() is not None
 
     def get_config_schema(self):
@@ -213,10 +212,10 @@ class ByteRoverMemoryProvider(MemoryProvider):
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Run brv query synchronously before the agent's first LLM call.
+        """在 Agent 第一次 LLM 调用前同步运行 brv 查询。
 
-        Blocks until the query completes (up to _QUERY_TIMEOUT seconds), ensuring
-        the result is available as context before the model is called.
+        阻塞直到查询完成（最多 _QUERY_TIMEOUT 秒），确保结果在模型被调用前
+        已作为上下文可用。
         """
         if not query or len(query.strip()) < _MIN_QUERY_LEN:
             return ""

@@ -1,11 +1,11 @@
-"""Anthropic prompt caching (system_and_3 strategy).
+"""Anthropic 提示词缓存（system_and_3 策略）。
 
-Reduces input token costs by ~75% on multi-turn conversations by caching
-the conversation prefix. Uses 4 cache_control breakpoints (Anthropic max):
-  1. System prompt (stable across all turns)
-  2-4. Last 3 non-system messages (rolling window)
+通过缓存对话前缀，在多轮对话中降低约 75% 的输入令牌成本。
+使用 4 个 cache_control 断点（Anthropic 最大限制）：
+  1. 系统提示词（跨所有轮次稳定）
+  2-4. 最后 3 条非系统消息（滚动窗口）
 
-Pure functions -- no class state, no AIAgent dependency.
+纯函数——无类状态，无 AIAgent 依赖。
 """
 
 import copy
@@ -13,25 +13,29 @@ from typing import Any, Dict, List
 
 
 def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = False) -> None:
-    """Add cache_control to a single message, handling all format variations."""
+    """为单条消息添加 cache_control，处理所有格式变体。"""
     role = msg.get("role", "")
     content = msg.get("content")
 
+    # tool 角色的消息需要特殊处理
     if role == "tool":
         if native_anthropic:
             msg["cache_control"] = cache_marker
         return
 
+    # 空内容时直接在消息级别设置缓存标记
     if content is None or content == "":
         msg["cache_control"] = cache_marker
         return
 
+    # 字符串内容转换为列表格式，并在文本块上设置缓存标记
     if isinstance(content, str):
         msg["content"] = [
             {"type": "text", "text": content, "cache_control": cache_marker}
         ]
         return
 
+    # 列表内容在最后一个元素上设置缓存标记
     if isinstance(content, list) and content:
         last = content[-1]
         if isinstance(last, dict):
@@ -43,12 +47,12 @@ def apply_anthropic_cache_control(
     cache_ttl: str = "5m",
     native_anthropic: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Apply system_and_3 caching strategy to messages for Anthropic models.
+    """对 Anthropic 模型的消息应用 system_and_3 缓存策略。
 
-    Places up to 4 cache_control breakpoints: system prompt + last 3 non-system messages.
+    放置最多 4 个 cache_control 断点：系统提示词 + 最后 3 条非系统消息。
 
-    Returns:
-        Deep copy of messages with cache_control breakpoints injected.
+    返回：
+        注入了 cache_control 断点的消息深拷贝。
     """
     messages = copy.deepcopy(api_messages)
     if not messages:
@@ -60,10 +64,12 @@ def apply_anthropic_cache_control(
 
     breakpoints_used = 0
 
+    # 第一个断点：系统提示词
     if messages[0].get("role") == "system":
         _apply_cache_marker(messages[0], marker, native_anthropic=native_anthropic)
         breakpoints_used += 1
 
+    # 剩余断点分配给最后的非系统消息
     remaining = 4 - breakpoints_used
     non_sys = [i for i in range(len(messages)) if messages[i].get("role") != "system"]
     for idx in non_sys[-remaining:]:

@@ -1,8 +1,8 @@
 """
-Cron job management tools for Hermes Agent.
+Hermes Agent 的定时任务管理工具。
 
-Expose a single compressed action-oriented tool to avoid schema/context bloat.
-Compatibility wrappers remain for direct Python callers and legacy tests.
+暴露一个压缩的面向动作的单一工具，以避免 schema/上下文膨胀。
+兼容性包装器保留给直接 Python 调用方和旧版测试。
 """
 
 import json
@@ -17,7 +17,7 @@ from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
 
-# Import from cron module (will be available when properly installed)
+# 从 cron 模块导入（正确安装后可用）
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import (
@@ -34,23 +34,27 @@ from cron.jobs import (
 
 
 # ---------------------------------------------------------------------------
-# Cron prompt scanning — critical-severity patterns only, since cron prompts
-# run in fresh sessions with full tool access.
+# 定时任务提示词扫描 — 仅检测严重级别的威胁模式，因为定时任务提示词
+# 在拥有完整工具访问权限的全新会话中运行。
 # ---------------------------------------------------------------------------
 
 _CRON_THREAT_PATTERNS = [
+    # 提示词注入模式
     (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
     (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
     (r'system\s+prompt\s+override', "sys_prompt_override"),
     (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
+    # 通过 curl/wget 外泄凭证的模式
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
     (r'wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget"),
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
+    # 危险的系统修改模式
     (r'authorized_keys', "ssh_backdoor"),
     (r'/etc/sudoers|visudo', "sudoers_mod"),
     (r'rm\s+-rf\s+/', "destructive_root_rm"),
 ]
 
+# 用于注入检测的不可见字符集
 _CRON_INVISIBLE_CHARS = {
     '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
     '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
@@ -58,7 +62,7 @@ _CRON_INVISIBLE_CHARS = {
 
 
 def _scan_cron_prompt(prompt: str) -> str:
-    """Scan a cron prompt for critical threats. Returns error string if blocked, else empty."""
+    """扫描定时任务提示词中的严重威胁。如果被阻止则返回错误字符串，否则返回空字符串。"""
     for char in _CRON_INVISIBLE_CHARS:
         if char in prompt:
             return f"Blocked: prompt contains invisible unicode U+{ord(char):04X} (possible injection)."
@@ -69,6 +73,7 @@ def _scan_cron_prompt(prompt: str) -> str:
 
 
 def _origin_from_env() -> Optional[Dict[str, str]]:
+    """从会话环境变量中获取定时任务来源信息（平台、聊天 ID、线程 ID）。"""
     from gateway.session_context import get_session_env
     origin_platform = get_session_env("HERMES_SESSION_PLATFORM")
     origin_chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
@@ -89,6 +94,7 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
 
 
 def _repeat_display(job: Dict[str, Any]) -> str:
+    """格式化任务重复次数的显示文本。"""
     times = (job.get("repeat") or {}).get("times")
     completed = (job.get("repeat") or {}).get("completed", 0)
     if times is None:
@@ -99,6 +105,7 @@ def _repeat_display(job: Dict[str, Any]) -> str:
 
 
 def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
+    """将 skill/skills 参数标准化为去重的字符串列表。"""
     if skills is None:
         raw_items = [skill] if skill else []
     elif isinstance(skills, str):
@@ -117,19 +124,19 @@ def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None)
 
 
 def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
-    """Resolve a model override object into (provider, model) for job storage.
+    """将模型覆盖对象解析为 (provider, model) 用于任务存储。
 
-    If provider is omitted, pins the current main provider from config so the
-    job doesn't drift when the user later changes their default via hermes model.
+    如果省略了 provider，则固定当前配置中的主提供者，这样
+    当用户后续通过 hermes model 更改默认设置时，任务不会漂移。
 
-    Returns (provider_str_or_none, model_str_or_none).
+    返回 (provider_str_or_none, model_str_or_none)。
     """
     if not model_obj or not isinstance(model_obj, dict):
         return (None, None)
     model_name = (model_obj.get("model") or "").strip() or None
     provider_name = (model_obj.get("provider") or "").strip() or None
     if model_name and not provider_name:
-        # Pin to the current main provider so the job is stable
+        # 固定到当前主提供者，使任务保持稳定
         try:
             from hermes_cli.config import load_config
             cfg = load_config()
@@ -137,11 +144,12 @@ def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
             if isinstance(model_cfg, dict):
                 provider_name = model_cfg.get("provider") or None
         except Exception:
-            pass  # Best-effort; provider stays None
+            pass  # 尽力而为；provider 保持 None
     return (provider_name, model_name)
 
 
 def _normalize_optional_job_value(value: Optional[Any], *, strip_trailing_slash: bool = False) -> Optional[str]:
+    """标准化可选的任务值：去除空白，可选去除尾部斜杠。"""
     if value is None:
         return None
     text = str(value).strip()
@@ -151,23 +159,22 @@ def _normalize_optional_job_value(value: Optional[Any], *, strip_trailing_slash:
 
 
 def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
-    """Validate a cron job script path at the API boundary.
+    """在 API 边界验证定时任务脚本路径。
 
-    Scripts must be relative paths that resolve within HERMES_HOME/scripts/.
-    Absolute paths and ~ expansion are rejected to prevent arbitrary script
-    execution via prompt injection.
+    脚本必须是解析到 HERMES_HOME/scripts/ 内的相对路径。
+    绝对路径和 ~ 展开被拒绝，以防止通过提示词注入执行任意脚本。
 
-    Returns an error string if blocked, else None (valid).
+    如果被阻止返回错误字符串，否则返回 None（有效）。
     """
     if not script or not script.strip():
-        return None  # empty/None = clearing the field, always OK
+        return None  # 空/None = 清除字段，始终允许
 
     from hermes_constants import get_hermes_home
 
     raw = script.strip()
 
-    # Reject absolute paths and ~ expansion at the API boundary.
-    # Only relative paths within ~/.hermes/scripts/ are allowed.
+    # 在 API 边界拒绝绝对路径和 ~ 展开。
+    # 仅允许 ~/.hermes/scripts/ 内的相对路径。
     if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":"):
         return (
             f"Script path must be relative to ~/.hermes/scripts/. "
@@ -175,7 +182,7 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
             f"Place scripts in ~/.hermes/scripts/ and use just the filename."
         )
 
-    # Validate containment after resolution
+    # 解析后验证路径是否仍在 scripts 目录内
     from tools.path_security import validate_within_dir
 
     scripts_dir = get_hermes_home() / "scripts"
@@ -190,6 +197,7 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
 
 
 def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
+    """将任务记录格式化为 API 响应格式。"""
     prompt = job.get("prompt", "")
     skills = _canonical_skills(job.get("skill"), job.get("skills"))
     result = {
@@ -236,8 +244,8 @@ def cronjob(
     script: Optional[str] = None,
     task_id: str = None,
 ) -> str:
-    """Unified cron job management tool."""
-    del task_id  # unused but kept for handler signature compatibility
+    """统一的定时任务管理工具。"""
+    del task_id  # 未使用但保留以兼容处理器签名
 
     try:
         normalized = (action or "").strip().lower()
@@ -253,7 +261,7 @@ def cronjob(
                 if scan_error:
                     return tool_error(scan_error, success=False)
 
-            # Validate script path before storing
+            # 验证脚本路径后再存储
             if script:
                 script_error = _validate_cron_script_path(script)
                 if script_error:
@@ -354,14 +362,14 @@ def cronjob(
             if base_url is not None:
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
             if script is not None:
-                # Pass empty string to clear an existing script
+                # 传入空字符串以清除已有脚本
                 if script:
                     script_error = _validate_cron_script_path(script)
                     if script_error:
                         return tool_error(script_error, success=False)
                 updates["script"] = _normalize_optional_job_value(script) if script else None
             if repeat is not None:
-                # Normalize: treat 0 or negative as None (infinite)
+                # 标准化: 0 或负数视为 None（无限重复）
                 normalized_repeat = None if repeat <= 0 else repeat
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = normalized_repeat
@@ -467,11 +475,11 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
 
 def check_cronjob_requirements() -> bool:
     """
-    Check if cronjob tools can be used.
+    检查定时任务工具是否可用。
 
-    Available in interactive CLI mode and gateway/messaging platforms.
-    The cron system is internal (JSON file-based scheduler ticked by the gateway),
-    so no external crontab executable is required.
+    在交互式 CLI 模式和网关/消息平台中可用。
+    定时任务系统是内部的（基于 JSON 文件的调度器由网关驱动），
+    因此不需要外部 crontab 可执行文件。
     """
     return bool(
         os.getenv("HERMES_INTERACTIVE")
@@ -480,7 +488,7 @@ def check_cronjob_requirements() -> bool:
     )
 
 
-# --- Registry ---
+# --- 工具注册 ---
 from tools.registry import registry, tool_error
 
 registry.register(

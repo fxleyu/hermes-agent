@@ -1,20 +1,19 @@
-"""Built-in boot-md hook — run ~/.hermes/BOOT.md on gateway startup.
+"""内置 boot-md 钩子 — 在网关启动时运行 ~/.hermes/BOOT.md。
 
-This hook is always registered. It silently skips if no BOOT.md exists.
-To activate, create ``~/.hermes/BOOT.md`` with instructions for the
-agent to execute on every gateway restart.
+此钩子始终注册。如果 BOOT.md 不存在，则静默跳过。
+要激活此功能，请创建 ``~/.hermes/BOOT.md``，写入希望代理
+在每次网关重启时执行的指令。
 
-Example BOOT.md::
+BOOT.md 示例::
 
-    # Startup Checklist
+    # 启动检查清单
 
-    1. Check if any cron jobs failed overnight
-    2. Send a status update to Discord #general
-    3. If there are errors in /opt/app/deploy.log, summarize them
+    1. 检查昨晚是否有定时任务失败
+    2. 向 Discord #general 发送状态更新
+    3. 如果 /opt/app/deploy.log 中有错误，进行汇总
 
-The agent runs in a background thread so it doesn't block gateway
-startup. If nothing needs attention, it replies with [SILENT] to
-suppress delivery.
+代理在后台线程中运行，不会阻塞网关启动。
+如果没有需要关注的事项，代理会回复 [SILENT] 以抑制消息投递。
 """
 
 import logging
@@ -28,7 +27,7 @@ BOOT_FILE = HERMES_HOME / "BOOT.md"
 
 
 def _build_boot_prompt(content: str) -> str:
-    """Wrap BOOT.md content in a system-level instruction."""
+    """将 BOOT.md 内容包装为系统级指令。"""
     return (
         "You are running a startup boot checklist. Follow the BOOT.md "
         "instructions below exactly.\n\n"
@@ -43,7 +42,7 @@ def _build_boot_prompt(content: str) -> str:
 
 
 def _run_boot_agent(content: str) -> None:
-    """Spawn a one-shot agent session to execute the boot instructions."""
+    """启动一次性代理会话来执行启动指令。"""
     try:
         from run_agent import AIAgent
 
@@ -65,7 +64,7 @@ def _run_boot_agent(content: str) -> None:
 
 
 async def handle(event_type: str, context: dict) -> None:
-    """Gateway startup handler — run BOOT.md if it exists."""
+    """网关启动处理器 — 如果 BOOT.md 存在则运行它。"""
     if not BOOT_FILE.exists():
         return
 
@@ -75,7 +74,7 @@ async def handle(event_type: str, context: dict) -> None:
 
     logger.info("Running BOOT.md (%d chars)", len(content))
 
-    # Run in a background thread so we don't block gateway startup.
+    # 在后台线程中运行，避免阻塞网关启动。
     thread = threading.Thread(
         target=_run_boot_agent,
         args=(content,),

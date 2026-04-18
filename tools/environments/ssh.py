@@ -1,4 +1,4 @@
-"""SSH remote execution environment with ControlMaster connection persistence."""
+"""SSH 远程执行环境，使用 ControlMaster 实现连接复用和持久化。"""
 
 import logging
 import os
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 def _ensure_ssh_available() -> None:
-    """Fail fast with a clear error when the SSH client is unavailable."""
+    """当 SSH 客户端不可用时，立即以清晰的错误信息失败。"""
     if not shutil.which("ssh"):
         raise RuntimeError(
             "SSH is not installed or not in PATH. Install OpenSSH client: apt install openssh-client"
@@ -29,12 +29,12 @@ def _ensure_ssh_available() -> None:
 
 
 class SSHEnvironment(BaseEnvironment):
-    """Run commands on a remote machine over SSH.
+    """通过 SSH 在远程机器上运行命令。
 
-    Spawn-per-call: every execute() spawns a fresh ``ssh ... bash -c`` process.
-    Session snapshot preserves env vars across calls.
-    CWD persists via in-band stdout markers.
-    Uses SSH ControlMaster for connection reuse.
+    每次调用创建新进程：每次 execute() 都启动一个新的 ``ssh ... bash -c`` 进程。
+    会话快照在调用间保持环境变量。
+    工作目录通过标准输出中的标记来持久化。
+    使用 SSH ControlMaster 实现连接复用。
     """
 
     def __init__(self, host: str, user: str, cwd: str = "~",
@@ -93,7 +93,7 @@ class SSHEnvironment(BaseEnvironment):
             raise RuntimeError(f"SSH connection to {self.user}@{self.host} timed out")
 
     def _detect_remote_home(self) -> str:
-        """Detect the remote user's home directory."""
+        """检测远程用户的 home 目录。"""
         try:
             cmd = self._build_ssh_command()
             cmd.append("echo $HOME")
@@ -109,21 +109,21 @@ class SSHEnvironment(BaseEnvironment):
         return f"/home/{self.user}"
 
     # ------------------------------------------------------------------
-    # File sync (via FileSyncManager)
+    # 文件同步（通过 FileSyncManager 实现）
     # ------------------------------------------------------------------
 
     def _ensure_remote_dirs(self) -> None:
-        """Create base ~/.hermes directory tree on remote in one SSH call."""
+        """在一次 SSH 调用中创建远程 ~/.hermes 基础目录树。"""
         base = f"{self._remote_home}/.hermes"
         dirs = [base, f"{base}/skills", f"{base}/credentials", f"{base}/cache"]
         cmd = self._build_ssh_command()
         cmd.append(quoted_mkdir_command(dirs))
         subprocess.run(cmd, capture_output=True, text=True, timeout=10)
 
-    # _get_sync_files provided via iter_sync_files in FileSyncManager init
+    # _get_sync_files 通过 FileSyncManager init 中的 iter_sync_files 提供
 
     def _scp_upload(self, host_path: str, remote_path: str) -> None:
-        """Upload a single file via scp over ControlMaster."""
+        """通过 ControlMaster 使用 scp 上传单个文件。"""
         parent = str(Path(remote_path).parent)
         mkdir_cmd = self._build_ssh_command()
         mkdir_cmd.append(f"mkdir -p {shlex.quote(parent)}")
@@ -140,15 +140,13 @@ class SSHEnvironment(BaseEnvironment):
             raise RuntimeError(f"scp failed: {result.stderr.strip()}")
 
     def _ssh_bulk_upload(self, files: list[tuple[str, str]]) -> None:
-        """Upload many files in a single tar-over-SSH stream.
+        """通过单个 tar-over-SSH 流批量上传文件。
 
-        Pipes ``tar c`` on the local side through an SSH connection to
-        ``tar x`` on the remote, transferring all files in one TCP stream
-        instead of spawning a subprocess per file.  Directory creation is
-        batched into a single ``mkdir -p`` call beforehand.
+        在本地侧通过 SSH 连接将 ``tar c`` 管道传输到远程的 ``tar x``，
+        在一个 TCP 流中传输所有文件，而非每个文件都启动一个子进程。
+        目录创建被合并到一个 ``mkdir -p`` 调用中。
 
-        Typical improvement: ~580 files goes from O(N) scp round-trips
-        to a single streaming transfer.
+        典型改进：约 580 个文件从 O(N) 次 scp 往返缩减为单次流式传输。
         """
         if not files:
             return
@@ -161,7 +159,7 @@ class SSHEnvironment(BaseEnvironment):
             if result.returncode != 0:
                 raise RuntimeError(f"remote mkdir failed: {result.stderr.strip()}")
 
-        # Symlink staging avoids fragile GNU tar --transform rules.
+        # 使用符号链接暂存区避免脆弱的 GNU tar --transform 规则。
         with tempfile.TemporaryDirectory(prefix="hermes-ssh-bulk-") as staging:
             for host_path, remote_path in files:
                 staged = os.path.join(staging, remote_path.lstrip("/"))
@@ -185,13 +183,13 @@ class SSHEnvironment(BaseEnvironment):
                 tar_proc.wait()
                 raise
 
-            # Allow tar_proc to receive SIGPIPE if ssh_proc exits early
+            # 允许 tar_proc 在 ssh_proc 提前退出时接收 SIGPIPE
             tar_proc.stdout.close()
 
             try:
                 _, ssh_stderr = ssh_proc.communicate(timeout=120)
-                # Use communicate() instead of wait() to drain stderr and
-                # avoid deadlock if tar produces more than PIPE_BUF of errors.
+                # 使用 communicate() 而非 wait() 来排空 stderr，
+                # 避免当 tar 产生超过 PIPE_BUF 大小的错误时发生死锁。
                 tar_stderr_raw = b""
                 if tar_proc.poll() is None:
                     _, tar_stderr_raw = tar_proc.communicate(timeout=10)
@@ -218,9 +216,9 @@ class SSHEnvironment(BaseEnvironment):
         logger.debug("SSH: bulk-uploaded %d file(s) via tar pipe", len(files))
 
     def _ssh_bulk_download(self, dest: Path) -> None:
-        """Download remote .hermes/ as a tar archive."""
-        # Tar from / with the full path so archive entries preserve absolute
-        # paths (e.g. home/user/.hermes/skills/f.py), matching _pushed_hashes keys.
+        """将远程 .hermes/ 目录作为 tar 归档下载。"""
+        # 从 / 开始 tar 并使用完整路径，使归档条目保留绝对路径
+        # （例如 home/user/.hermes/skills/f.py），与 _pushed_hashes 的键匹配。
         rel_base = f"{self._remote_home}/.hermes".lstrip("/")
         ssh_cmd = self._build_ssh_command()
         ssh_cmd.append(f"tar cf - -C / {shlex.quote(rel_base)}")
@@ -230,7 +228,7 @@ class SSHEnvironment(BaseEnvironment):
             raise RuntimeError(f"SSH bulk download failed: {result.stderr.decode(errors='replace').strip()}")
 
     def _ssh_delete(self, remote_paths: list[str]) -> None:
-        """Batch-delete remote files in one SSH call."""
+        """在一次 SSH 调用中批量删除远程文件。"""
         cmd = self._build_ssh_command()
         cmd.append(quoted_rm_command(remote_paths))
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
@@ -238,17 +236,17 @@ class SSHEnvironment(BaseEnvironment):
             raise RuntimeError(f"remote rm failed: {result.stderr.strip()}")
 
     def _before_execute(self) -> None:
-        """Sync files to remote via FileSyncManager (rate-limited internally)."""
+        """通过 FileSyncManager 将文件同步到远程（内部有频率限制）。"""
         self._sync_manager.sync()
 
     # ------------------------------------------------------------------
-    # Execution
+    # 命令执行
     # ------------------------------------------------------------------
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
-        """Spawn an SSH process that runs bash on the remote host."""
+        """启动一个在远程主机上运行 bash 的 SSH 进程。"""
         cmd = self._build_ssh_command()
         if login:
             cmd.extend(["bash", "-l", "-c", shlex.quote(cmd_string)])

@@ -1,6 +1,6 @@
-"""Example dashboard plugin — backend API routes.
+"""示例仪表盘插件 — 后端 API 路由。
 
-Mounted at /api/plugins/example/ by the dashboard plugin system.
+由仪表盘插件系统挂载到 /api/plugins/example/ 路径。
 """
 
 from fastapi import APIRouter
@@ -10,5 +10,5 @@ router = APIRouter()
 
 @router.get("/hello")
 async def hello():
-    """Simple greeting endpoint to demonstrate plugin API routes."""
+    """简单的问候端点，用于演示插件 API 路由。"""
     return {"message": "Hello from the example plugin!", "plugin": "example", "version": "1.0.0"}

@@ -1,31 +1,31 @@
 """
-Process Registry -- In-memory registry for managed background processes.
+进程注册表 -- 用于管理后台进程的内存注册表。
 
-Tracks processes spawned via terminal(background=true), providing:
-  - Output buffering (rolling 200KB window)
-  - Status polling and log retrieval
-  - Blocking wait with interrupt support
-  - Process killing
-  - Crash recovery via JSON checkpoint file
-  - Session-scoped tracking for gateway reset protection
+跟踪通过 terminal(background=true) 启动的进程，提供：
+  - 输出缓冲（滚动 200KB 窗口）
+  - 状态轮询和日志检索
+  - 支持中断的阻塞等待
+  - 进程终止
+  - 通过 JSON 检查点文件进行崩溃恢复
+  - 会话范围跟踪，用于网关重置保护
 
-Background processes execute THROUGH the environment interface -- nothing
-runs on the host machine unless TERMINAL_ENV=local. For Docker, Singularity,
-Modal, Daytona, and SSH backends, the command runs inside the sandbox.
+后台进程通过环境接口执行 -- 除非 TERMINAL_ENV=local，否则不会在
+宿主机上运行。对于 Docker、Singularity、Modal、Daytona 和 SSH 后端，
+命令在沙箱内运行。
 
-Usage:
+使用方法:
     from tools.process_registry import process_registry
 
-    # Spawn a background process (called from terminal_tool)
+    # 启动后台进程（由 terminal_tool 调用）
     session = process_registry.spawn(env, "pytest -v", task_id="task_123")
 
-    # Poll for status
+    # 轮询状态
     result = process_registry.poll(session.id)
 
-    # Block until done
+    # 阻塞等待直到完成
     result = process_registry.wait(session.id, timeout=300)
 
-    # Kill it
+    # 终止进程
     process_registry.kill(session.id)
 """
 
@@ -50,69 +50,70 @@ from hermes_cli.config import get_hermes_home
 logger = logging.getLogger(__name__)
 
 
-# Checkpoint file for crash recovery (gateway only)
+# 崩溃恢复用的检查点文件（仅网关使用）
 CHECKPOINT_PATH = get_hermes_home() / "processes.json"
 
-# Limits
-MAX_OUTPUT_CHARS = 200_000      # 200KB rolling output buffer
-FINISHED_TTL_SECONDS = 1800     # Keep finished processes for 30 minutes
-MAX_PROCESSES = 64              # Max concurrent tracked processes (LRU pruning)
+# 限制参数
+MAX_OUTPUT_CHARS = 200_000      # 200KB 滚动输出缓冲区
+FINISHED_TTL_SECONDS = 1800     # 已完成进程保留 30 分钟
+MAX_PROCESSES = 64              # 最大并发跟踪进程数（LRU 淘汰）
 
-# Watch pattern rate limiting
-WATCH_MAX_PER_WINDOW = 8        # Max notifications delivered per window
-WATCH_WINDOW_SECONDS = 10       # Rolling window length
-WATCH_OVERLOAD_KILL_SECONDS = 45  # Sustained overload duration before disabling watch
+# 监视模式速率限制参数
+WATCH_MAX_PER_WINDOW = 8        # 每个窗口期内最多发送的通知数
+WATCH_WINDOW_SECONDS = 10       # 滚动窗口时长
+WATCH_OVERLOAD_KILL_SECONDS = 45  # 持续过载超过此时长后禁用监视
 
 
 @dataclass
 class ProcessSession:
-    """A tracked background process with output buffering."""
-    id: str                                     # Unique session ID ("proc_xxxxxxxxxxxx")
-    command: str                                 # Original command string
-    task_id: str = ""                           # Task/sandbox isolation key
-    session_key: str = ""                       # Gateway session key (for reset protection)
-    pid: Optional[int] = None                   # OS process ID
-    process: Optional[subprocess.Popen] = None  # Popen handle (local only)
-    env_ref: Any = None                         # Reference to the environment object
-    cwd: Optional[str] = None                   # Working directory
-    started_at: float = 0.0                     # time.time() of spawn
-    exited: bool = False                        # Whether the process has finished
-    exit_code: Optional[int] = None             # Exit code (None if still running)
-    output_buffer: str = ""                     # Rolling output (last MAX_OUTPUT_CHARS)
+    """带有输出缓冲的被跟踪后台进程。"""
+    id: str                                     # 唯一会话 ID ("proc_xxxxxxxxxxxx")
+    command: str                                 # 原始命令字符串
+    task_id: str = ""                           # 任务/沙箱隔离键
+    session_key: str = ""                       # 网关会话键（用于重置保护）
+    pid: Optional[int] = None                   # 操作系统进程 ID
+    process: Optional[subprocess.Popen] = None  # Popen 句柄（仅本地模式）
+    env_ref: Any = None                         # 环境对象的引用
+    cwd: Optional[str] = None                   # 工作目录
+    started_at: float = 0.0                     # 启动时的 time.time()
+    exited: bool = False                        # 进程是否已结束
+    exit_code: Optional[int] = None             # 退出码（运行中时为 None）
+    output_buffer: str = ""                     # 滚动输出（最后 MAX_OUTPUT_CHARS 个字符）
     max_output_chars: int = MAX_OUTPUT_CHARS
-    detached: bool = False                      # True if recovered from crash (no pipe)
-    pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
-    # Watcher/notification metadata (persisted for crash recovery)
+    detached: bool = False                      # 如果从崩溃中恢复则为 True（无管道）
+    pid_scope: str = "host"                     # "host" 表示本地/PTY PID，"sandbox" 表示环境内部 PID
+    # 监视器/通知元数据（持久化用于崩溃恢复）
     watcher_platform: str = ""
     watcher_chat_id: str = ""
     watcher_user_id: str = ""
     watcher_user_name: str = ""
     watcher_thread_id: str = ""
-    watcher_interval: int = 0                   # 0 = no watcher configured
-    notify_on_complete: bool = False             # Queue agent notification on exit
-    # Watch patterns — trigger agent notification when output matches any pattern
+    watcher_interval: int = 0                   # 0 = 未配置监视器
+    notify_on_complete: bool = False             # 退出时将代理通知加入队列
+    # 监视模式 — 当输出匹配任意模式时触发代理通知
     watch_patterns: List[str] = field(default_factory=list)
-    _watch_hits: int = field(default=0, repr=False)          # total matches delivered
-    _watch_suppressed: int = field(default=0, repr=False)    # matches dropped by rate limit
-    _watch_overload_since: float = field(default=0.0, repr=False)  # when sustained overload began
-    _watch_disabled: bool = field(default=False, repr=False) # permanently killed by overload
-    _watch_window_hits: int = field(default=0, repr=False)   # hits in current rate window
+    _watch_hits: int = field(default=0, repr=False)          # 已发送的总匹配数
+    _watch_suppressed: int = field(default=0, repr=False)    # 被速率限制丢弃的匹配数
+    _watch_overload_since: float = field(default=0.0, repr=False)  # 持续过载开始的时间
+    _watch_disabled: bool = field(default=False, repr=False) # 因过载被永久禁用
+    _watch_window_hits: int = field(default=0, repr=False)   # 当前速率窗口内的命中数
     _watch_window_start: float = field(default=0.0, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
-    _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
+    _pty: Any = field(default=None, repr=False)  # ptyprocess 句柄（当 use_pty=True 时）
 
 
 class ProcessRegistry:
     """
-    In-memory registry of running and finished background processes.
+    运行中和已完成后台进程的内存注册表。
 
-    Thread-safe. Accessed from:
-      - Executor threads (terminal_tool, process tool handlers)
-      - Gateway asyncio loop (watcher tasks, session reset checks)
-      - Cleanup thread (sandbox reaping coordination)
+    线程安全。被以下组件访问：
+      - 执行器线程（terminal_tool、进程工具处理器）
+      - 网关 asyncio 循环（监视器任务、会话重置检查）
+      - 清理线程（沙箱回收协调）
     """
 
+    # 需要过滤的 shell 启动噪音字符串
     _SHELL_NOISE_SUBSTRINGS = (
         "bash: cannot set terminal process group",
         "bash: no job control in this shell",
@@ -126,40 +127,39 @@ class ProcessRegistry:
         self._finished: Dict[str, ProcessSession] = {}
         self._lock = threading.Lock()
 
-        # Side-channel for check_interval watchers (gateway reads after agent run)
+        # 用于 check_interval 监视器的旁路通道（网关在代理运行后读取）
         self.pending_watchers: List[Dict[str, Any]] = []
 
-        # Notification queue — unified queue for all background process events.
-        # Completion notifications (notify_on_complete) and watch pattern matches
-        # both land here, distinguished by "type" field.  CLI process_loop and
-        # gateway drain this after each agent turn to auto-trigger new turns.
+        # 通知队列 — 所有后台进程事件的统一队列。
+        # 完成通知 (notify_on_complete) 和监视模式匹配都会到达这里，
+        # 通过 "type" 字段区分。CLI process_loop 和网关在每个代理轮次后
+        # 排空此队列以自动触发新的轮次。
         import queue as _queue_mod
         self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
 
-        # Track sessions whose completion was already consumed by the agent
-        # via wait/poll/log.  Drain loops skip notifications for these.
+        # 跟踪已被代理通过 wait/poll/log 消费的会话完成事件。
+        # 排空循环会跳过这些会话的通知。
         self._completion_consumed: set = set()
 
     @staticmethod
     def _clean_shell_noise(text: str) -> str:
-        """Strip shell startup warnings from the beginning of output."""
+        """去除输出开头的 shell 启动警告信息。"""
         lines = text.split("\n")
         while lines and any(noise in lines[0] for noise in ProcessRegistry._SHELL_NOISE_SUBSTRINGS):
             lines.pop(0)
         return "\n".join(lines)
 
     def _check_watch_patterns(self, session: ProcessSession, new_text: str) -> None:
-        """Scan new output for watch patterns and queue notifications.
+        """扫描新输出中的监视模式并将通知加入队列。
 
-        Called from reader threads with new_text being the freshly-read chunk.
-        Rate-limited: max WATCH_MAX_PER_WINDOW notifications per WATCH_WINDOW_SECONDS.
-        If sustained overload exceeds WATCH_OVERLOAD_KILL_SECONDS, watching is
-        disabled permanently for this process.
+        由读取器线程调用，new_text 是新读取的数据块。
+        速率限制：每 WATCH_WINDOW_SECONDS 秒最多 WATCH_MAX_PER_WINDOW 个通知。
+        如果持续过载超过 WATCH_OVERLOAD_KILL_SECONDS，则永久禁用该进程的监视功能。
         """
         if not session.watch_patterns or session._watch_disabled:
             return
 
-        # Scan new text line-by-line for pattern matches
+        # 逐行扫描新文本查找模式匹配
         matched_lines = []
         matched_pattern = None
         for line in new_text.splitlines():
@@ -168,23 +168,23 @@ class ProcessRegistry:
                     matched_lines.append(line.rstrip())
                     if matched_pattern is None:
                         matched_pattern = pat
-                    break  # one match per line is enough
+                    break  # 每行一个匹配就够了
 
         if not matched_lines:
             return
 
         now = time.time()
         with session._lock:
-            # Reset window if it's expired
+            # 如果窗口已过期则重置
             if now - session._watch_window_start >= WATCH_WINDOW_SECONDS:
                 session._watch_window_hits = 0
                 session._watch_window_start = now
 
-            # Check rate limit
+            # 检查速率限制
             if session._watch_window_hits >= WATCH_MAX_PER_WINDOW:
                 session._watch_suppressed += len(matched_lines)
 
-                # Track sustained overload for kill switch
+                # 跟踪持续过载以触发终止开关
                 if session._watch_overload_since == 0.0:
                     session._watch_overload_since = now
                 elif now - session._watch_overload_since > WATCH_OVERLOAD_KILL_SECONDS:
@@ -208,17 +208,17 @@ class ProcessRegistry:
                     })
                 return
 
-            # Under the rate limit — deliver notification
+            # 在速率限制内 — 发送通知
             session._watch_window_hits += 1
             session._watch_hits += 1
-            # Clear overload tracker since we got a delivery through
+            # 清除过载跟踪器，因为我们成功发送了通知
             session._watch_overload_since = 0.0
 
-            # Include suppressed count if any events were dropped
+            # 如果有事件被丢弃，包含被抑制的计数
             suppressed = session._watch_suppressed
             session._watch_suppressed = 0
 
-        # Trim matched output to a reasonable size
+        # 将匹配的输出截断到合理大小
         output = "\n".join(matched_lines[:20])
         if len(output) > 2000:
             output = output[:2000] + "\n...(truncated)"
@@ -240,7 +240,7 @@ class ProcessRegistry:
 
     @staticmethod
     def _is_host_pid_alive(pid: Optional[int]) -> bool:
-        """Best-effort liveness check for host-visible PIDs."""
+        """尽力检测宿主机可见 PID 的存活状态。"""
         if not pid:
             return False
         try:
@@ -250,7 +250,7 @@ class ProcessRegistry:
             return False
 
     def _refresh_detached_session(self, session: Optional[ProcessSession]) -> Optional[ProcessSession]:
-        """Update recovered host-PID sessions when the underlying process has exited."""
+        """当底层进程已退出时，更新恢复的宿主机 PID 会话。"""
         if session is None or session.exited or not session.detached or session.pid_scope != "host":
             return session
 
@@ -261,8 +261,8 @@ class ProcessRegistry:
             if session.exited:
                 return session
             session.exited = True
-            # Recovered sessions no longer have a waitable handle, so the real
-            # exit code is unavailable once the original process object is gone.
+            # 恢复的会话不再有可等待的句柄，因此一旦原始进程
+            # 对象消失，真正的退出码就不可用了。
             session.exit_code = None
 
         self._move_to_finished(session)
@@ -270,7 +270,7 @@ class ProcessRegistry:
 
     @staticmethod
     def _terminate_host_pid(pid: int) -> None:
-        """Terminate a host-visible PID without requiring the original process handle."""
+        """在不需要原始进程句柄的情况下终止宿主机可见的 PID。"""
         if _IS_WINDOWS:
             os.kill(pid, signal.SIGTERM)
             return
@@ -280,11 +280,11 @@ class ProcessRegistry:
         except (OSError, ProcessLookupError, PermissionError):
             os.kill(pid, signal.SIGTERM)
 
-    # ----- Spawn -----
+    # ----- 启动进程 -----
 
     @staticmethod
     def _env_temp_dir(env: Any) -> str:
-        """Return the writable sandbox temp dir for env-backed background tasks."""
+        """返回环境支持的后台任务的可写沙箱临时目录。"""
         get_temp_dir = getattr(env, "get_temp_dir", None)
         if callable(get_temp_dir):
             try:
@@ -305,14 +305,14 @@ class ProcessRegistry:
         use_pty: bool = False,
     ) -> ProcessSession:
         """
-        Spawn a background process locally.
+        在本地启动后台进程。
 
-        Only for TERMINAL_ENV=local. Other backends use spawn_via_env().
+        仅用于 TERMINAL_ENV=local。其他后端使用 spawn_via_env()。
 
-        Args:
-            use_pty: If True, use a pseudo-terminal via ptyprocess for interactive
-                     CLI tools (Codex, Claude Code, Python REPL). Falls back to
-                     subprocess.Popen if ptyprocess is not installed.
+        参数:
+            use_pty: 如果为 True，通过 ptyprocess 使用伪终端，
+                     适用于交互式 CLI 工具（Codex、Claude Code、Python REPL）。
+                     如果 ptyprocess 未安装，则回退到 subprocess.Popen。
         """
         session = ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}",
@@ -324,7 +324,7 @@ class ProcessRegistry:
         )
 
         if use_pty:
-            # Try PTY mode for interactive CLI tools
+            # 尝试 PTY 模式以支持交互式 CLI 工具
             try:
                 if _IS_WINDOWS:
                     from winpty import PtyProcess as _PtyProcessCls
@@ -340,10 +340,10 @@ class ProcessRegistry:
                     dimensions=(30, 120),
                 )
                 session.pid = pty_proc.pid
-                # Store the pty handle on the session for read/write
+                # 将 pty 句柄存储在会话上以便读写
                 session._pty = pty_proc
 
-                # PTY reader thread
+                # PTY 读取器线程
                 reader = threading.Thread(
                     target=self._pty_reader_loop,
                     args=(session,),
@@ -365,13 +365,13 @@ class ProcessRegistry:
             except Exception as e:
                 logger.warning("PTY spawn failed (%s), falling back to pipe mode", e)
 
-        # Standard Popen path (non-PTY or PTY fallback)
-        # Use the user's login shell for consistency with LocalEnvironment --
-        # ensures rc files are sourced and user tools are available.
+        # 标准 Popen 路径（非 PTY 或 PTY 回退）
+        # 使用用户的登录 shell 以与 LocalEnvironment 保持一致 ——
+        # 确保 rc 文件被加载，用户工具可用。
         user_shell = _find_shell()
-        # Force unbuffered output for Python scripts so progress is visible
-        # during background execution (libraries like tqdm/datasets buffer when
-        # stdout is a pipe, hiding output from process(action="poll")).
+        # 强制 Python 脚本无缓冲输出，以便在后台执行期间可见进度
+        # （tqdm/datasets 等库在 stdout 为管道时会缓冲输出，
+        # 导致 process(action="poll") 看不到输出）。
         bg_env = _sanitize_subprocess_env(os.environ, env_vars)
         bg_env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
@@ -390,7 +390,7 @@ class ProcessRegistry:
         session.process = proc
         session.pid = proc.pid
 
-        # Start output reader thread
+        # 启动输出读取器线程
         reader = threading.Thread(
             target=self._reader_loop,
             args=(session,),
@@ -417,15 +417,14 @@ class ProcessRegistry:
         timeout: int = 10,
     ) -> ProcessSession:
         """
-        Spawn a background process through a non-local environment backend.
+        通过非本地环境后端启动后台进程。
 
-        For Docker/Singularity/Modal/Daytona/SSH: runs the command inside the sandbox
-        using the environment's execute() interface. We wrap the command to
-        capture the in-sandbox PID and redirect output to a log file inside
-        the sandbox, then poll the log via subsequent execute() calls.
+        对于 Docker/Singularity/Modal/Daytona/SSH：使用环境的 execute() 接口
+        在沙箱内运行命令。我们将命令包装起来以捕获沙箱内的 PID，
+        并将输出重定向到沙箱内的日志文件，然后通过后续的 execute() 调用轮询日志。
 
-        This is less capable than local spawn (no live stdout pipe, no stdin),
-        but it ensures the command runs in the correct sandbox context.
+        相比本地启动能力较弱（没有实时 stdout 管道，没有 stdin），
+        但确保命令在正确的沙箱上下文中运行。
         """
         session = ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}",
@@ -438,7 +437,7 @@ class ProcessRegistry:
             pid_scope="sandbox",
         )
 
-        # Run the command in the sandbox with output capture
+        # 在沙箱内运行命令并捕获输出
         temp_dir = self._env_temp_dir(env)
         log_path = f"{temp_dir}/hermes_bg_{session.id}.log"
         pid_path = f"{temp_dir}/hermes_bg_{session.id}.pid"
@@ -458,7 +457,7 @@ class ProcessRegistry:
         try:
             result = env.execute(bg_command, timeout=timeout)
             output = result.get("output", "").strip()
-            # Try to extract the PID from the output
+            # 尝试从输出中提取 PID
             for line in output.splitlines():
                 line = line.strip()
                 if line.isdigit():
@@ -470,7 +469,7 @@ class ProcessRegistry:
             session.output_buffer = f"Failed to start: {e}"
 
         if not session.exited:
-            # Start a poller thread that periodically reads the log file
+            # 启动一个轮询线程，定期读取日志文件
             reader = threading.Thread(
                 target=self._env_poller_loop,
                 args=(session, env, log_path, pid_path, exit_path),
@@ -487,10 +486,10 @@ class ProcessRegistry:
         self._write_checkpoint()
         return session
 
-    # ----- Reader / Poller Threads -----
+    # ----- 读取器/轮询器线程 -----
 
     def _reader_loop(self, session: ProcessSession):
-        """Background thread: read stdout from a local Popen process."""
+        """后台线程：从本地 Popen 进程读取 stdout。"""
         first_chunk = True
         try:
             while True:
@@ -508,7 +507,7 @@ class ProcessRegistry:
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
         finally:
-            # Always reap the child to prevent zombie processes.
+            # 始终回收子进程以防止僵尸进程。
             try:
                 session.process.wait(timeout=5)
             except Exception as e:
@@ -520,19 +519,19 @@ class ProcessRegistry:
     def _env_poller_loop(
         self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str
     ):
-        """Background thread: poll a sandbox log file for non-local backends."""
+        """后台线程：为非本地后端轮询沙箱日志文件。"""
         quoted_log_path = shlex.quote(log_path)
         quoted_pid_path = shlex.quote(pid_path)
         quoted_exit_path = shlex.quote(exit_path)
-        prev_output_len = 0  # track delta for watch pattern scanning
+        prev_output_len = 0  # 跟踪增量以用于监视模式扫描
         while not session.exited:
-            time.sleep(2)  # Poll every 2 seconds
+            time.sleep(2)  # 每 2 秒轮询一次
             try:
-                # Read new output from the log file
+                # 从日志文件读取新输出
                 result = env.execute(f"cat {quoted_log_path} 2>/dev/null", timeout=10)
                 new_output = result.get("output", "")
                 if new_output:
-                    # Compute delta for watch pattern scanning
+                    # 计算增量用于监视模式扫描
                     delta = new_output[prev_output_len:] if len(new_output) > prev_output_len else ""
                     prev_output_len = len(new_output)
                     with session._lock:
@@ -542,14 +541,14 @@ class ProcessRegistry:
                     if delta:
                         self._check_watch_patterns(session, delta)
 
-                # Check if process is still running
+                # 检查进程是否仍在运行
                 check = env.execute(
                     f"kill -0 \"$(cat {quoted_pid_path} 2>/dev/null)\" 2>/dev/null; echo $?",
                     timeout=5,
                 )
                 check_output = check.get("output", "").strip()
                 if check_output and check_output.splitlines()[-1].strip() != "0":
-                    # Process has exited -- get exit code captured by the wrapper shell.
+                    # 进程已退出 -- 获取包装 shell 捕获的退出码。
                     exit_result = env.execute(
                         f"cat {quoted_exit_path} 2>/dev/null",
                         timeout=5,
@@ -564,21 +563,21 @@ class ProcessRegistry:
                     return
 
             except Exception:
-                # Environment might be gone (sandbox reaped, etc.)
+                # 环境可能已不存在（沙箱已被回收等）
                 session.exited = True
                 session.exit_code = -1
                 self._move_to_finished(session)
                 return
 
     def _pty_reader_loop(self, session: ProcessSession):
-        """Background thread: read output from a PTY process."""
+        """后台线程：从 PTY 进程读取输出。"""
         pty = session._pty
         try:
             while pty.isalive():
                 try:
                     chunk = pty.read(4096)
                     if chunk:
-                        # ptyprocess returns bytes
+                        # ptyprocess 返回 bytes
                         text = chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace")
                         with session._lock:
                             session.output_buffer += text
@@ -592,7 +591,7 @@ class ProcessRegistry:
         except Exception as e:
             logger.debug("PTY stdout reader ended: %s", e)
 
-        # Process exited
+        # 进程已退出
         try:
             pty.wait()
         except Exception as e:
@@ -602,20 +601,19 @@ class ProcessRegistry:
         self._move_to_finished(session)
 
     def _move_to_finished(self, session: ProcessSession):
-        """Move a session from running to finished.
+        """将会话从运行中移动到已完成。
 
-        Idempotent: if the session was already moved (e.g. kill_process raced
-        with the reader thread), the second call is a no-op — no duplicate
-        completion notification is enqueued.
+        幂等性：如果会话已被移动（例如 kill_process 与读取器线程竞争），
+        第二次调用是空操作 — 不会有重复的完成通知入队。
         """
         with self._lock:
             was_running = self._running.pop(session.id, None) is not None
             self._finished[session.id] = session
         self._write_checkpoint()
 
-        # Only enqueue completion notification on the FIRST move.  Without
-        # this guard, kill_process() and the reader thread can both call
-        # _move_to_finished(), producing duplicate [SYSTEM: ...] messages.
+        # 仅在首次移动时入队完成通知。没有这个保护，
+        # kill_process() 和读取器线程都可能调用 _move_to_finished()，
+        # 产生重复的 [SYSTEM: ...] 消息。
         if was_running and session.notify_on_complete:
             from tools.ansi_strip import strip_ansi
             output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
@@ -627,20 +625,20 @@ class ProcessRegistry:
                 "output": output_tail,
             })
 
-    # ----- Query Methods -----
+    # ----- 查询方法 -----
 
     def is_completion_consumed(self, session_id: str) -> bool:
-        """Check if a completion notification was already consumed via wait/poll/log."""
+        """检查完成通知是否已通过 wait/poll/log 被消费。"""
         return session_id in self._completion_consumed
 
     def get(self, session_id: str) -> Optional[ProcessSession]:
-        """Get a session by ID (running or finished)."""
+        """通过 ID 获取会话（运行中或已完成）。"""
         with self._lock:
             session = self._running.get(session_id) or self._finished.get(session_id)
         return self._refresh_detached_session(session)
 
     def poll(self, session_id: str) -> dict:
-        """Check status and get new output for a background process."""
+        """检查后台进程的状态并获取新输出。"""
         from tools.ansi_strip import strip_ansi
 
         session = self.get(session_id)
@@ -667,7 +665,7 @@ class ProcessRegistry:
         return result
 
     def read_log(self, session_id: str, offset: int = 0, limit: int = 200) -> dict:
-        """Read the full output log with optional pagination by lines."""
+        """读取完整输出日志，支持按行分页。"""
         from tools.ansi_strip import strip_ansi
 
         session = self.get(session_id)
@@ -680,7 +678,7 @@ class ProcessRegistry:
         lines = full_output.splitlines()
         total_lines = len(lines)
 
-        # Default: last N lines
+        # 默认：最后 N 行
         if offset == 0 and limit > 0:
             selected = lines[-limit:]
         else:
@@ -699,15 +697,15 @@ class ProcessRegistry:
 
     def wait(self, session_id: str, timeout: int = None) -> dict:
         """
-        Block until a process exits, timeout, or interrupt.
+        阻塞等待直到进程退出、超时或中断。
 
-        Args:
-            session_id: The process to wait for.
-            timeout: Max seconds to block. Falls back to TERMINAL_TIMEOUT config.
+        参数:
+            session_id: 要等待的进程。
+            timeout: 最大阻塞秒数。回退到 TERMINAL_TIMEOUT 配置。
 
-        Returns:
-            dict with status ("exited", "timeout", "interrupted", "not_found")
-            and output snapshot.
+        返回:
+            包含 status ("exited"、"timeout"、"interrupted"、"not_found")
+            和输出快照的字典。
         """
         from tools.ansi_strip import strip_ansi
         from tools.interrupt import is_interrupted as _is_interrupted
@@ -771,7 +769,7 @@ class ProcessRegistry:
         return result
 
     def kill_process(self, session_id: str) -> dict:
-        """Kill a background process."""
+        """终止后台进程。"""
         session = self.get(session_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
@@ -782,17 +780,17 @@ class ProcessRegistry:
                 "exit_code": session.exit_code,
             }
 
-        # Kill via PTY, Popen (local), or env execute (non-local)
+        # 通过 PTY、Popen（本地）或 env execute（非本地）终止
         try:
             if session._pty:
-                # PTY process -- terminate via ptyprocess
+                # PTY 进程 -- 通过 ptyprocess 终止
                 try:
                     session._pty.terminate(force=True)
                 except Exception:
                     if session.pid:
                         os.kill(session.pid, signal.SIGTERM)
             elif session.process:
-                # Local process -- kill the process group
+                # 本地进程 -- 终止进程组
                 try:
                     if _IS_WINDOWS:
                         session.process.terminate()
@@ -801,7 +799,7 @@ class ProcessRegistry:
                 except (ProcessLookupError, PermissionError):
                     session.process.kill()
             elif session.env_ref and session.pid:
-                # Non-local -- kill inside sandbox
+                # 非本地 -- 在沙箱内终止
                 session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
             elif session.detached and session.pid_scope == "host" and session.pid:
                 if not self._is_host_pid_alive(session.pid):
@@ -823,7 +821,7 @@ class ProcessRegistry:
                     ),
                 }
             session.exited = True
-            session.exit_code = -15  # SIGTERM
+            session.exit_code = -15  # SIGTERM 信号
             self._move_to_finished(session)
             self._write_checkpoint()
             return {"status": "killed", "session_id": session.id}
@@ -831,14 +829,14 @@ class ProcessRegistry:
             return {"status": "error", "error": str(e)}
 
     def write_stdin(self, session_id: str, data: str) -> dict:
-        """Send raw data to a running process's stdin (no newline appended)."""
+        """向运行中进程的 stdin 发送原始数据（不追加换行符）。"""
         session = self.get(session_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
         if session.exited:
             return {"status": "already_exited", "error": "Process has already finished"}
 
-        # PTY mode -- write through pty handle (expects bytes)
+        # PTY 模式 -- 通过 pty 句柄写入（期望 bytes）
         if hasattr(session, '_pty') and session._pty:
             try:
                 pty_data = data.encode("utf-8") if isinstance(data, str) else data
@@ -847,7 +845,7 @@ class ProcessRegistry:
             except Exception as e:
                 return {"status": "error", "error": str(e)}
 
-        # Popen mode -- write through stdin pipe
+        # Popen 模式 -- 通过 stdin 管道写入
         if not session.process or not session.process.stdin:
             return {"status": "error", "error": "Process stdin not available (non-local backend or stdin closed)"}
         try:
@@ -858,11 +856,11 @@ class ProcessRegistry:
             return {"status": "error", "error": str(e)}
 
     def submit_stdin(self, session_id: str, data: str = "") -> dict:
-        """Send data + newline to a running process's stdin (like pressing Enter)."""
+        """向运行中进程的 stdin 发送数据 + 换行符（类似按回车键）。"""
         return self.write_stdin(session_id, data + "\n")
 
     def close_stdin(self, session_id: str) -> dict:
-        """Close a running process's stdin / send EOF without killing the process."""
+        """关闭运行中进程的 stdin / 发送 EOF 而不终止进程。"""
         session = self.get(session_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
@@ -885,7 +883,7 @@ class ProcessRegistry:
             return {"status": "error", "error": str(e)}
 
     def list_sessions(self, task_id: str = None) -> list:
-        """List all running and recently-finished processes."""
+        """列出所有运行中和近期已完成的进程。"""
         with self._lock:
             all_sessions = list(self._running.values()) + list(self._finished.values())
 
@@ -913,10 +911,10 @@ class ProcessRegistry:
             result.append(entry)
         return result
 
-    # ----- Session/Task Queries (for gateway integration) -----
+    # ----- 会话/任务查询（用于网关集成）-----
 
     def has_active_processes(self, task_id: str) -> bool:
-        """Check if there are active (running) processes for a task_id."""
+        """检查指定 task_id 是否有活跃（运行中）的进程。"""
         with self._lock:
             sessions = list(self._running.values())
 
@@ -930,7 +928,7 @@ class ProcessRegistry:
             )
 
     def has_active_for_session(self, session_key: str) -> bool:
-        """Check if there are active processes for a gateway session key."""
+        """检查指定网关会话键是否有活跃进程。"""
         with self._lock:
             sessions = list(self._running.values())
 
@@ -944,7 +942,7 @@ class ProcessRegistry:
             )
 
     def kill_all(self, task_id: str = None) -> int:
-        """Kill all running processes, optionally filtered by task_id. Returns count killed."""
+        """终止所有运行中的进程，可选按 task_id 过滤。返回终止的数量。"""
         with self._lock:
             targets = [
                 s for s in self._running.values()
@@ -958,11 +956,11 @@ class ProcessRegistry:
                 killed += 1
         return killed
 
-    # ----- Cleanup / Pruning -----
+    # ----- 清理/淘汰 -----
 
     def _prune_if_needed(self):
-        """Remove oldest finished sessions if over MAX_PROCESSES. Must hold _lock."""
-        # First prune expired finished sessions
+        """如果超过 MAX_PROCESSES 限制，移除最旧的已完成会话。调用时必须持有 _lock。"""
+        # 首先清除过期的已完成会话
         now = time.time()
         expired = [
             sid for sid, s in self._finished.items()
@@ -971,16 +969,16 @@ class ProcessRegistry:
         for sid in expired:
             del self._finished[sid]
 
-        # If still over limit, remove oldest finished
+        # 如果仍超过限制，移除最旧的已完成会话
         total = len(self._running) + len(self._finished)
         if total >= MAX_PROCESSES and self._finished:
             oldest_id = min(self._finished, key=lambda sid: self._finished[sid].started_at)
             del self._finished[oldest_id]
 
-    # ----- Checkpoint (crash recovery) -----
+    # ----- 检查点（崩溃恢复）-----
 
     def _write_checkpoint(self):
-        """Write running process metadata to checkpoint file atomically."""
+        """原子性地将运行中的进程元数据写入检查点文件。"""
         try:
             with self._lock:
                 entries = []
@@ -1005,7 +1003,7 @@ class ProcessRegistry:
                             "watch_patterns": s.watch_patterns,
                         })
             
-            # Atomic write to avoid corruption on crash
+            # 原子写入以避免崩溃时数据损坏
             from utils import atomic_json_write
             atomic_json_write(CHECKPOINT_PATH, entries)
         except Exception as e:
@@ -1013,9 +1011,9 @@ class ProcessRegistry:
 
     def recover_from_checkpoint(self) -> int:
         """
-        On gateway startup, probe PIDs from checkpoint file.
+        在网关启动时，从检查点文件探测 PID。
 
-        Returns the number of processes recovered as detached.
+        返回作为分离状态恢复的进程数量。
         """
         if not CHECKPOINT_PATH.exists():
             return 0
@@ -1033,9 +1031,8 @@ class ProcessRegistry:
 
             pid_scope = entry.get("pid_scope", "host")
             if pid_scope != "host":
-                # Sandbox-backed processes keep only in-sandbox PIDs in the
-                # checkpoint, which are not meaningful to the restarted host
-                # process once the original environment handle is gone.
+                # 沙箱支持的进程在检查点中只保存沙箱内部的 PID，
+                # 一旦原始环境句柄消失，这些 PID 对重启后的宿主进程没有意义。
                 logger.info(
                     "Skipping recovery for non-host process: %s (pid=%s, scope=%s)",
                     entry.get("command", "unknown")[:60],
@@ -1044,7 +1041,7 @@ class ProcessRegistry:
                 )
                 continue
 
-            # Check if PID is still alive
+            # 检查 PID 是否仍然存活
             alive = self._is_host_pid_alive(pid)
 
             if alive:
@@ -1057,7 +1054,7 @@ class ProcessRegistry:
                     pid_scope=pid_scope,
                     cwd=entry.get("cwd"),
                     started_at=entry.get("started_at", time.time()),
-                    detached=True,  # Can't read output, but can report status + kill
+                    detached=True,  # 无法读取输出，但可以报告状态和终止
                     watcher_platform=entry.get("watcher_platform", ""),
                     watcher_chat_id=entry.get("watcher_chat_id", ""),
                     watcher_user_id=entry.get("watcher_user_id", ""),
@@ -1072,7 +1069,7 @@ class ProcessRegistry:
                 recovered += 1
                 logger.info("Recovered detached process: %s (pid=%d)", session.command[:60], pid)
 
-                # Re-enqueue watcher so gateway can resume notifications
+                # 重新入队监视器以便网关可以恢复通知
                 if session.watcher_interval > 0:
                     self.pending_watchers.append({
                         "session_id": session.id,
@@ -1091,12 +1088,12 @@ class ProcessRegistry:
         return recovered
 
 
-# Module-level singleton
+# 模块级单例
 process_registry = ProcessRegistry()
 
 
 # ---------------------------------------------------------------------------
-# Registry -- the "process" tool schema + handler
+# 注册表 -- "process" 工具的 schema + 处理器
 # ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
 
@@ -1149,7 +1146,7 @@ def _handle_process(args, **kw):
     import json as _json
     task_id = kw.get("task_id")
     action = args.get("action", "")
-    # Coerce to string — some models send session_id as an integer
+    # 强制转换为字符串 — 某些模型将 session_id 发送为整数
     session_id = str(args.get("session_id", "")) if args.get("session_id") is not None else ""
 
     if action == "list":

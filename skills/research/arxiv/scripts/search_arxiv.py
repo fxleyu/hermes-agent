@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Search arXiv and display results in a clean format.
+"""搜索 arXiv 并以整洁格式显示结果。
 
-Usage:
+用法:
     python search_arxiv.py "GRPO reinforcement learning"
     python search_arxiv.py "GRPO reinforcement learning" --max 10
     python search_arxiv.py "GRPO reinforcement learning" --sort date

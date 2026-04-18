@@ -33,7 +33,7 @@ def _validate_table_name(table_name: str) -> str:
 
 @mcp.tool
 def list_tables() -> list[str]:
-    """List user-defined SQLite tables."""
+    """列出用户定义的 SQLite 表。"""
     with _connect() as conn:
         rows = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
@@ -43,7 +43,7 @@ def list_tables() -> list[str]:
 
 @mcp.tool
 def describe_table(table_name: str) -> list[dict[str, Any]]:
-    """Describe columns for a SQLite table."""
+    """描述 SQLite 表的列信息。"""
     safe_table_name = _validate_table_name(table_name)
     with _connect() as conn:
         rows = conn.execute(f"PRAGMA table_info({safe_table_name})").fetchall()
@@ -62,7 +62,7 @@ def describe_table(table_name: str) -> list[dict[str, Any]]:
 
 @mcp.tool
 def query(sql: str, limit: int = 50) -> dict[str, Any]:
-    """Run a read-only SELECT query and return rows plus column names."""
+    """执行只读 SELECT 查询，返回行数据和列名。"""
     _reject_mutation(sql)
     safe_limit = max(0, min(limit, MAX_ROWS))
     wrapped_sql = f"SELECT * FROM ({sql.strip().rstrip(';')}) LIMIT {safe_limit}"

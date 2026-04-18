@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Discord Voice Doctor — diagnostic tool for voice channel support.
+"""Discord 语音诊断工具 — 语音频道支持的诊断工具。
 
-Checks all dependencies, configuration, and bot permissions needed
-for Discord voice mode to work correctly.
+检查 Discord 语音模式正常工作所需的所有依赖项、配置和机器人权限。
 
-Usage:
+用法:
     python scripts/discord-voice-doctor.py
     .venv/bin/python scripts/discord-voice-doctor.py
 """
@@ -14,7 +13,7 @@ import sys
 import shutil
 from pathlib import Path
 
-# Resolve project root
+# 解析项目根目录
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -26,12 +25,12 @@ OK = "\033[92m\u2713\033[0m"
 FAIL = "\033[91m\u2717\033[0m"
 WARN = "\033[93m!\033[0m"
 
-# Track whether discord.py is available for later sections
+# 跟踪 discord.py 是否可用，供后续检查使用
 _discord_available = False
 
 
 def mask(value):
-    """Mask sensitive value: show only first 4 chars."""
+    """遮蔽敏感值：仅显示前 4 个字符。"""
     if not value or len(value) < 8:
         return "****"
     return f"{value[:4]}{'*' * (len(value) - 4)}"
@@ -58,12 +57,12 @@ def section(title):
 
 
 def check_packages():
-    """Check Python package dependencies. Returns True if all critical deps OK."""
+    """检查 Python 包依赖。如果所有关键依赖都正常则返回 True。"""
     global _discord_available
     section("Python Packages")
     ok = True
 
-    # discord.py
+    # discord.py 包
     try:
         import discord
         _discord_available = True
@@ -95,14 +94,14 @@ def check_packages():
         check("davey (DAVE E2EE)", False, "pip install davey")
         ok = False
 
-    # Optional: local STT
+    # 可选：本地语音转文字
     try:
         import faster_whisper
         check("faster-whisper (local STT)", True)
     except ImportError:
         warn("faster-whisper (local STT)", "not installed — local STT unavailable")
 
-    # Optional: TTS providers
+    # 可选：文字转语音提供者
     try:
         import edge_tts
         check("edge-tts", True)
@@ -119,11 +118,11 @@ def check_packages():
 
 
 def check_system_tools():
-    """Check system-level tools (opus, ffmpeg). Returns True if all OK."""
+    """检查系统级工具（opus、ffmpeg）。如果全部正常则返回 True。"""
     section("System Tools")
     ok = True
 
-    # Opus codec
+    # Opus 编解码器
     if _discord_available:
         try:
             import discord
@@ -132,12 +131,12 @@ def check_system_tools():
                 import ctypes.util
                 opus_path = ctypes.util.find_library("opus")
                 if not opus_path:
-                    # Platform-specific fallback paths
+                    # 特定平台的回退路径
                     candidates = [
-                        "/opt/homebrew/lib/libopus.dylib",   # macOS Apple Silicon
-                        "/usr/local/lib/libopus.dylib",      # macOS Intel
-                        "/usr/lib/x86_64-linux-gnu/libopus.so.0",  # Debian/Ubuntu x86
-                        "/usr/lib/aarch64-linux-gnu/libopus.so.0", # Debian/Ubuntu ARM
+                        "/opt/homebrew/lib/libopus.dylib",   # macOS Apple Silicon 芯片
+                        "/usr/local/lib/libopus.dylib",      # macOS Intel 芯片
+                        "/usr/lib/x86_64-linux-gnu/libopus.so.0",  # Debian/Ubuntu x86 架构
+                        "/usr/lib/aarch64-linux-gnu/libopus.so.0", # Debian/Ubuntu ARM 架构
                         "/usr/lib/libopus.so",               # Arch Linux
                         "/usr/lib64/libopus.so",             # RHEL/Fedora
                     ]
@@ -171,10 +170,10 @@ def check_system_tools():
 
 
 def check_env_vars():
-    """Check environment variables. Returns (ok, token, groq_key, eleven_key)."""
+    """检查环境变量。返回 (ok, token, groq_key, eleven_key)。"""
     section("Environment Variables")
 
-    # Load .env
+    # 加载 .env 文件
     try:
         from dotenv import load_dotenv
         if ENV_FILE.exists():
@@ -191,7 +190,7 @@ def check_env_vars():
         check("DISCORD_BOT_TOKEN", False, "not set")
         ok = False
 
-    # Allowed users — resolve usernames if possible
+    # 允许的用户 — 如果可能的话解析用户名
     allowed = os.getenv("DISCORD_ALLOWED_USERS", "")
     if allowed:
         users = [u.strip() for u in allowed.split(",") if u.strip()]
@@ -232,7 +231,7 @@ def check_env_vars():
 
 
 def check_config(groq_key, eleven_key):
-    """Check hermes config.yaml."""
+    """检查 hermes config.yaml 配置文件。"""
     section("Configuration")
 
     config_path = HERMES_HOME / "config.yaml"
@@ -260,7 +259,7 @@ def check_config(groq_key, eleven_key):
     else:
         warn("config.yaml", "not found — using defaults")
 
-    # Voice mode state
+    # 语音模式状态
     voice_mode_path = HERMES_HOME / "gateway_voice_mode.json"
     if voice_mode_path.exists():
         try:
@@ -276,7 +275,7 @@ def check_config(groq_key, eleven_key):
 
 
 def check_bot_permissions(token):
-    """Check bot permissions via Discord API. Returns True if all OK."""
+    """通过 Discord API 检查机器人权限。如果全部正常则返回 True。"""
     section("Bot Permissions")
 
     if not token:
@@ -323,7 +322,7 @@ def check_bot_permissions(token):
         bot_name = bot.get("username", "?")
         check("Bot login", True, f"{bot_name[:3]}{'*' * (len(bot_name) - 3)}")
 
-        # Check guilds
+        # 检查服务器
         r2 = requests.get("https://discord.com/api/v10/users/@me/guilds", headers=headers, timeout=5)
         if r2.status_code != 200:
             warn("Guilds", f"HTTP {r2.status_code}")
@@ -379,7 +378,7 @@ def main():
     check_config(groq_key, eleven_key)
     all_ok &= check_bot_permissions(token)
 
-    # Summary
+    # 汇总
     print()
     print("\033[1m" + "-" * 50 + "\033[0m")
     if all_ok:

@@ -1,13 +1,13 @@
 """
-Weixin platform adapter.
+微信个人号平台适配器。
 
-Connects Hermes Agent to WeChat personal accounts via Tencent's iLink Bot API.
+通过腾讯 iLink Bot API 将 Hermes Agent 接入微信个人账号。
 
-Design notes:
-- Long-poll ``getupdates`` drives inbound delivery.
-- Every outbound reply must echo the latest ``context_token`` for the peer.
-- Media files move through an AES-128-ECB encrypted CDN protocol.
-- QR login is exposed as a helper for the gateway setup wizard.
+设计要点：
+- 使用长轮询 ``getupdates`` 驱动入站消息投递。
+- 每条出站回复都必须回传对应对等方的最新 ``context_token``。
+- 媒体文件通过 AES-128-ECB 加密的 CDN 协议传输。
+- QR 登录作为辅助功能对外暴露，供网关设置向导使用。
 """
 
 from __future__ import annotations
@@ -116,7 +116,7 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 
 
 def check_weixin_requirements() -> bool:
-    """Return True when runtime dependencies for Weixin are available."""
+    """当微信运行时依赖可用时返回 True。"""
     return AIOHTTP_AVAILABLE and CRYPTO_AVAILABLE
 
 
@@ -201,7 +201,7 @@ def save_weixin_account(
     base_url: str,
     user_id: str = "",
 ) -> None:
-    """Persist account credentials for later reuse."""
+    """持久化账号凭据以供后续复用。"""
     payload = {
         "token": token,
         "base_url": base_url,
@@ -217,7 +217,7 @@ def save_weixin_account(
 
 
 def load_weixin_account(hermes_home: str, account_id: str) -> Optional[Dict[str, Any]]:
-    """Load persisted account credentials."""
+    """加载已持久化的账号凭据。"""
     path = _account_file(hermes_home, account_id)
     if not path.exists():
         return None
@@ -228,7 +228,7 @@ def load_weixin_account(hermes_home: str, account_id: str) -> Optional[Dict[str,
 
 
 class ContextTokenStore:
-    """Disk-backed ``context_token`` cache keyed by account + peer."""
+    """以磁盘为后端的 ``context_token`` 缓存，按账号 + 对等方键索引。"""
 
     def __init__(self, hermes_home: str):
         self._root = _account_dir(hermes_home)
@@ -278,7 +278,7 @@ class ContextTokenStore:
 
 
 class TypingTicketCache:
-    """Short-lived typing ticket cache from ``getconfig``."""
+    """来自 ``getconfig`` 的短生命周期打字凭证缓存。"""
 
     def __init__(self, ttl_seconds: float = 600.0):
         self._ttl_seconds = ttl_seconds
@@ -503,10 +503,10 @@ async def _upload_ciphertext(
     ciphertext: bytes,
     upload_url: str,
 ) -> str:
-    """Upload encrypted media to the CDN.
+    """上传加密媒体到 CDN。
 
-    Accepts either a constructed CDN URL (from upload_param) or a direct
-    upload_full_url — both use POST with the raw ciphertext as the body.
+    接受构造的 CDN URL（来自 upload_param）或直接的
+    upload_full_url — 两者都使用 POST 方法发送原始密文作为请求体。
     """
     timeout = aiohttp.ClientTimeout(total=120)
     async with session.post(upload_url, data=ciphertext, headers={"Content-Type": "application/octet-stream"}, timeout=timeout) as response:
@@ -700,12 +700,11 @@ def _split_markdown_blocks(content: str) -> List[str]:
 
 
 def _split_delivery_units_for_weixin(content: str) -> List[str]:
-    """Split formatted content into chat-friendly delivery units.
+    """将格式化内容拆分为适合聊天的投递单元。
 
-    Weixin can render Markdown, but chat readability is better when top-level
-    line breaks become separate messages. Keep fenced code blocks intact and
-    attach indented continuation lines to the previous top-level line so
-    transformed tables/lists do not get torn apart.
+    微信能渲染 Markdown，但将顶层换行拆分为独立消息能提升聊天可读性。
+    围栏代码块保持完整，缩进的延续行附加到前一个顶层行，
+    以免表格/列表被拆散。
     """
     units: List[str] = []
 
@@ -739,7 +738,7 @@ def _split_delivery_units_for_weixin(content: str) -> List[str]:
 
 
 def _looks_like_chatty_line_for_weixin(line: str) -> bool:
-    """Return True when a line looks like a standalone chat utterance."""
+    """当一行看起来像独立的聊天对话时返回 True。"""
     stripped = line.strip()
     if not stripped:
         return False
@@ -757,7 +756,7 @@ def _looks_like_chatty_line_for_weixin(line: str) -> bool:
 
 
 def _looks_like_heading_line_for_weixin(line: str) -> bool:
-    """Return True when a short line behaves like a plain-text heading."""
+    """当一行短文本表现为纯文本标题时返回 True。"""
     stripped = line.strip()
     if not stripped:
         return False
@@ -765,7 +764,7 @@ def _looks_like_heading_line_for_weixin(line: str) -> bool:
 
 
 def _should_split_short_chat_block_for_weixin(block: str) -> bool:
-    """Split only chat-like multiline blocks into separate bubbles."""
+    """仅将看起来像聊天对话的多行块拆分为独立的气泡消息。"""
     lines = [line for line in block.splitlines() if line.strip()]
     if not 2 <= len(lines) <= 6:
         return False
@@ -800,25 +799,22 @@ def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> List[str]
 def _split_text_for_weixin_delivery(
     content: str, max_length: int, split_per_line: bool = False,
 ) -> List[str]:
-    """Split content into sequential Weixin messages.
+    """将内容拆分为按序发送的微信消息。
 
-    *compact* (default): Keep everything in a single message whenever it fits
-    within the platform limit, even when the author used explicit line breaks.
-    Only fall back to block-aware packing when the payload exceeds
-    ``max_length``.
+    *compact*（默认）：只要内容不超出平台限制，就保持在单条消息中，
+    即使作者使用了显式换行。仅在负载超过 ``max_length`` 时才回退到
+    块感知打包。
 
-    *per_line* (``split_per_line=True``): Legacy behavior — top-level line
-    breaks become separate chat messages; oversized units still use
-    block-aware packing.
+    *per_line*（``split_per_line=True``）：旧行为 — 顶层换行变为
+    独立的聊天消息；超大单元仍使用块感知打包。
 
-    The active mode is controlled via ``config.yaml`` ->
-    ``platforms.weixin.extra.split_multiline_messages`` (``true`` / ``false``)
-    or the env var ``WEIXIN_SPLIT_MULTILINE_MESSAGES``.
+    活跃模式通过 ``config.yaml`` -> ``platforms.weixin.extra.split_multiline_messages``
+    （``true`` / ``false``）或环境变量 ``WEIXIN_SPLIT_MULTILINE_MESSAGES`` 控制。
     """
     if not content:
         return []
     if split_per_line:
-        # Legacy: one message per top-level delivery unit.
+        # 旧行为：每个顶层投递单元一条消息。
         if len(content) <= max_length and "\n" not in content:
             return [content]
         chunks: List[str] = []
@@ -829,9 +825,8 @@ def _split_text_for_weixin_delivery(
             chunks.extend(_pack_markdown_blocks_for_weixin(unit, max_length))
         return [c for c in chunks if c] or [content]
 
-    # Compact (default): single message when under the limit — unless the
-    # content looks like a short chatty exchange, in which case split into
-    # separate bubbles for a more natural chat feel.
+    # 紧凑模式（默认）：不超限时发单条消息 — 除非内容看起来像
+    # 短对话交流，此时拆分为独立气泡以获得更自然的聊天感受。
     if len(content) <= max_length:
         return (
             [u for u in _split_delivery_units_for_weixin(content) if u]
@@ -842,7 +837,7 @@ def _split_text_for_weixin_delivery(
 
 
 def _coerce_bool(value: Any, default: bool = True) -> bool:
-    """Coerce a config value to bool, tolerating strings like ``"true"``."""
+    """将配置值强制转换为 bool，容忍 ``"true"`` 等字符串形式。"""
     if value is None:
         return default
     if isinstance(value, bool):
@@ -928,9 +923,9 @@ async def qr_login(
     timeout_seconds: int = 480,
 ) -> Optional[Dict[str, str]]:
     """
-    Run the interactive iLink QR login flow.
+    运行 iLink 交互式二维码登录流程。
 
-    Returns a credential dict on success, or ``None`` if login fails or times out.
+    登录成功返回凭据字典，失败或超时返回 ``None``。
     """
     if not AIOHTTP_AVAILABLE:
         raise RuntimeError("aiohttp is required for Weixin QR login")
@@ -1044,12 +1039,12 @@ async def qr_login(
 
 
 class WeixinAdapter(BasePlatformAdapter):
-    """Native Hermes adapter for Weixin personal accounts."""
+    """微信个人号的 Hermes 原生适配器。"""
 
     MAX_MESSAGE_LENGTH = 4000
 
-    # WeChat does not support editing sent messages — streaming must use the
-    # fallback "send-final-only" path so the cursor (▉) is never left visible.
+    # 微信不支持编辑已发送的消息 — 流式传输必须使用
+    # "仅发送最终版本" 的回退路径，避免光标（▉）残留可见。
     SUPPORTS_MESSAGE_EDITING = False
 
     def __init__(self, config: PlatformConfig):
@@ -1416,7 +1411,7 @@ class WeixinAdapter(BasePlatformAdapter):
         context_token: Optional[str],
         client_id: str,
     ) -> None:
-        """Send a single text chunk with per-chunk retry and backoff."""
+        """发送单个文本块，支持逐块重试和退避。"""
         last_error: Optional[Exception] = None
         for attempt in range(self._send_chunk_retries + 1):
             try:
@@ -1631,9 +1626,8 @@ class WeixinAdapter(BasePlatformAdapter):
         upload_full_url = str(upload_response.get("upload_full_url") or "")
         ciphertext = _aes128_ecb_encrypt(plaintext, aes_key)
 
-        # Prefer upload_full_url (direct CDN), fall back to constructed CDN URL
-        # from upload_param.  Both paths use POST — the old PUT for
-        # upload_full_url caused 404s on the WeChat CDN.
+        # 优先使用 upload_full_url（直连 CDN），回退到从 upload_param 构造的 CDN URL。
+        # 两条路径都使用 POST — 旧的 PUT 方式在微信 CDN 上会导致 404 错误。
         if upload_full_url:
             upload_url = upload_full_url
         elif upload_param:
@@ -1648,9 +1642,9 @@ class WeixinAdapter(BasePlatformAdapter):
         )
 
         context_token = self._token_store.get(self._account_id, chat_id)
-        # The iLink API expects aes_key as base64(hex_string), not base64(raw_bytes).
-        # Sending base64(raw_bytes) causes images to show as grey boxes on the
-        # receiver side because the decryption key doesn't match.
+        # iLink API 期望 aes_key 为 base64(hex_string) 格式，而非 base64(raw_bytes)。
+        # 发送 base64(raw_bytes) 会导致接收方看到灰色方块图片，
+        # 因为解密密钥不匹配。
         aes_key_for_api = base64.b64encode(aes_key.hex().encode("ascii")).decode("ascii")
         media_item = item_builder(
             encrypt_query_param=encrypted_query_param,

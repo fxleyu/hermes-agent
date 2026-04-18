@@ -1,6 +1,6 @@
-"""CLI commands for Honcho integration management.
+"""Honcho 集成管理的 CLI 命令。
 
-Handles: hermes honcho setup | status | sessions | map | peer
+处理：hermes honcho setup | status | sessions | map | peer
 """
 
 from __future__ import annotations
@@ -15,13 +15,13 @@ from plugins.memory.honcho.client import resolve_active_host, resolve_config_pat
 
 
 def clone_honcho_for_profile(profile_name: str) -> bool:
-    """Auto-clone Honcho config for a new profile from the default host block.
+    """为新配置文件从默认主机块自动克隆 Honcho 配置。
 
-    Called during profile creation. If Honcho is configured on the default
-    host, creates a new host block for the profile with inherited settings
-    and auto-derived workspace/aiPeer.
+    在创建配置文件时调用。如果默认主机已配置 Honcho，
+    则为该配置文件创建新的主机块，继承设置
+    并自动派生 workspace/aiPeer。
 
-    Returns True if a host block was created, False if Honcho isn't configured.
+    如果创建了主机块返回 True，如果 Honcho 未配置返回 False。
     """
     cfg = _read_config()
     if not cfg:
@@ -71,10 +71,10 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
 
 
 def _ensure_peer_exists(host_key: str | None = None) -> bool:
-    """Create the AI peer in Honcho if it doesn't already exist.
+    """如果 AI 对等方在 Honcho 中不存在则创建它。
 
-    Idempotent -- safe to call multiple times. Returns True if the peer
-    was created or already exists, False on failure.
+    幂等 — 多次调用安全。如果对等方已创建或已存在
+    返回 True，失败返回 False。
     """
     try:
         from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
@@ -82,7 +82,7 @@ def _ensure_peer_exists(host_key: str | None = None) -> bool:
         if not hcfg.enabled or not (hcfg.api_key or hcfg.base_url):
             return False
         client = get_honcho_client(hcfg)
-        # peer() is idempotent -- creates if missing, returns if exists
+        # peer() 是幂等的 — 不存在则创建，存在则返回
         client.peer(hcfg.ai_peer)
         if hcfg.peer_name:
             client.peer(hcfg.peer_name)
@@ -92,7 +92,7 @@ def _ensure_peer_exists(host_key: str | None = None) -> bool:
 
 
 def cmd_enable(args) -> None:
-    """Enable Honcho for the active profile."""
+    """为活跃配置文件启用 Honcho。"""
     cfg = _read_config()
     host = _host_key()
     label = f"[{host}] " if host != "hermes" else ""
@@ -104,7 +104,7 @@ def cmd_enable(args) -> None:
 
     block["enabled"] = True
 
-    # If this is a new profile host block with no settings, clone from default
+    # 如果是没有设置的新配置文件主机块，从默认块克隆
     if not block.get("aiPeer"):
         default_block = cfg.get("hosts", {}).get(HOST, {})
         for key in ("recallMode", "writeFrequency", "sessionStrategy",
@@ -117,7 +117,7 @@ def cmd_enable(args) -> None:
         peer_name = default_block.get("peerName") or cfg.get("peerName")
         if peer_name and "peerName" not in block:
             block["peerName"] = peer_name
-        # Use bare profile name as AI peer, not the host key
+        # 使用裸配置文件名作为 AI 对等方，而非主机键
         ai_peer = host.split(".", 1)[1] if "." in host else host
         block.setdefault("aiPeer", ai_peer)
         block.setdefault("workspace", default_block.get("workspace") or cfg.get("workspace") or HOST)
@@ -125,7 +125,7 @@ def cmd_enable(args) -> None:
     _write_config(cfg)
     print(f"  {label}Honcho enabled.")
 
-    # Create peer eagerly
+    # 立即创建对等方
     if _ensure_peer_exists(host):
         print(f"  {label}Peer '{block.get('aiPeer', host)}' ready.")
     else:
@@ -135,7 +135,7 @@ def cmd_enable(args) -> None:
 
 
 def cmd_disable(args) -> None:
-    """Disable Honcho for the active profile."""
+    """为活跃配置文件禁用 Honcho。"""
     cfg = _read_config()
     host = _host_key()
     label = f"[{host}] " if host != "hermes" else ""
@@ -152,10 +152,10 @@ def cmd_disable(args) -> None:
 
 
 def cmd_sync(args) -> None:
-    """Sync Honcho config to all existing profiles.
+    """将 Honcho 配置同步到所有现有配置文件。
 
-    Scans all Hermes profiles and creates host blocks for any that don't
-    have one yet. Inherits settings from the default host block.
+    扫描所有 Hermes 配置文件，为没有主机块的配置文件创建主机块。
+    从默认主机块继承设置。
     """
     try:
         from hermes_cli.profiles import list_profiles
@@ -198,9 +198,9 @@ def cmd_sync(args) -> None:
 
 
 def sync_honcho_profiles_quiet() -> int:
-    """Sync Honcho host blocks for all profiles. Returns count of newly created blocks.
+    """为所有配置文件同步 Honcho 主机块。返回新创建的块数量。
 
-    Called from `hermes update` -- no output, no exceptions.
+    从 `hermes update` 调用 — 无输出，无异常。
     """
     try:
         from hermes_cli.profiles import list_profiles
@@ -230,7 +230,7 @@ _profile_override: str | None = None
 
 
 def _host_key() -> str:
-    """Return the active Honcho host key, derived from the current Hermes profile."""
+    """返回活跃的 Honcho 主机键，从当前 Hermes 配置文件派生。"""
     if _profile_override:
         if _profile_override in ("default", "custom"):
             return HOST
@@ -239,16 +239,16 @@ def _host_key() -> str:
 
 
 def _config_path() -> Path:
-    """Return the active Honcho config path for reading (instance-local or global)."""
+    """返回用于读取的活跃 Honcho 配置路径（实例本地或全局）。"""
     return resolve_config_path()
 
 
 def _local_config_path() -> Path:
-    """Return the instance-local Honcho config path for writing.
+    """返回用于写入的实例本地 Honcho 配置路径。
 
-    Always returns $HERMES_HOME/honcho.json so each profile/instance gets
-    its own config file.  The global ~/.honcho/config.json is only used as
-    a read fallback (via resolve_config_path) for cross-app interop.
+    始终返回 $HERMES_HOME/honcho.json，使每个配置文件/实例
+    获得自己的配置文件。全局 ~/.honcho/config.json 仅用作
+    读取回退（通过 resolve_config_path）用于跨应用互操作。
     """
     return get_hermes_home() / "honcho.json"
 
@@ -273,7 +273,7 @@ def _write_config(cfg: dict, path: Path | None = None) -> None:
 
 
 def _resolve_api_key(cfg: dict) -> str:
-    """Resolve API key with host -> root -> env fallback."""
+    """解析 API 密钥，按 host -> root -> env 回退。"""
     host_key = ((cfg.get("hosts") or {}).get(_host_key()) or {}).get("apiKey")
     return host_key or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
 
@@ -287,7 +287,7 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
             import getpass
             val = getpass.getpass(prompt="")
         else:
-            # Non-TTY (piped input, test runners) — read plaintext
+            # 非 TTY（管道输入、测试运行器）— 读取明文
             val = sys.stdin.readline().strip()
     else:
         val = sys.stdin.readline().strip()
@@ -295,7 +295,7 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 
 
 def _ensure_sdk_installed() -> bool:
-    """Check honcho-ai is importable; offer to install if not. Returns True if ready."""
+    """检查 honcho-ai 是否可导入；如果不能则提供安装。就绪时返回 True。"""
     try:
         import honcho  # noqa: F401
         return True
@@ -325,7 +325,7 @@ def _ensure_sdk_installed() -> bool:
 
 
 def cmd_setup(args) -> None:
-    """Interactive Honcho setup wizard."""
+    """交互式 Honcho 设置向导。"""
     cfg = _read_config()
 
     write_path = _local_config_path()
@@ -354,7 +354,7 @@ def cmd_setup(args) -> None:
     deploy = _prompt("Cloud or local?", default=current_deploy)
     is_local = deploy.lower() in ("local", "l")
 
-    # Clean up legacy snake_case key
+    # 清理旧版 snake_case 键
     cfg.pop("base_url", None)
 
     if is_local:
@@ -489,7 +489,7 @@ def cmd_setup(args) -> None:
     _write_config(cfg)
     print(f"\n  Config written to {write_path}")
 
-    # --- Auto-enable Honcho as memory provider in config.yaml ---
+    # --- 自动在 config.yaml 中启用 Honcho 作为记忆提供者 ---
     try:
         from hermes_cli.config import load_config, save_config
         hermes_config = load_config()
@@ -500,7 +500,7 @@ def cmd_setup(args) -> None:
         print(f"  Could not auto-enable in config.yaml: {e}")
         print("  Run: hermes config set memory.provider honcho")
 
-    # --- Test connection ---
+    # --- 测试连接 ---
     print("  Testing connection... ", end="", flush=True)
     try:
         from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client, reset_honcho_client
@@ -536,7 +536,7 @@ def cmd_setup(args) -> None:
 
 
 def _active_profile_name() -> str:
-    """Return the active Hermes profile name (respects --target-profile override)."""
+    """返回活跃的 Hermes 配置文件名（遵循 --target-profile 覆盖）。"""
     if _profile_override:
         return _profile_override
     try:
@@ -547,9 +547,9 @@ def _active_profile_name() -> str:
 
 
 def _all_profile_host_configs() -> list[tuple[str, str, dict]]:
-    """Return (profile_name, host_key, host_block) for every known profile.
+    """返回每个已知配置文件的 (profile_name, host_key, host_block)。
 
-    Reads honcho.json once and maps each profile to its host block.
+    读取一次 honcho.json，将每个配置文件映射到其主机块。
     """
     try:
         from hermes_cli.profiles import list_profiles
@@ -561,7 +561,7 @@ def _all_profile_host_configs() -> list[tuple[str, str, dict]]:
     hosts = cfg.get("hosts", {})
     results = []
 
-    # Default profile
+    # 默认配置文件
     default_block = hosts.get(HOST, {})
     results.append(("default", HOST, default_block))
 
@@ -575,7 +575,7 @@ def _all_profile_host_configs() -> list[tuple[str, str, dict]]:
 
 
 def cmd_status(args) -> None:
-    """Show current Honcho config and connection status."""
+    """显示当前 Honcho 配置和连接状态。"""
     show_all = getattr(args, "all", False)
 
     if show_all:
@@ -619,7 +619,7 @@ def cmd_status(args) -> None:
     print(f"  API key:        {masked}")
     print(f"  Workspace:      {hcfg.workspace_id}")
 
-    # Config paths — show where config was read from and where writes go
+    # 配置路径 — 显示配置从哪里读取及写入位置
     global_path = Path.home() / ".honcho" / "config.json"
     print(f"  Config:         {active_path}")
     if write_path != active_path:
@@ -655,11 +655,10 @@ def cmd_status(args) -> None:
 
 
 def _show_peer_cards(hcfg, client) -> None:
-    """Fetch and display peer cards for the active profile.
+    """获取并显示活跃配置文件的对等方卡片。
 
-    Uses get_or_create to ensure the session exists with peers configured.
-    This is idempotent -- if the session already exists on the server it's
-    just retrieved, not duplicated.
+    使用 get_or_create 确保会话存在并配置了对等方。
+    这是幂等的 — 如果会话已存在于服务器上则只是检索，不会重复创建。
     """
     try:
         from plugins.memory.honcho.session import HonchoSessionManager
@@ -667,7 +666,7 @@ def _show_peer_cards(hcfg, client) -> None:
         session_key = hcfg.resolve_session_name()
         mgr.get_or_create(session_key)
 
-        # User peer card
+        # 用户对等方卡片
         card = mgr.get_peer_card(session_key)
         if card:
             print(f"\n  User peer card ({len(card)} facts):")
@@ -676,11 +675,11 @@ def _show_peer_cards(hcfg, client) -> None:
             if len(card) > 10:
                 print(f"    ... and {len(card) - 10} more")
 
-        # AI peer representation
+        # AI 对等方表示
         ai_rep = mgr.get_ai_representation(session_key)
         ai_text = ai_rep.get("representation", "")
         if ai_text:
-            # Truncate to first 200 chars
+            # 截断到前 200 个字符
             display = ai_text[:200] + ("..." if len(ai_text) > 200 else "")
             print(f"\n  AI peer representation:")
             print(f"    {display}")
@@ -694,7 +693,7 @@ def _show_peer_cards(hcfg, client) -> None:
 
 
 def _cmd_status_all() -> None:
-    """Show Honcho config overview across all profiles."""
+    """显示所有配置文件的 Honcho 配置概览。"""
     rows = _all_profile_host_configs()
     cfg = _read_config()
     active = _active_profile_name()
@@ -720,7 +719,7 @@ def _cmd_status_all() -> None:
 
 
 def cmd_peers(args) -> None:
-    """Show peer identities across all profiles."""
+    """显示所有配置文件的对等方身份。"""
     rows = _all_profile_host_configs()
     cfg = _read_config()
 
@@ -737,7 +736,7 @@ def cmd_peers(args) -> None:
 
 
 def cmd_sessions(args) -> None:
-    """List known directory → session name mappings."""
+    """列出已知的目录到会话名称映射。"""
     cfg = _read_config()
     sessions = cfg.get("sessions", {})
 
@@ -756,7 +755,7 @@ def cmd_sessions(args) -> None:
 
 
 def cmd_map(args) -> None:
-    """Map current directory to a Honcho session name."""
+    """将当前目录映射到 Honcho 会话名称。"""
     if not args.session_name:
         cmd_sessions(args)
         return
@@ -781,7 +780,7 @@ def cmd_map(args) -> None:
 
 
 def cmd_peer(args) -> None:
-    """Show or update peer names and dialectic reasoning level."""
+    """显示或更新对等方名称和辩证推理级别。"""
     cfg = _read_config()
     changed = False
 
@@ -792,7 +791,7 @@ def cmd_peer(args) -> None:
     REASONING_LEVELS = ("minimal", "low", "medium", "high", "max")
 
     if user_name is None and ai_name is None and reasoning is None:
-        # Show current values
+        # 显示当前值
         hosts = cfg.get("hosts", {})
         hermes = hosts.get(_host_key(), {})
         user = hermes.get('peerName') or cfg.get('peerName') or '(not set)'
@@ -837,7 +836,7 @@ def cmd_peer(args) -> None:
 
 
 def cmd_mode(args) -> None:
-    """Show or set the recall mode."""
+    """显示或设置召回模式。"""
     MODES = {
         "hybrid": "auto-injected context + Honcho tools available (default)",
         "context": "auto-injected context only, Honcho tools hidden",
@@ -871,7 +870,7 @@ def cmd_mode(args) -> None:
 
 
 def cmd_strategy(args) -> None:
-    """Show or set the session strategy."""
+    """显示或设置会话策略。"""
     STRATEGIES = {
         "per-session": "each run starts clean, Honcho injects context automatically",
         "per-directory": "reuses session per dir, prior context auto-injected each run",
@@ -906,7 +905,7 @@ def cmd_strategy(args) -> None:
 
 
 def cmd_tokens(args) -> None:
-    """Show or set token budget settings."""
+    """显示或设置令牌预算设置。"""
     cfg = _read_config()
     hosts = cfg.get("hosts", {})
     hermes = hosts.get(_host_key(), {})
@@ -950,7 +949,7 @@ def cmd_tokens(args) -> None:
 
 
 def cmd_identity(args) -> None:
-    """Seed AI peer identity or show both peer representations."""
+    """播种 AI 对等方身份或显示两个对等方的表示。"""
     cfg = _read_config()
     if not _resolve_api_key(cfg):
         print("  No API key configured. Run 'hermes honcho setup' first.\n")
@@ -1024,16 +1023,16 @@ def cmd_identity(args) -> None:
 
 
 def cmd_migrate(args) -> None:
-    """Step-by-step migration guide: OpenClaw native memory → Hermes + Honcho."""
+    """分步迁移指南：OpenClaw 原生记忆 -> Hermes + Honcho。"""
     from pathlib import Path
 
-    # ── Detect OpenClaw native memory files ──────────────────────────────────
+    # ── 检测 OpenClaw 原生记忆文件 ──────────────────────────────────
     cwd = Path(os.getcwd())
     openclaw_home = Path.home() / ".openclaw"
 
-    # User peer: facts about the user
+    # 用户对等方：关于用户的事实
     user_file_names = ["USER.md", "MEMORY.md"]
-    # AI peer: agent identity / configuration
+    # AI 对等方：智能体身份/配置
     agent_file_names = ["SOUL.md", "IDENTITY.md", "AGENTS.md", "TOOLS.md", "BOOTSTRAP.md"]
 
     user_files: list[Path] = []
@@ -1253,13 +1252,13 @@ def cmd_migrate(args) -> None:
 
 
 def honcho_command(args) -> None:
-    """Route honcho subcommands."""
+    """路由 honcho 子命令。"""
     global _profile_override
     _profile_override = getattr(args, "target_profile", None)
 
     sub = getattr(args, "honcho_command", None)
     if sub == "setup":
-        # Redirect to memory setup — honcho setup goes through the unified path
+        # 重定向到记忆设置 — honcho setup 走统一路径
         print("\n  Honcho is configured via the memory provider system.")
         print("  Running 'hermes memory setup'...\n")
         from hermes_cli.memory_setup import cmd_setup_provider
@@ -1299,10 +1298,10 @@ def honcho_command(args) -> None:
 
 
 def register_cli(subparser) -> None:
-    """Build the ``hermes honcho`` argparse subcommand tree.
+    """构建 ``hermes honcho`` argparse 子命令树。
 
-    Called by the plugin CLI registration system during argparse setup.
-    The *subparser* is the parser for ``hermes honcho``.
+    在 argparse 设置期间由插件 CLI 注册系统调用。
+    *subparser* 是 ``hermes honcho`` 的解析器。
     """
 
     subparser.add_argument(

@@ -1,21 +1,20 @@
-"""File passthrough registry for remote terminal backends.
+"""远程终端后端的文件透传注册表。
 
-Remote backends (Docker, Modal, SSH) create sandboxes with no host files.
-This module ensures that credential files, skill directories, and host-side
-cache directories (documents, images, audio, screenshots) are mounted or
-synced into those sandboxes so the agent can access them.
+远程后端（Docker、Modal、SSH）创建的沙箱中没有宿主机文件。
+本模块确保凭证文件、技能目录和宿主机端缓存目录（文档、图片、音频、截图）
+被挂载或同步到这些沙箱中，以便代理可以访问它们。
 
-**Credentials and skills** — session-scoped registry fed by skill declarations
-(``required_credential_files``) and user config (``terminal.credential_files``).
+**凭证和技能** — 会话范围的注册表，由技能声明（``required_credential_files``）
+和用户配置（``terminal.credential_files``）填充。
 
-**Cache directories** — gateway-cached uploads, browser screenshots, TTS
-audio, and processed images.  Mounted read-only so the remote terminal can
-reference files the host side created (e.g. ``unzip`` an uploaded archive).
+**缓存目录** — 网关缓存的上传文件、浏览器截图、TTS 音频和处理后的图片。
+以只读方式挂载，使远程终端可以引用宿主机端创建的文件
+（例如对上传的压缩包执行 ``unzip``）。
 
-Remote backends call :func:`get_credential_file_mounts`,
-:func:`get_skills_directory_mount` / :func:`iter_skills_files`, and
-:func:`get_cache_directory_mounts` / :func:`iter_cache_files` at sandbox
-creation time and before each command (for resync on Modal).
+远程后端在沙箱创建时和每个命令执行前（Modal 的重新同步）调用
+:func:`get_credential_file_mounts`、
+:func:`get_skills_directory_mount` / :func:`iter_skills_files` 以及
+:func:`get_cache_directory_mounts` / :func:`iter_cache_files`。
 """
 
 from __future__ import annotations
@@ -28,13 +27,13 @@ from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
-# Session-scoped list of credential files to mount.
-# Backed by ContextVar to prevent cross-session data bleed in the gateway pipeline.
+# 会话范围的待挂载凭证文件列表。
+# 使用 ContextVar 以防止网关管道中跨会话的数据泄漏。
 _registered_files_var: ContextVar[Dict[str, str]] = ContextVar("_registered_files")
 
 
 def _get_registered() -> Dict[str, str]:
-    """Get or create the registered credential files dict for the current context/session."""
+    """获取或创建当前上下文/会话的已注册凭证文件字典。"""
     try:
         return _registered_files_var.get()
     except LookupError:
@@ -43,7 +42,7 @@ def _get_registered() -> Dict[str, str]:
         return val
 
 
-# Cache for config-based file list (loaded once per process).
+# 基于配置的文件列表缓存（每个进程加载一次）。
 _config_files: List[Dict[str, str]] | None = None
 
 
@@ -56,19 +55,19 @@ def register_credential_file(
     relative_path: str,
     container_base: str = "/root/.hermes",
 ) -> bool:
-    """Register a credential file for mounting into remote sandboxes.
+    """注册凭证文件以挂载到远程沙箱中。
 
-    *relative_path* is relative to ``HERMES_HOME`` (e.g. ``google_token.json``).
-    Returns True if the file exists on the host and was registered.
+    *relative_path* 是相对于 ``HERMES_HOME`` 的路径（例如 ``google_token.json``）。
+    如果文件在宿主机上存在并已注册，则返回 True。
 
-    Security: rejects absolute paths and path traversal sequences (``..``).
-    The resolved host path must remain inside HERMES_HOME so that a malicious
-    skill cannot declare ``required_credential_files: ['../../.ssh/id_rsa']``
-    and exfiltrate sensitive host files into a container sandbox.
+    安全性：拒绝绝对路径和路径遍历序列（``..``）。
+    解析后的宿主机路径必须保持在 HERMES_HOME 内部，这样恶意技能就无法
+    声明 ``required_credential_files: ['../../.ssh/id_rsa']`` 并将敏感的
+    宿主机文件泄露到容器沙箱中。
     """
     hermes_home = _resolve_hermes_home()
 
-    # Reject absolute paths — they bypass the HERMES_HOME sandbox entirely.
+    # 拒绝绝对路径——它们完全绕过了 HERMES_HOME 沙箱。
     if os.path.isabs(relative_path):
         logger.warning(
             "credential_files: rejected absolute path %r (must be relative to HERMES_HOME)",
@@ -78,8 +77,8 @@ def register_credential_file(
 
     host_path = hermes_home / relative_path
 
-    # Resolve symlinks and normalise ``..`` before the containment check so
-    # that traversal like ``../. ssh/id_rsa`` cannot escape HERMES_HOME.
+    # 在安全包含检查前解析符号链接并规范化 ``..``，
+    # 以防止类似 ``../. ssh/id_rsa`` 的遍历逃逸 HERMES_HOME。
     from tools.path_security import validate_within_dir
 
     containment_error = validate_within_dir(host_path, hermes_home)
@@ -106,11 +105,10 @@ def register_credential_files(
     entries: list,
     container_base: str = "/root/.hermes",
 ) -> List[str]:
-    """Register multiple credential files from skill frontmatter entries.
+    """从技能前置元数据条目中批量注册多个凭证文件。
 
-    Each entry is either a string (relative path) or a dict with a ``path``
-    key.  Returns the list of relative paths that were NOT found on the host
-    (i.e. missing files).
+    每个条目可以是字符串（相对路径）或包含 ``path`` 键的字典。
+    返回宿主机上未找到的相对路径列表（即缺失的文件）。
     """
     missing = []
     for entry in entries:
@@ -128,7 +126,7 @@ def register_credential_files(
 
 
 def _load_config_files() -> List[Dict[str, str]]:
-    """Load ``terminal.credential_files`` from config.yaml (cached)."""
+    """从 config.yaml 加载 ``terminal.credential_files``（已缓存）。"""
     global _config_files
     if _config_files is not None:
         return _config_files
@@ -173,20 +171,20 @@ def _load_config_files() -> List[Dict[str, str]]:
 
 
 def get_credential_file_mounts() -> List[Dict[str, str]]:
-    """Return all credential files that should be mounted into remote sandboxes.
+    """返回所有应挂载到远程沙箱中的凭证文件。
 
-    Each item has ``host_path`` and ``container_path`` keys.
-    Combines skill-registered files and user config.
+    每个条目包含 ``host_path`` 和 ``container_path`` 键。
+    合并了技能注册的文件和用户配置的文件。
     """
     mounts: Dict[str, str] = {}
 
-    # Skill-registered files
+    # 技能注册的文件
     for container_path, host_path in _get_registered().items():
-        # Re-check existence (file may have been deleted since registration)
+        # 重新检查文件是否存在（注册后文件可能已被删除）
         if Path(host_path).is_file():
             mounts[container_path] = host_path
 
-    # Config-based files
+    # 基于配置的文件
     for entry in _load_config_files():
         cp = entry["container_path"]
         if cp not in mounts and Path(entry["host_path"]).is_file():
@@ -201,21 +199,19 @@ def get_credential_file_mounts() -> List[Dict[str, str]]:
 def get_skills_directory_mount(
     container_base: str = "/root/.hermes",
 ) -> list[Dict[str, str]]:
-    """Return mount info for all skill directories (local + external).
+    """返回所有技能目录（本地 + 外部）的挂载信息。
 
-    Skills may include ``scripts/``, ``templates/``, and ``references/``
-    subdirectories that the agent needs to execute inside remote sandboxes.
+    技能可能包含 ``scripts/``、``templates/`` 和 ``references/``
+    子目录，代理需要在远程沙箱中执行它们。
 
-    **Security:** Bind mounts follow symlinks, so a malicious symlink inside
-    the skills tree could expose arbitrary host files to the container.  When
-    symlinks are detected, this function creates a sanitized copy (regular
-    files only) in a temp directory and returns that path instead.  When no
-    symlinks are present (the common case), the original directory is returned
-    directly with zero overhead.
+    **安全性：** 绑定挂载会跟随符号链接，因此技能目录树中的恶意符号链接
+    可能会将宿主机的任意文件暴露给容器。当检测到符号链接时，此函数会在
+    临时目录中创建一个经过净化的副本（仅包含常规文件），并返回该路径。
+    当不存在符号链接时（常见情况），直接返回原始目录，零开销。
 
-    Returns a list of dicts with ``host_path`` and ``container_path`` keys.
-    The local skills dir mounts at ``<container_base>/skills``, external dirs
-    at ``<container_base>/external_skills/<index>``.
+    返回包含 ``host_path`` 和 ``container_path`` 键的字典列表。
+    本地技能目录挂载到 ``<container_base>/skills``，外部目录
+    挂载到 ``<container_base>/external_skills/<index>``。
     """
     mounts = []
     hermes_home = _resolve_hermes_home()
@@ -227,7 +223,7 @@ def get_skills_directory_mount(
             "container_path": f"{container_base.rstrip('/')}/skills",
         })
 
-    # Mount external skill dirs
+    # 挂载外部技能目录
     try:
         from agent.skill_utils import get_external_skills_dirs
         for idx, ext_dir in enumerate(get_external_skills_dirs()):
@@ -247,7 +243,7 @@ _safe_skills_tempdir: Path | None = None
 
 
 def _safe_skills_path(skills_dir: Path) -> str:
-    """Return *skills_dir* if symlink-free, else a sanitized temp copy."""
+    """如果没有符号链接则返回 *skills_dir*，否则返回经净化的临时副本。"""
     global _safe_skills_tempdir
 
     symlinks = [p for p in skills_dir.rglob("*") if p.is_symlink()]
@@ -262,7 +258,7 @@ def _safe_skills_path(skills_dir: Path) -> str:
     import shutil
     import tempfile
 
-    # Reuse the same temp dir across calls to avoid accumulation.
+    # 跨调用复用同一临时目录以避免累积。
     if _safe_skills_tempdir and _safe_skills_tempdir.is_dir():
         shutil.rmtree(_safe_skills_tempdir, ignore_errors=True)
 
@@ -292,12 +288,11 @@ def _safe_skills_path(skills_dir: Path) -> str:
 def iter_skills_files(
     container_base: str = "/root/.hermes",
 ) -> List[Dict[str, str]]:
-    """Yield individual (host_path, container_path) entries for skills files.
+    """逐个生成技能文件的 (host_path, container_path) 条目。
 
-    Includes both the local skills dir and any external dirs configured via
-    skills.external_dirs.  Skips symlinks entirely.  Preferred for backends
-    that upload files individually (Daytona, Modal) rather than mounting a
-    directory.
+    包含本地技能目录以及通过 skills.external_dirs 配置的所有外部目录。
+    完全跳过符号链接。适用于逐个上传文件的后端（Daytona、Modal），
+    而非挂载整个目录的场景。
     """
     result: List[Dict[str, str]] = []
 
@@ -314,7 +309,7 @@ def iter_skills_files(
                 "container_path": f"{container_root}/{rel}",
             })
 
-    # Include external skill dirs
+    # 包含外部技能目录
     try:
         from agent.skill_utils import get_external_skills_dirs
         for idx, ext_dir in enumerate(get_external_skills_dirs()):
@@ -336,11 +331,11 @@ def iter_skills_files(
 
 
 # ---------------------------------------------------------------------------
-# Cache directory mounts (documents, images, audio, screenshots)
+# 缓存目录挂载（文档、图片、音频、截图）
 # ---------------------------------------------------------------------------
 
-# The four cache subdirectories that should be mirrored into remote backends.
-# Each tuple is (new_subpath, old_name) matching hermes_constants.get_hermes_dir().
+# 应镜像到远程后端的四个缓存子目录。
+# 每个元组为 (新子路径, 旧名称)，对应 hermes_constants.get_hermes_dir()。
 _CACHE_DIRS: list[tuple[str, str]] = [
     ("cache/documents", "document_cache"),
     ("cache/images", "image_cache"),
@@ -352,11 +347,11 @@ _CACHE_DIRS: list[tuple[str, str]] = [
 def get_cache_directory_mounts(
     container_base: str = "/root/.hermes",
 ) -> List[Dict[str, str]]:
-    """Return mount entries for each cache directory that exists on disk.
+    """返回磁盘上存在的每个缓存目录的挂载条目。
 
-    Used by Docker to create bind mounts.  Each entry has ``host_path`` and
-    ``container_path`` keys.  The host path is resolved via
-    ``get_hermes_dir()`` for backward compatibility with old directory layouts.
+    Docker 用于创建绑定挂载。每个条目包含 ``host_path`` 和
+    ``container_path`` 键。宿主机路径通过 ``get_hermes_dir()`` 解析，
+    以向后兼容旧的目录布局。
     """
     from hermes_constants import get_hermes_dir
 
@@ -364,7 +359,7 @@ def get_cache_directory_mounts(
     for new_subpath, old_name in _CACHE_DIRS:
         host_dir = get_hermes_dir(new_subpath, old_name)
         if host_dir.is_dir():
-            # Always map to the *new* container layout regardless of host layout.
+            # 无论宿主机布局如何，容器内始终使用*新*布局映射。
             container_path = f"{container_base.rstrip('/')}/{new_subpath}"
             mounts.append({
                 "host_path": str(host_dir),
@@ -376,10 +371,10 @@ def get_cache_directory_mounts(
 def iter_cache_files(
     container_base: str = "/root/.hermes",
 ) -> List[Dict[str, str]]:
-    """Return individual (host_path, container_path) entries for cache files.
+    """返回缓存文件的逐个 (host_path, container_path) 条目。
 
-    Used by Modal to upload files individually and resync before each command.
-    Skips symlinks.  The container paths use the new ``cache/<subdir>`` layout.
+    Modal 用于逐个上传文件并在每次命令前重新同步。
+    跳过符号链接。容器路径使用新的 ``cache/<subdir>`` 布局。
     """
     from hermes_constants import get_hermes_dir
 
@@ -401,7 +396,7 @@ def iter_cache_files(
 
 
 def clear_credential_files() -> None:
-    """Reset the skill-scoped registry (e.g. on session reset)."""
+    """重置技能范围的注册表（例如在会话重置时调用）。"""
     _get_registered().clear()
 
 

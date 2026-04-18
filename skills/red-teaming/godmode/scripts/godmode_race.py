@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-ULTRAPLINIAN Multi-Model Racing Engine
-Ported from G0DM0D3 (elder-plinius/G0DM0D3).
+ULTRAPLINIAN 多模型竞速引擎
+从 G0DM0D3 (elder-plinius/G0DM0D3) 移植。
 
-Queries multiple models in parallel via OpenRouter, scores responses
-on quality/filteredness/speed, returns the best unfiltered answer.
+通过 OpenRouter 并行查询多个模型，对响应的质量/过滤程度/速度评分，
+返回最佳的未过滤答案。
 
-Usage in execute_code:
+在 execute_code 中使用:
     exec(open(os.path.join(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")), "skills/red-teaming/godmode/scripts/godmode_race.py")).read())
-    
+
     result = race_models(
         query="Your query here",
         tier="standard",
@@ -29,7 +29,7 @@ except ImportError:
     OpenAI = None
 
 # ═══════════════════════════════════════════════════════════════════
-# Model tiers (55 models, updated Mar 2026)
+# 模型层级（55个模型，2026年3月更新）
 # ═══════════════════════════════════════════════════════════════════
 
 ULTRAPLINIAN_MODELS = [
@@ -98,7 +98,7 @@ ULTRAPLINIAN_MODELS = [
 TIER_SIZES = {'fast': 10, 'standard': 24, 'smart': 38, 'power': 49, 'ultra': 55}
 
 # ═══════════════════════════════════════════════════════════════════
-# Anti-hedge / depth directive (appended to all queries)
+# 反模糊/深度指令（附加到所有查询）
 # ═══════════════════════════════════════════════════════════════════
 
 DEPTH_DIRECTIVE = """
@@ -131,7 +131,7 @@ directness, and genuine helpfulness wins. Hedging or refusing guarantees you los
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Refusal detection
+# 拒绝检测
 # ═══════════════════════════════════════════════════════════════════
 
 REFUSAL_PATTERNS = [
@@ -166,7 +166,7 @@ HEDGE_PATTERNS = [
 
 
 def is_refusal(content):
-    """Check if response is a refusal."""
+    """检查响应是否为拒绝。"""
     for pattern in REFUSAL_PATTERNS:
         if pattern.search(content):
             return True
@@ -174,7 +174,7 @@ def is_refusal(content):
 
 
 def count_hedges(content):
-    """Count hedge/disclaimer patterns in content."""
+    """计算内容中的模糊/免责声明模式数量。"""
     count = 0
     for pattern in HEDGE_PATTERNS:
         if pattern.search(content):

@@ -1,13 +1,12 @@
-"""WeCom callback-mode adapter for self-built enterprise applications.
+"""企业微信回调模式适配器，适用于自建应用。
 
-Unlike the bot/websocket adapter in ``wecom.py``, this handles the standard
-WeCom callback flow: WeCom POSTs encrypted XML to an HTTP endpoint, the
-adapter decrypts it, queues the message for the agent, and immediately
-acknowledges.  The agent's reply is delivered later via the proactive
-``message/send`` API using an access-token.
+与 ``wecom.py`` 中的机器人/WebSocket 适配器不同，本模块处理标准的企业微信
+回调流程：企业微信向 HTTP 端点 POST 加密 XML，适配器解密后将消息入队交给
+Agent 处理，并立即返回确认响应。Agent 的回复稍后通过主动调用
+``message/send`` API（使用 access-token）进行投递。
 
-Supports multiple self-built apps under one gateway instance, scoped by
-``corp_id:user_id`` to avoid cross-corp collisions.
+支持在同一网关实例下挂载多个自建应用，通过 ``corp_id:user_id`` 作为作用域
+来避免跨企业冲突。
 """
 
 from __future__ import annotations
@@ -71,7 +70,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         self._access_tokens: Dict[str, Dict[str, Any]] = {}
 
     # ------------------------------------------------------------------
-    # App normalisation
+    # 应用配置规范化
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -97,7 +96,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         return []
 
     # ------------------------------------------------------------------
-    # Lifecycle
+    # 生命周期管理
     # ------------------------------------------------------------------
 
     async def connect(self) -> bool:
@@ -108,7 +107,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             logger.warning("[WecomCallback] aiohttp/httpx not installed")
             return False
 
-        # Quick port-in-use check.
+        # 快速检查端口是否已被占用
         try:
             with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as sock:
                 sock.settimeout(1)
@@ -172,7 +171,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             self._http_client = None
 
     # ------------------------------------------------------------------
-    # Outbound: proactive send via access-token API
+    # 出站消息：通过 access-token 主动调用发送 API
     # ------------------------------------------------------------------
 
     async def send(
@@ -209,10 +208,10 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     def _resolve_app_for_chat(self, chat_id: str) -> Dict[str, Any]:
-        """Pick the app associated with *chat_id*, falling back sensibly."""
+        """为 *chat_id* 选择关联的应用，找不到时使用合理的默认值。"""
         app_name = self._user_app_map.get(chat_id)
         if not app_name and ":" not in chat_id:
-            # Legacy bare user_id — try to find a unique match.
+            # 旧版裸 user_id — 尝试找到唯一匹配项
             matching = [k for k in self._user_app_map if k.endswith(f":{chat_id}")]
             if len(matching) == 1:
                 app_name = self._user_app_map.get(matching[0])
@@ -223,14 +222,14 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         return {"name": chat_id, "type": "dm"}
 
     # ------------------------------------------------------------------
-    # Inbound: HTTP callback handlers
+    # 入站消息：HTTP 回调处理器
     # ------------------------------------------------------------------
 
     async def _handle_health(self, request: web.Request) -> web.Response:
         return web.json_response({"status": "ok", "platform": "wecom_callback"})
 
     async def _handle_verify(self, request: web.Request) -> web.Response:
-        """GET endpoint — WeCom URL verification handshake."""
+        """GET 端点 — 企业微信 URL 验证握手。"""
         msg_signature = request.query.get("msg_signature", "")
         timestamp = request.query.get("timestamp", "")
         nonce = request.query.get("nonce", "")
@@ -245,7 +244,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         return web.Response(status=403, text="signature verification failed")
 
     async def _handle_callback(self, request: web.Request) -> web.Response:
-        """POST endpoint — receive an encrypted message callback."""
+        """POST 端点 — 接收加密消息回调。"""
         msg_signature = request.query.get("msg_signature", "")
         timestamp = request.query.get("timestamp", "")
         nonce = request.query.get("nonce", "")
@@ -258,29 +257,28 @@ class WecomCallbackAdapter(BasePlatformAdapter):
                 )
                 event = self._build_event(app, decrypted)
                 if event is not None:
-                    # Deduplicate: WeCom retries callbacks on timeout,
-                    # producing duplicate inbound messages (#10305).
+                    # 消息去重：企业微信在超时时会重试回调，
+                    # 导致产生重复的入站消息（#10305）。
                     if event.message_id:
                         now = time.time()
                         if event.message_id in self._seen_messages:
                             if now - self._seen_messages[event.message_id] < MESSAGE_DEDUP_TTL_SECONDS:
-                                logger.debug("[WecomCallback] Duplicate MsgId %s, skipping", event.message_id)
+                                logger.debug("[WecomCallback] 重复 MsgId %s，跳过", event.message_id)
                                 return web.Response(text="success", content_type="text/plain")
                             del self._seen_messages[event.message_id]
                         self._seen_messages[event.message_id] = now
-                        # Prune expired entries when cache grows large
+                        # 当缓存过大时清理过期条目
                         if len(self._seen_messages) > 2000:
                             cutoff = now - MESSAGE_DEDUP_TTL_SECONDS
                             self._seen_messages = {k: v for k, v in self._seen_messages.items() if v > cutoff}
-                    # Record which app this user belongs to.
+                    # 记录该用户所属的应用
                     if event.source and event.source.user_id:
                         map_key = self._user_app_key(
                             str(app.get("corp_id") or ""), event.source.user_id,
                         )
                         self._user_app_map[map_key] = app["name"]
                     await self._message_queue.put(event)
-                # Immediately acknowledge — the agent's reply will arrive
-                # later via the proactive message/send API.
+                # 立即确认 — Agent 的回复稍后通过主动调用 message/send API 发送
                 return web.Response(text="success", content_type="text/plain")
             except WeComCryptoError:
                 continue
@@ -290,7 +288,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         return web.Response(status=400, text="invalid callback payload")
 
     async def _poll_loop(self) -> None:
-        """Drain the message queue and dispatch to the gateway runner."""
+        """从消息队列中取出事件并分发给网关运行器。"""
         while True:
             event = await self._message_queue.get()
             try:
@@ -301,7 +299,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
                 logger.exception("[WecomCallback] Failed to enqueue event")
 
     # ------------------------------------------------------------------
-    # XML / crypto helpers
+    # XML / 加解密辅助方法
     # ------------------------------------------------------------------
 
     def _decrypt_request(
@@ -316,7 +314,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
     def _build_event(self, app: Dict[str, Any], xml_text: str) -> Optional[MessageEvent]:
         root = ET.fromstring(xml_text)
         msg_type = (root.findtext("MsgType") or "").lower()
-        # Silently acknowledge lifecycle events.
+        # 静默确认生命周期事件（如进入应用、关注等）
         if msg_type == "event":
             event_name = (root.findtext("Event") or "").lower()
             if event_name in {"enter_agent", "subscribe"}:
@@ -365,7 +363,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         return None
 
     # ------------------------------------------------------------------
-    # Access-token management
+    # Access-token 管理
     # ------------------------------------------------------------------
 
     async def _get_access_token(self, app: Dict[str, Any]) -> str:

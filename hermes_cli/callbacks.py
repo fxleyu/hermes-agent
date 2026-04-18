@@ -1,9 +1,8 @@
-"""Interactive prompt callbacks for terminal_tool integration.
+"""terminal_tool 集成的交互式提示回调。
 
-These bridge terminal_tool's interactive prompts (clarify, sudo, approval)
-into prompt_toolkit's event loop. Each function takes the HermesCLI instance
-as its first argument and uses its state (queues, app reference) to coordinate
-with the TUI.
+这些函数将 terminal_tool 的交互式提示（澄清、sudo、审批）
+桥接到 prompt_toolkit 的事件循环中。每个函数以 HermesCLI 实例
+作为第一个参数，并使用其状态（队列、app 引用）与 TUI 协调。
 """
 
 import queue
@@ -16,10 +15,10 @@ from hermes_constants import display_hermes_home
 
 
 def clarify_callback(cli, question, choices):
-    """Prompt for clarifying question through the TUI.
+    """通过 TUI 提示用户回答澄清问题。
 
-    Sets up the interactive selection UI, then blocks until the user
-    responds. Returns the user's choice or a timeout message.
+    设置交互式选择 UI，然后阻塞等待用户响应。
+    返回用户的选择或超时消息。
     """
     from cli import CLI_CONFIG
 
@@ -64,10 +63,10 @@ def clarify_callback(cli, question, choices):
 
 
 def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
-    """Prompt for a secret value through the TUI (e.g. API keys for skills).
+    """通过 TUI 提示用户输入密钥值（例如技能的 API 密钥）。
 
-    Returns a dict with keys: success, stored_as, validated, skipped, message.
-    The secret is stored in ~/.hermes/.env and never exposed to the model.
+    返回包含以下键的字典：success、stored_as、validated、skipped、message。
+    密钥存储在 ~/.hermes/.env 中，不会暴露给模型。
     """
     if not getattr(cli, "_app", None):
         if not hasattr(cli, "_secret_state"):
@@ -109,7 +108,7 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
         "response_queue": response_queue,
     }
     cli._secret_deadline = _time.monotonic() + timeout
-    # Avoid storing stale draft input as the secret when Enter is pressed.
+    # 避免在按下回车键时将过期的草稿输入作为密钥存储。
     if hasattr(cli, "_clear_secret_input_buffer"):
         try:
             cli._clear_secret_input_buffer()
@@ -184,14 +183,14 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
 
 
 def approval_callback(cli, command: str, description: str) -> str:
-    """Prompt for dangerous command approval through the TUI.
+    """通过 TUI 提示用户审批危险命令。
 
-    Shows a selection UI with choices: once / session / always / deny.
-    When the command is longer than 70 characters, a "view" option is
-    included so the user can reveal the full text before deciding.
+    显示包含选项的选择 UI：once / session / always / deny。
+    当命令长度超过 70 个字符时，会包含一个 "view" 选项，
+    让用户在做决定前查看完整文本。
 
-    Uses cli._approval_lock to serialize concurrent requests (e.g. from
-    parallel delegation subtasks) so each prompt gets its own turn.
+    使用 cli._approval_lock 序列化并发请求（例如来自
+    并行委托子任务的请求），确保每个提示都有自己的轮次。
     """
     lock = getattr(cli, "_approval_lock", None)
     if lock is None:

@@ -1,19 +1,19 @@
-"""Hindsight memory plugin — MemoryProvider interface.
+"""Hindsight 记忆插件 — MemoryProvider 接口。
 
-Long-term memory with knowledge graph, entity resolution, and multi-strategy
-retrieval. Supports cloud (API key) and local modes.
+具有知识图谱、实体解析和多策略检索的长期记忆。
+支持云端（API 密钥）和本地模式。
 
-Original PR #1811 by benfrank241, adapted to MemoryProvider ABC.
+原始 PR #1811 由 benfrank241 提交，已适配为 MemoryProvider 抽象基类。
 
-Config via environment variables:
-  HINDSIGHT_API_KEY   — API key for Hindsight Cloud
-  HINDSIGHT_BANK_ID   — memory bank identifier (default: hermes)
-  HINDSIGHT_BUDGET    — recall budget: low/mid/high (default: mid)
-  HINDSIGHT_API_URL   — API endpoint
-  HINDSIGHT_MODE      — cloud or local (default: cloud)
+通过环境变量配置：
+  HINDSIGHT_API_KEY   — Hindsight Cloud 的 API 密钥
+  HINDSIGHT_BANK_ID   — 记忆库标识符（默认：hermes）
+  HINDSIGHT_BUDGET    — 检索预算：low/mid/high（默认：mid）
+  HINDSIGHT_API_URL   — API 端点
+  HINDSIGHT_MODE      — cloud 或 local（默认：cloud）
 
-Or via $HERMES_HOME/hindsight/config.json (profile-scoped), falling back to
-~/.hindsight/config.json (legacy, shared) for backward compatibility.
+或通过 $HERMES_HOME/hindsight/config.json（配置文件作用域），
+回退到 ~/.hindsight/config.json（旧版，共享）以保持向后兼容。
 """
 
 from __future__ import annotations
@@ -51,8 +51,8 @@ _PROVIDER_DEFAULT_MODELS = {
 
 
 # ---------------------------------------------------------------------------
-# Dedicated event loop for Hindsight async calls (one per process, reused).
-# Avoids creating ephemeral loops that leak aiohttp sessions.
+# Hindsight 异步调用的专用事件循环（每进程一个，可复用）。
+# 避免创建临时循环导致 aiohttp 会话泄漏。
 # ---------------------------------------------------------------------------
 
 _loop: asyncio.AbstractEventLoop | None = None
@@ -61,7 +61,7 @@ _loop_lock = threading.Lock()
 
 
 def _get_loop() -> asyncio.AbstractEventLoop:
-    """Return a long-lived event loop running on a background thread."""
+    """返回在后台线程上运行的长期事件循环。"""
     global _loop, _loop_thread
     with _loop_lock:
         if _loop is not None and _loop.is_running():
@@ -78,14 +78,14 @@ def _get_loop() -> asyncio.AbstractEventLoop:
 
 
 def _run_sync(coro, timeout: float = 120.0):
-    """Schedule *coro* on the shared loop and block until done."""
+    """在共享循环上调度协程并阻塞等待完成。"""
     loop = _get_loop()
     future = asyncio.run_coroutine_threadsafe(coro, loop)
     return future.result(timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
-# Tool schemas
+# 工具模式定义
 # ---------------------------------------------------------------------------
 
 RETAIN_SCHEMA = {
@@ -136,20 +136,20 @@ REFLECT_SCHEMA = {
 
 
 # ---------------------------------------------------------------------------
-# Config
+# 配置
 # ---------------------------------------------------------------------------
 
 def _load_config() -> dict:
-    """Load config from profile-scoped path, legacy path, or env vars.
+    """从配置文件作用域路径、旧版路径或环境变量加载配置。
 
-    Resolution order:
-      1. $HERMES_HOME/hindsight/config.json  (profile-scoped)
-      2. ~/.hindsight/config.json             (legacy, shared)
-      3. Environment variables
+    解析顺序：
+      1. $HERMES_HOME/hindsight/config.json（配置文件作用域）
+      2. ~/.hindsight/config.json（旧版，共享）
+      3. 环境变量
     """
     from pathlib import Path
 
-    # Profile-scoped path (preferred)
+    # 配置文件作用域路径（首选）
     profile_path = get_hermes_home() / "hindsight" / "config.json"
     if profile_path.exists():
         try:
@@ -157,7 +157,7 @@ def _load_config() -> dict:
         except Exception:
             pass
 
-    # Legacy shared path (backward compat)
+    # 旧版共享路径（向后兼容）
     legacy_path = Path.home() / ".hindsight" / "config.json"
     if legacy_path.exists():
         try:
@@ -179,11 +179,11 @@ def _load_config() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# MemoryProvider implementation
+# MemoryProvider 实现
 # ---------------------------------------------------------------------------
 
 class HindsightMemoryProvider(MemoryProvider):
-    """Hindsight long-term memory with knowledge graph and multi-strategy retrieval."""
+    """基于知识图谱和多策略检索的 Hindsight 长期记忆。"""
 
     def __init__(self):
         self._config = None
@@ -202,26 +202,26 @@ class HindsightMemoryProvider(MemoryProvider):
         self._sync_thread = None
         self._session_id = ""
 
-        # Tags
+        # 标签
         self._tags: list[str] | None = None
         self._recall_tags: list[str] | None = None
         self._recall_tags_match = "any"
 
-        # Retain controls
+        # 存储控制
         self._auto_retain = True
         self._retain_every_n_turns = 1
         self._retain_context = "conversation between Hermes Agent and the User"
         self._turn_counter = 0
-        self._session_turns: list[str] = []  # accumulates ALL turns for the session
+        self._session_turns: list[str] = []  # 累积本会话的所有轮次
 
-        # Recall controls
+        # 检索控制
         self._auto_recall = True
         self._recall_max_tokens = 4096
         self._recall_types: list[str] | None = None
         self._recall_prompt_preamble = ""
         self._recall_max_input_chars = 800
 
-        # Bank
+        # 记忆库
         self._bank_mission = ""
         self._bank_retain_mission: str | None = None
         self._retain_async = True
@@ -243,7 +243,7 @@ class HindsightMemoryProvider(MemoryProvider):
             return False
 
     def save_config(self, values, hermes_home):
-        """Write config to $HERMES_HOME/hindsight/config.json."""
+        """将配置写入 $HERMES_HOME/hindsight/config.json。"""
         import json
         from pathlib import Path
         config_dir = Path(hermes_home) / "hindsight"
@@ -259,7 +259,7 @@ class HindsightMemoryProvider(MemoryProvider):
         config_path.write_text(json.dumps(existing, indent=2))
 
     def post_setup(self, hermes_home: str, config: dict) -> None:
-        """Custom setup wizard — installs only the deps needed for the selected mode."""
+        """自定义设置向导——仅安装所选模式需要的依赖。"""
         import getpass
         import subprocess
         import shutil
@@ -272,7 +272,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
         print("\n  Configuring Hindsight memory:\n")
 
-        # Step 1: Mode selection
+        # 步骤 1：模式选择
         mode_items = [
             ("Cloud", "Hindsight Cloud API (lightweight, just needs an API key)"),
             ("Local Embedded", "Run Hindsight locally (downloads ~200MB, needs LLM key)"),
@@ -284,7 +284,7 @@ class HindsightMemoryProvider(MemoryProvider):
         provider_config: dict = {"mode": mode}
         env_writes: dict = {}
 
-        # Step 2: Install/upgrade deps for selected mode
+        # 步骤 2：为所选模式安装/升级依赖
         _MIN_CLIENT_VERSION = "0.4.22"
         cloud_dep = f"hindsight-client>={_MIN_CLIENT_VERSION}"
         local_dep = "hindsight-all"
@@ -311,7 +311,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 print(f"  ⚠ Install failed: {e}")
                 print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(deps_to_install)}")
 
-        # Step 3: Mode-specific config
+        # 步骤 3：模式特定配置
         if mode == "cloud":
             print(f"\n  Get your API key at https://ui.hindsight.vectorize.io\n")
             existing_key = os.environ.get("HINDSIGHT_API_KEY", "")
@@ -369,7 +369,7 @@ class HindsightMemoryProvider(MemoryProvider):
             if llm_key:
                 env_writes["HINDSIGHT_LLM_API_KEY"] = llm_key
 
-        # Step 4: Save everything
+        # 步骤 4：保存所有配置
         provider_config["bank_id"] = "hermes"
         provider_config["recall_budget"] = "mid"
         bank_id = "hermes"
@@ -437,7 +437,7 @@ class HindsightMemoryProvider(MemoryProvider):
         ]
 
     def _get_client(self):
-        """Return the cached Hindsight client (created once, reused)."""
+        """返回缓存的 Hindsight 客户端（创建一次，重复使用）。"""
         if self._client is None:
             if self._mode == "local_embedded":
                 from hindsight import HindsightEmbedded
@@ -469,7 +469,7 @@ class HindsightMemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         self._session_id = session_id
 
-        # Check client version and auto-upgrade if needed
+        # 检查客户端版本并在需要时自动升级
         try:
             from importlib.metadata import version as pkg_version
             from packaging.version import Version
@@ -493,11 +493,11 @@ class HindsightMemoryProvider(MemoryProvider):
                 else:
                     logger.warning("uv not found. Run: pip install 'hindsight-client>=%s'", _MIN_CLIENT_VERSION)
         except Exception:
-            pass  # packaging not available or other issue — proceed anyway
+            pass  # packaging 不可用或其他问题——继续执行
 
         self._config = _load_config()
         self._mode = self._config.get("mode", "cloud")
-        # "local" is a legacy alias for "local_embedded"
+        # "local" 是 "local_embedded" 的旧版别名
         if self._mode == "local":
             self._mode = "local_embedded"
         self._api_key = self._config.get("apiKey") or self._config.get("api_key") or os.environ.get("HINDSIGHT_API_KEY", "")
@@ -516,21 +516,21 @@ class HindsightMemoryProvider(MemoryProvider):
         prefetch_method = self._config.get("recall_prefetch_method", "recall")
         self._prefetch_method = prefetch_method if prefetch_method in ("recall", "reflect") else "recall"
 
-        # Bank options
+        # 记忆库选项
         self._bank_mission = self._config.get("bank_mission", "")
         self._bank_retain_mission = self._config.get("bank_retain_mission") or None
 
-        # Tags
+        # 标签
         self._tags = self._config.get("tags") or None
         self._recall_tags = self._config.get("recall_tags") or None
         self._recall_tags_match = self._config.get("recall_tags_match", "any")
 
-        # Retain controls
+        # 存储控制
         self._auto_retain = self._config.get("auto_retain", True)
         self._retain_every_n_turns = max(1, int(self._config.get("retain_every_n_turns", 1)))
         self._retain_context = self._config.get("retain_context", "conversation between Hermes Agent and the User")
 
-        # Recall controls
+        # 检索控制
         self._auto_recall = self._config.get("auto_recall", True)
         self._recall_max_tokens = int(self._config.get("recall_max_tokens", 4096))
         self._recall_types = self._config.get("recall_types") or None
@@ -554,9 +554,9 @@ class HindsightMemoryProvider(MemoryProvider):
                      self._recall_max_tokens, self._recall_max_input_chars,
                      self._tags, self._recall_tags)
 
-        # For local mode, start the embedded daemon in the background so it
-        # doesn't block the chat. Redirect stdout/stderr to a log file to
-        # prevent rich startup output from spamming the terminal.
+        # 对于本地模式，在后台启动嵌入式守护进程，
+        # 避免阻塞聊天。将 stdout/stderr 重定向到日志文件，
+        # 防止 rich 的启动输出刷屏终端。
         if self._mode == "local_embedded":
             def _start_daemon():
                 import traceback
@@ -564,9 +564,9 @@ class HindsightMemoryProvider(MemoryProvider):
                 log_dir.mkdir(parents=True, exist_ok=True)
                 log_path = log_dir / "hindsight-embed.log"
                 try:
-                    # Redirect the daemon manager's Rich console to our log file
-                    # instead of stderr. This avoids global fd redirects that
-                    # would capture output from other threads.
+                    # 将守护进程管理器的 Rich 控制台重定向到日志文件，
+                    # 而非 stderr。避免使用全局文件描述符重定向，
+                    # 那样会捕获其他线程的输出。
                     import hindsight_embed.daemon_embed_manager as dem
                     from rich.console import Console
                     dem.console = Console(file=open(log_path, "a"), force_terminal=False)
@@ -574,19 +574,19 @@ class HindsightMemoryProvider(MemoryProvider):
                     client = self._get_client()
                     profile = self._config.get("profile", "hermes")
 
-                    # Update the profile .env to match our current config so
-                    # the daemon always starts with the right settings.
-                    # If the config changed and the daemon is running, stop it.
+                    # 更新配置文件 .env 以匹配当前配置，
+                    # 确保守护进程始终使用正确的设置启动。
+                    # 如果配置已更改且守护进程正在运行，则停止它。
                     from pathlib import Path as _Path
                     profile_env = _Path.home() / ".hindsight" / "profiles" / f"{profile}.env"
                     current_key = self._config.get("llm_api_key") or os.environ.get("HINDSIGHT_LLM_API_KEY", "")
                     current_provider = self._config.get("llm_provider", "")
                     current_model = self._config.get("llm_model", "")
                     current_base_url = self._config.get("llm_base_url") or os.environ.get("HINDSIGHT_API_LLM_BASE_URL", "")
-                    # Map openai_compatible/openrouter → openai for the daemon (OpenAI wire format)
+                    # 将 openai_compatible/openrouter 映射为 openai（守护进程使用 OpenAI 线协议）
                     daemon_provider = "openai" if current_provider in ("openai_compatible", "openrouter") else current_provider
 
-                    # Read saved profile config
+                    # 读取已保存的配置文件
                     saved = {}
                     if profile_env.exists():
                         for line in profile_env.read_text().splitlines():
@@ -602,7 +602,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     )
 
                     if config_changed:
-                        # Write updated profile .env
+                        # 写入更新后的配置文件 .env
                         profile_env.parent.mkdir(parents=True, exist_ok=True)
                         env_lines = (
                             f"HINDSIGHT_API_LLM_PROVIDER={daemon_provider}\n"
@@ -676,7 +676,7 @@ class HindsightMemoryProvider(MemoryProvider):
         if not self._auto_recall:
             logger.debug("Prefetch: skipped (auto_recall disabled)")
             return
-        # Truncate query to max chars
+        # 截断查询到最大字符数
         if self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
             query = query[:self._recall_max_input_chars]
 
@@ -713,9 +713,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_thread.start()
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        """Retain conversation turn in background (non-blocking).
+        """在后台存储对话轮次（非阻塞）。
 
-        Respects retain_every_n_turns for batching.
+        遵循 retain_every_n_turns 进行批量处理。
         """
         if not self._auto_retain:
             logger.debug("sync_turn: skipped (auto_retain disabled)")
@@ -733,7 +733,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._session_turns.append(turn)
         self._turn_counter += 1
 
-        # Only retain every N turns
+        # 仅每 N 轮存储一次
         if self._turn_counter % self._retain_every_n_turns != 0:
             logger.debug("sync_turn: buffered turn %d (will retain at turn %d)",
                          self._turn_counter, self._turn_counter + (self._retain_every_n_turns - self._turn_counter % self._retain_every_n_turns))
@@ -741,8 +741,8 @@ class HindsightMemoryProvider(MemoryProvider):
 
         logger.debug("sync_turn: retaining %d turns, total session content %d chars",
                      len(self._session_turns), sum(len(t) for t in self._session_turns))
-        # Send the ENTIRE session as a single JSON array (document_id deduplicates).
-        # Each element in _session_turns is a JSON string of that turn's messages.
+        # 将整个会话作为单个 JSON 数组发送（document_id 用于去重）。
+        # _session_turns 中的每个元素是该轮次消息的 JSON 字符串。
         content = "[" + ",".join(self._session_turns) + "]"
 
         def _sync():
@@ -857,9 +857,9 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._client is not None:
             try:
                 if self._mode == "local_embedded":
-                    # Use the public close() API. The RuntimeError from
-                    # aiohttp's "attached to a different loop" is expected
-                    # and harmless — the daemon keeps running independently.
+                    # 使用公开的 close() API。来自 aiohttp 的
+                    # "attached to a different loop" RuntimeError 是预期的
+                    # 且无害的——守护进程会继续独立运行。
                     try:
                         self._client.close()
                     except RuntimeError:
@@ -869,7 +869,7 @@ class HindsightMemoryProvider(MemoryProvider):
             except Exception:
                 pass
             self._client = None
-        # Stop the background event loop so no tasks are pending at exit
+        # 停止后台事件循环，确保退出时没有待处理的任务
         if _loop is not None and _loop.is_running():
             _loop.call_soon_threadsafe(_loop.stop)
             if _loop_thread is not None:
@@ -879,5 +879,5 @@ class HindsightMemoryProvider(MemoryProvider):
 
 
 def register(ctx) -> None:
-    """Register Hindsight as a memory provider plugin."""
+    """将 Hindsight 注册为记忆提供者插件。"""
     ctx.register_memory_provider(HindsightMemoryProvider())

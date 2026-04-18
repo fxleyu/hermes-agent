@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Base Blockchain CLI Tool for Hermes Agent
+Base 区块链 CLI 工具（Hermes Agent 专用）
 ------------------------------------------
-Queries the Base (Ethereum L2) JSON-RPC API and CoinGecko for enriched on-chain data.
-Uses only Python standard library — no external packages required.
+通过 Base（以太坊 L2）JSON-RPC API 和 CoinGecko 查询丰富的链上数据。
+仅使用 Python 标准库，无需安装额外依赖包。
 
-Usage:
+用法:
   python3 base_client.py stats
   python3 base_client.py wallet   <address> [--limit N] [--all] [--no-prices]
   python3 base_client.py tx       <hash>
@@ -15,8 +15,8 @@ Usage:
   python3 base_client.py whales   [--min-eth N]
   python3 base_client.py price    <contract_address_or_symbol>
 
-Environment:
-  BASE_RPC_URL  Override the default RPC endpoint (default: https://mainnet.base.org)
+环境变量:
+  BASE_RPC_URL  覆盖默认的 RPC 端点（默认值: https://mainnet.base.org）
 """
 
 import argparse
@@ -36,24 +36,24 @@ RPC_URL = os.environ.get(
 WEI_PER_ETH = 10**18
 GWEI = 10**9
 
-# ERC-20 function selectors (first 4 bytes of keccak256 hash)
+# ERC-20 函数选择器（keccak256 哈希的前 4 字节）
 SEL_BALANCE_OF   = "70a08231"
 SEL_NAME         = "06fdde03"
 SEL_SYMBOL       = "95d89b41"
 SEL_DECIMALS     = "313ce567"
 SEL_TOTAL_SUPPLY = "18160ddd"
 
-# ERC-165 supportsInterface(bytes4) selector
+# ERC-165 supportsInterface(bytes4) 选择器
 SEL_SUPPORTS_INTERFACE = "01ffc9a7"
 
-# Interface IDs for ERC-165 detection
+# 用于 ERC-165 检测的接口 ID
 IFACE_ERC721  = "80ac58cd"
 IFACE_ERC1155 = "d9b67a26"
 
-# Transfer(address,address,uint256) event topic
+# Transfer(address,address,uint256) 事件主题
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 
-# Well-known Base tokens — maps lowercase address -> (symbol, name, decimals).
+# 已知的 Base 代币 — 将小写地址映射到 (符号, 名称, 精度)。
 KNOWN_TOKENS: Dict[str, Tuple[str, str, int]] = {
     "0x4200000000000000000000000000000000000006": ("WETH",   "Wrapped Ether",               18),
     "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": ("USDC",   "USD Coin",                     6),
@@ -68,17 +68,17 @@ KNOWN_TOKENS: Dict[str, Tuple[str, str, int]] = {
     "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf": ("cbBTC",  "Coinbase Wrapped BTC",         8),
 }
 
-# Reverse lookup: symbol -> contract address (for the `price` command).
+# 反向查找: 符号 -> 合约地址（用于 `price` 命令）。
 _SYMBOL_TO_ADDRESS = {v[0].upper(): k for k, v in KNOWN_TOKENS.items()}
 _SYMBOL_TO_ADDRESS["ETH"] = "ETH"
 
 
 # ---------------------------------------------------------------------------
-# HTTP / RPC helpers
+# HTTP / RPC 辅助函数
 # ---------------------------------------------------------------------------
 
 def _http_get_json(url: str, timeout: int = 10, retries: int = 2) -> Any:
-    """GET JSON from a URL with retry on 429 rate-limit. Returns parsed JSON or None."""
+    """通过 GET 请求获取 JSON 数据，遇到 429 限流时自动重试。返回解析后的 JSON 或 None。"""
     for attempt in range(retries + 1):
         req = urllib.request.Request(
             url, headers={"Accept": "application/json", "User-Agent": "HermesAgent/1.0"},
@@ -97,7 +97,7 @@ def _http_get_json(url: str, timeout: int = 10, retries: int = 2) -> Any:
 
 
 def _rpc_call(method: str, params: list = None, retries: int = 2) -> Any:
-    """Send a JSON-RPC request with retry on 429 rate-limit."""
+    """发送 JSON-RPC 请求，遇到 429 限流时自动重试。"""
     payload = json.dumps({
         "jsonrpc": "2.0", "id": 1,
         "method": method, "params": params or [],
@@ -130,15 +130,15 @@ def _rpc_call(method: str, params: list = None, retries: int = 2) -> Any:
     return None
 
 
-# Keep backward compat alias.
+# 保持向后兼容的别名。
 rpc = _rpc_call
 
 
-_BATCH_LIMIT = 10  # Base public RPC limits to 10 calls per batch
+_BATCH_LIMIT = 10  # Base 公共 RPC 限制每批最多 10 个调用
 
 
 def _rpc_batch_chunk(items: list) -> list:
-    """Send a single batch of JSON-RPC requests (max _BATCH_LIMIT)."""
+    """发送单个批量 JSON-RPC 请求（最多 _BATCH_LIMIT 个）。"""
     payload = json.dumps(items).encode()
     _headers = {"Content-Type": "application/json", "User-Agent": "HermesAgent/1.0"}
 
@@ -149,7 +149,7 @@ def _rpc_batch_chunk(items: list) -> list:
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 data = json.load(resp)
-            # If the RPC returns an error dict instead of a list, treat as failure
+            # 如果 RPC 返回错误字典而非列表，视为失败
             if isinstance(data, dict) and "error" in data:
                 sys.exit(f"RPC batch error: {data['error']}")
             return data if isinstance(data, list) else []
@@ -164,7 +164,7 @@ def _rpc_batch_chunk(items: list) -> list:
 
 
 def rpc_batch(calls: list) -> list:
-    """Send a batch of JSON-RPC requests, auto-chunking to respect limits."""
+    """发送批量 JSON-RPC 请求，自动分块以遵守限流。"""
     items = [
         {"jsonrpc": "2.0", "id": i, "method": c["method"], "params": c.get("params", [])}
         for i, c in enumerate(calls)
@@ -173,7 +173,7 @@ def rpc_batch(calls: list) -> list:
     if len(items) <= _BATCH_LIMIT:
         return _rpc_batch_chunk(items)
 
-    # Split into chunks of _BATCH_LIMIT
+    # 按 _BATCH_LIMIT 大小分块发送
     all_results = []
     for start in range(0, len(items), _BATCH_LIMIT):
         chunk = items[start:start + _BATCH_LIMIT]
@@ -190,7 +190,7 @@ def wei_to_gwei(wei: int) -> float:
 
 
 def hex_to_int(hex_str: Optional[str]) -> int:
-    """Convert hex string (0x...) to int. Returns 0 for None/empty."""
+    """将十六进制字符串（0x...）转换为整数。None 或空值返回 0。"""
     if not hex_str or hex_str == "0x":
         return 0
     return int(hex_str, 16)
@@ -201,31 +201,31 @@ def print_json(obj: Any) -> None:
 
 
 def _short_addr(addr: str) -> str:
-    """Abbreviate an address for display: first 6 + last 4."""
+    """缩写地址用于显示: 前 6 位 + 后 4 位。"""
     if len(addr) <= 14:
         return addr
     return f"{addr[:6]}...{addr[-4:]}"
 
 
 # ---------------------------------------------------------------------------
-# ABI encoding / decoding helpers
+# ABI 编解码辅助函数
 # ---------------------------------------------------------------------------
 
 def _encode_address(addr: str) -> str:
-    """ABI-encode an address as a 32-byte hex string (no 0x prefix)."""
+    """将地址 ABI 编码为 32 字节的十六进制字符串（无 0x 前缀）。"""
     clean = addr.lower().replace("0x", "")
     return clean.zfill(64)
 
 
 def _decode_uint(hex_data: Optional[str]) -> int:
-    """Decode a hex-encoded uint256 return value."""
+    """解码十六进制编码的 uint256 返回值。"""
     if not hex_data or hex_data == "0x":
         return 0
     return int(hex_data.replace("0x", ""), 16)
 
 
 def _decode_string(hex_data: Optional[str]) -> str:
-    """Decode an ABI-encoded string return value."""
+    """解码 ABI 编码的字符串返回值。"""
     if not hex_data or hex_data == "0x" or len(hex_data) < 130:
         return ""
     data = hex_data[2:] if hex_data.startswith("0x") else hex_data
@@ -240,7 +240,7 @@ def _decode_string(hex_data: Optional[str]) -> str:
 
 
 def _eth_call(to: str, selector: str, args: str = "", block: str = "latest") -> Optional[str]:
-    """Execute eth_call with a function selector. Returns None on revert/error."""
+    """使用函数选择器执行 eth_call。回退/出错时返回 None。"""
     data = "0x" + selector + args
     try:
         payload = json.dumps({
@@ -262,15 +262,15 @@ def _eth_call(to: str, selector: str, args: str = "", block: str = "latest") -> 
 
 
 # ---------------------------------------------------------------------------
-# Price & token name helpers (CoinGecko — free, no API key)
+# 价格与代币名称辅助函数（CoinGecko — 免费，无需 API 密钥）
 # ---------------------------------------------------------------------------
 
 def fetch_prices(addresses: List[str], max_lookups: int = 20) -> Dict[str, float]:
-    """Fetch USD prices for Base token addresses via CoinGecko (one per request).
+    """通过 CoinGecko 获取 Base 代币地址的 USD 价格（逐个请求）。
 
-    CoinGecko free tier doesn't support batch Base token lookups,
-    so we do individual calls — capped at *max_lookups* to stay within
-    rate limits. Returns {lowercase_address: usd_price}.
+    CoinGecko 免费版不支持批量查询 Base 代币价格，
+    因此逐个发起请求 — 限制为 *max_lookups* 次以遵守
+    速率限制。返回 {小写地址: USD 价格}。
     """
     prices: Dict[str, float] = {}
     for i, addr in enumerate(addresses[:max_lookups]):
@@ -284,14 +284,14 @@ def fetch_prices(addresses: List[str], max_lookups: int = 20) -> Dict[str, float
                 if isinstance(info, dict) and "usd" in info:
                     prices[addr.lower()] = info["usd"]
                     break
-        # Pause between calls to respect CoinGecko free-tier rate-limits
+        # 在请求之间暂停以遵守 CoinGecko 免费版速率限制
         if i < len(addresses[:max_lookups]) - 1:
             time.sleep(1.0)
     return prices
 
 
 def fetch_eth_price() -> Optional[float]:
-    """Fetch current ETH price in USD via CoinGecko."""
+    """通过 CoinGecko 获取当前 ETH 的 USD 价格。"""
     data = _http_get_json(
         "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
     )
@@ -301,15 +301,15 @@ def fetch_eth_price() -> Optional[float]:
 
 
 def resolve_token_name(addr: str) -> Optional[Dict[str, str]]:
-    """Look up token name and symbol. Checks known tokens first, then on-chain.
+    """查找代币名称和符号。优先检查已知代币，然后查询链上数据。
 
-    Returns {"name": ..., "symbol": ...} or None.
+    返回 {"name": ..., "symbol": ...} 或 None。
     """
     addr_lower = addr.lower()
     if addr_lower in KNOWN_TOKENS:
         sym, name, _ = KNOWN_TOKENS[addr_lower]
         return {"symbol": sym, "name": name}
-    # Try reading name() and symbol() from the contract
+    # 尝试从合约读取 name() 和 symbol()
     name_hex = _eth_call(addr, SEL_NAME)
     symbol_hex = _eth_call(addr, SEL_SYMBOL)
     name = _decode_string(name_hex) if name_hex else ""
@@ -320,7 +320,7 @@ def resolve_token_name(addr: str) -> Optional[Dict[str, str]]:
 
 
 def _token_label(addr: str) -> str:
-    """Return a human-readable label: symbol if known, else abbreviated address."""
+    """返回人类可读的标签: 如果是已知代币则返回符号，否则返回缩写地址。"""
     addr_lower = addr.lower()
     if addr_lower in KNOWN_TOKENS:
         return KNOWN_TOKENS[addr_lower][0]
@@ -328,11 +328,11 @@ def _token_label(addr: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 1. Network Stats
+# 1. 网络状态
 # ---------------------------------------------------------------------------
 
 def cmd_stats(_args):
-    """Base network health: block, gas, chain ID, ETH price."""
+    """Base 网络健康状况: 区块号、Gas、链 ID、ETH 价格。"""
     results = rpc_batch([
         {"method": "eth_blockNumber"},
         {"method": "eth_gasPrice"},
@@ -376,17 +376,17 @@ def cmd_stats(_args):
 
 
 # ---------------------------------------------------------------------------
-# 2. Wallet Info (ETH + ERC-20 balances with prices)
+# 2. 钱包信息（ETH + ERC-20 余额及价格）
 # ---------------------------------------------------------------------------
 
 def cmd_wallet(args):
-    """ETH balance + ERC-20 token holdings with USD values."""
+    """ETH 余额 + ERC-20 代币持仓及 USD 估值。"""
     address  = args.address.lower()
     show_all = getattr(args, "all", False)
     limit    = getattr(args, "limit", 20) or 20
     skip_prices = getattr(args, "no_prices", False)
 
-    # Batch: ETH balance + balanceOf for all known tokens
+    # 批量请求: ETH 余额 + 所有已知代币的 balanceOf
     calls = [{"method": "eth_getBalance", "params": [address, "latest"]}]
     token_addrs = list(KNOWN_TOKENS.keys())
     for token_addr in token_addrs:
@@ -403,7 +403,7 @@ def cmd_wallet(args):
 
     eth_balance = wei_to_eth(hex_to_int(by_id.get(0)))
 
-    # Parse token balances
+    # 解析代币余额
     tokens = []
     for i, token_addr in enumerate(token_addrs):
         raw = hex_to_int(by_id.get(i + 1))
@@ -419,7 +419,7 @@ def cmd_wallet(args):
             "decimals": decimals,
         })
 
-    # Fetch prices
+    # 获取价格
     eth_price = None
     prices: Dict[str, float] = {}
     if not skip_prices:
@@ -428,7 +428,7 @@ def cmd_wallet(args):
             mints_to_price = [t["address"] for t in tokens]
             prices = fetch_prices(mints_to_price, max_lookups=20)
 
-    # Enrich with USD values, filter dust, sort
+    # 附加 USD 估值，过滤小额代币（灰尘），排序
     enriched = []
     dust_count = 0
     dust_value = 0.0
@@ -447,19 +447,19 @@ def cmd_wallet(args):
             entry["value_usd"] = usd_value
         enriched.append(entry)
 
-    # Sort: tokens with known USD value first (highest->lowest), then unknowns
+    # 排序: 有已知 USD 价值的优先（从高到低），然后是未知的
     enriched.sort(
         key=lambda x: (x.get("value_usd") is not None, x.get("value_usd") or 0),
         reverse=True,
     )
 
-    # Apply limit unless --all
+    # 除非 --all，否则应用数量限制
     total_tokens = len(enriched)
     if not show_all and len(enriched) > limit:
         enriched = enriched[:limit]
     hidden_tokens = total_tokens - len(enriched)
 
-    # Compute portfolio total
+    # 计算投资组合总价值
     total_usd = sum(t.get("value_usd", 0) for t in enriched)
     eth_value_usd = round(eth_price * eth_balance, 2) if eth_price else None
     if eth_value_usd:
@@ -492,11 +492,11 @@ def cmd_wallet(args):
 
 
 # ---------------------------------------------------------------------------
-# 3. Transaction Details
+# 3. 交易详情
 # ---------------------------------------------------------------------------
 
 def cmd_tx(args):
-    """Full transaction details by hash."""
+    """通过哈希查询完整的交易详情。"""
     tx_hash = args.hash
 
     results = rpc_batch([
@@ -545,7 +545,7 @@ def cmd_tx(args):
         out["contract_created"] = receipt.get("contractAddress")
         out["log_count"] = len(receipt.get("logs", []))
 
-    # Decode ERC-20 transfers from logs
+    # 从日志中解码 ERC-20 转账记录
     transfers = []
     if receipt:
         for log in receipt.get("logs", []):
@@ -562,7 +562,7 @@ def cmd_tx(args):
                     "from":     from_addr,
                     "to":       to_addr,
                 }
-                # ERC-20: 3 topics, amount in data
+                # ERC-20: 3 个主题, 金额在 data 中
                 if len(topics) == 3:
                     amount_hex = log.get("data", "0x")
                     if amount_hex and amount_hex != "0x":
@@ -573,7 +573,7 @@ def cmd_tx(args):
                             entry["amount"] = raw_amount / (10 ** decimals)
                         else:
                             entry["raw_amount"] = raw_amount
-                # ERC-721: 4 topics, tokenId in topics[3]
+                # ERC-721: 4 个主题, tokenId 在 topics[3] 中
                 elif len(topics) == 4:
                     entry["token_id"] = hex_to_int(topics[3])
                     entry["type"] = "ERC-721"
@@ -597,14 +597,14 @@ def cmd_tx(args):
 
 
 # ---------------------------------------------------------------------------
-# 4. Token Info
+# 4. 代币信息
 # ---------------------------------------------------------------------------
 
 def cmd_token(args):
-    """ERC-20 token metadata, supply, price, market cap."""
+    """ERC-20 代币元数据、供应量、价格、市值。"""
     addr = args.address.lower()
 
-    # Batch: name, symbol, decimals, totalSupply, code check
+    # 批量请求: name, symbol, decimals, totalSupply, 合约代码检查
     calls = [
         {"method": "eth_call", "params": [{"to": addr, "data": "0x" + SEL_NAME}, "latest"]},
         {"method": "eth_call", "params": [{"to": addr, "data": "0x" + SEL_SYMBOL}, "latest"]},
@@ -625,7 +625,7 @@ def cmd_token(args):
     decimals = _decode_uint(decimals_raw)
     total_supply_raw = _decode_uint(by_id.get(3))
 
-    # Fall back to known tokens if on-chain read failed
+    # 如果链上读取失败，回退到已知代币
     if not symbol and addr in KNOWN_TOKENS:
         symbol   = KNOWN_TOKENS[addr][0]
         name     = KNOWN_TOKENS[addr][1]
@@ -657,15 +657,15 @@ def cmd_token(args):
 
 
 # ---------------------------------------------------------------------------
-# 5. Gas Analysis (Base-specific: L2 execution + L1 data costs)
+# 5. Gas 分析（Base 特有: L2 执行费用 + L1 数据费用）
 # ---------------------------------------------------------------------------
 
 def cmd_gas(_args):
-    """Detailed gas analysis with L1 data fee context and cost estimates."""
+    """详细的 Gas 分析，包含 L1 数据费用上下文和成本估算。"""
     latest_hex = _rpc_call("eth_blockNumber")
     latest = hex_to_int(latest_hex)
 
-    # Get last 10 blocks for trend analysis + current gas price
+    # 获取最近 10 个区块用于趋势分析 + 当前 Gas 价格
     block_calls = []
     for i in range(10):
         block_calls.append({
@@ -711,7 +711,7 @@ def cmd_gas(_args):
     avg_utilization = sum(gas_utilizations) / len(gas_utilizations) if gas_utilizations else 0
     avg_tx_count    = sum(tx_counts) / len(tx_counts) if tx_counts else 0
 
-    # Estimate costs for common operations
+    # 估算常见操作的费用
     eth_price = fetch_eth_price()
 
     simple_transfer_gas = 21_000
@@ -751,14 +751,14 @@ def cmd_gas(_args):
 
 
 # ---------------------------------------------------------------------------
-# 6. Contract Inspection
+# 6. 合约检查
 # ---------------------------------------------------------------------------
 
 def cmd_contract(args):
-    """Inspect an address: EOA vs contract, ERC type detection, proxy resolution."""
+    """检查地址: EOA vs 合约、ERC 类型检测、代理合约解析。"""
     addr = args.address.lower()
 
-    # Batch: getCode, getBalance, name, symbol, decimals, totalSupply, ERC-721, ERC-1155
+    # 批量请求: getCode, getBalance, name, symbol, decimals, totalSupply, ERC-721, ERC-1155
     calls = [
         {"method": "eth_getCode",    "params": [addr, "latest"]},
         {"method": "eth_getBalance", "params": [addr, "latest"]},
@@ -777,7 +777,7 @@ def cmd_contract(args):
     ]
     results = rpc_batch(calls)
 
-    # Handle per-item errors gracefully
+    # 优雅地处理每项错误
     by_id: Dict[int, Any] = {}
     for r in results:
         if "error" not in r:
@@ -800,20 +800,20 @@ def cmd_contract(args):
 
     code_size = (len(code) - 2) // 2
 
-    # Check ERC-20
+    # 检查 ERC-20
     name         = _decode_string(by_id.get(2))
     symbol       = _decode_string(by_id.get(3))
     decimals_raw = by_id.get(4)
     supply_raw   = by_id.get(5)
     is_erc20     = bool(symbol and decimals_raw and decimals_raw != "0x")
 
-    # Check ERC-721 / ERC-1155 via ERC-165
+    # 通过 ERC-165 检查 ERC-721 / ERC-1155
     erc721_result  = by_id.get(6)
     erc1155_result = by_id.get(7)
     is_erc721  = erc721_result is not None and _decode_uint(erc721_result) == 1
     is_erc1155 = erc1155_result is not None and _decode_uint(erc1155_result) == 1
 
-    # Detect proxy pattern (EIP-1967 implementation slot)
+    # 检测代理模式（EIP-1967 实现槽）
     impl_slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
     impl_result = _rpc_call("eth_getStorageAt", [addr, impl_slot, "latest"])
     is_proxy = False
@@ -857,7 +857,7 @@ def cmd_contract(args):
             "standard":       "EIP-1967",
         }
 
-    # Check known tokens
+    # 检查已知代币
     if addr in KNOWN_TOKENS:
         sym, tname, _ = KNOWN_TOKENS[addr]
         out["known_token"] = {"symbol": sym, "name": tname}
@@ -866,11 +866,11 @@ def cmd_contract(args):
 
 
 # ---------------------------------------------------------------------------
-# 7. Whale Detector
+# 7. 巨鲸检测
 # ---------------------------------------------------------------------------
 
 def cmd_whales(args):
-    """Scan the latest block for large ETH transfers with USD values."""
+    """扫描最新区块中的大额 ETH 转账并显示 USD 价值。"""
     min_wei = int(args.min_eth * WEI_PER_ETH)
 
     block = rpc("eth_getBlockByNumber", ["latest", True])
@@ -893,7 +893,7 @@ def cmd_whales(args):
                 entry["value_USD"] = round(wei_to_eth(value) * eth_price, 2)
             whales.append(entry)
 
-    # Sort by value descending
+    # 按金额降序排序
     whales.sort(key=lambda x: x["value_ETH"], reverse=True)
 
     out: Dict[str, Any] = {
@@ -909,17 +909,17 @@ def cmd_whales(args):
 
 
 # ---------------------------------------------------------------------------
-# 8. Price Lookup
+# 8. 价格查询
 # ---------------------------------------------------------------------------
 
 def cmd_price(args):
-    """Quick price lookup for a token by contract address or known symbol."""
+    """通过合约地址或已知符号快速查询代币价格。"""
     query = args.token
 
-    # Check if it's a known symbol
+    # 检查是否是已知符号
     addr = _SYMBOL_TO_ADDRESS.get(query.upper(), query).lower()
 
-    # Special case: ETH itself
+    # 特殊情况: ETH 本身
     if addr == "eth":
         eth_price = fetch_eth_price()
         out: Dict[str, Any] = {"query": query, "token": "ETH", "name": "Ethereum"}
@@ -931,7 +931,7 @@ def cmd_price(args):
         print_json(out)
         return
 
-    # Resolve name
+    # 解析代币名称
     token_meta = resolve_token_name(addr)
 
     # Fetch price
@@ -950,7 +950,7 @@ def cmd_price(args):
 
 
 # ---------------------------------------------------------------------------
-# CLI
+# 命令行界面
 # ---------------------------------------------------------------------------
 
 def main():

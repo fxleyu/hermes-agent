@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-OSS Forensics Evidence Store Manager
-Manages a JSON-based evidence store for forensic investigations.
+开源安全取证证据仓库管理器
+管理基于 JSON 的取证调查证据仓库。
 
-Commands:
-  add      - Add a piece of evidence
-  list     - List all evidence (optionally filter by type or actor)
-  verify   - Re-check SHA-256 hashes for integrity
-  query    - Search evidence by keyword
-  export   - Export evidence as a Markdown table
-  summary  - Print investigation statistics
+命令:
+  add      - 添加一条证据
+  list     - 列出所有证据（可按类型或行为者过滤）
+  verify   - 重新校验 SHA-256 哈希以检查完整性
+  query    - 按关键词搜索证据
+  export   - 将证据导出为 Markdown 表格
+  summary  - 打印调查统计信息
 
-Usage example:
+用法示例:
   python3 evidence-store.py --store evidence.json add \
     --source "git fsck output" --content "dangling commit abc123" \
     --type git --actor "malicious-user" --url "https://github.com/owner/repo/commit/abc123"
@@ -133,7 +133,7 @@ class EvidenceStore:
         return results
 
     def verify_integrity(self):
-        """Re-compute SHA-256 for all entries and report mismatches."""
+        """重新计算所有条目的 SHA-256 并报告不匹配项。"""
         issues = []
         for entry in self.data["evidence"]:
             expected = _sha256(entry["content"])
@@ -147,7 +147,7 @@ class EvidenceStore:
         return issues
 
     def query(self, keyword: str):
-        """Search for keyword in content, source, actor, or url."""
+        """在 content、source、actor 或 url 中搜索关键词。"""
         keyword_lower = keyword.lower()
         return [
             e for e in self.data["evidence"]

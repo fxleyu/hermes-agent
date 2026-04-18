@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-RL Training Tools Module
+强化学习训练工具模块
 
-This module provides tools for running RL training through Tinker-Atropos.
-Directly manages training processes without requiring a separate API server.
+本模块提供通过 Tinker-Atropos 运行强化学习训练的工具。
+直接管理训练进程，无需单独的 API 服务器。
 
-Features:
-- Environment discovery (AST-based scanning for BaseEnv subclasses)
-- Configuration management with locked infrastructure settings
-- Training run lifecycle via subprocess management
-- WandB metrics monitoring
+功能特性：
+- 环境发现（基于 AST 扫描 BaseEnv 子类）
+- 带有锁定基础设施设置的配置管理
+- 通过子进程管理实现训练运行生命周期
+- WandB 指标监控
 
-Required environment variables:
-- TINKER_API_KEY: API key for Tinker service
-- WANDB_API_KEY: API key for Weights & Biases metrics
+必需的环境变量：
+- TINKER_API_KEY: Tinker 服务的 API 密钥
+- WANDB_API_KEY: Weights & Biases 指标的 API 密钥
 
-Usage:
+用法：
     from tools.rl_training_tool import (
         rl_list_environments,
         rl_select_environment,
@@ -49,10 +49,10 @@ from hermes_constants import get_hermes_home
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# Path Configuration
+# 路径配置
 # ============================================================================
 
-# Path to tinker-atropos submodule (relative to hermes-agent root)
+# tinker-atropos 子模块的路径（相对于 hermes-agent 根目录）
 HERMES_ROOT = Path(__file__).parent.parent
 TINKER_ATROPOS_ROOT = HERMES_ROOT / "tinker-atropos"
 ENVIRONMENTS_DIR = TINKER_ATROPOS_ROOT / "tinker_atropos" / "environments"
@@ -60,15 +60,15 @@ CONFIGS_DIR = TINKER_ATROPOS_ROOT / "configs"
 LOGS_DIR = get_hermes_home() / "logs" / "rl_training"
 
 def _ensure_logs_dir():
-    """Lazily create logs directory on first use (avoid side effects at import time)."""
+    """延迟创建日志目录（避免导入时的副作用）。"""
     if TINKER_ATROPOS_ROOT.exists():
         LOGS_DIR.mkdir(exist_ok=True)
 
 # ============================================================================
-# Locked Configuration (Infrastructure Settings)
+# 锁定配置（基础设施设置）
 # ============================================================================
 
-# These fields cannot be changed by the model - they're tuned for our infrastructure
+# 这些字段不能被模型更改 - 它们是针对我们的基础设施调优的
 LOCKED_FIELDS = {
     "env": {
         "tokenizer_name": "Qwen/Qwen3-8B",
@@ -91,7 +91,7 @@ LOCKED_FIELDS = {
             "weight": 1.0,
             "num_requests_for_eval": 256,
             "timeout": 3600,
-            "server_type": "sglang",  # Tinker uses sglang for actual training
+            "server_type": "sglang",  # Tinker 使用 sglang 进行实际训练
         }
     ],
     "tinker": {
@@ -109,12 +109,12 @@ LOCKED_FIELD_NAMES = set(LOCKED_FIELDS.get("env", {}).keys())
 
 
 # ============================================================================
-# State Management
+# 状态管理
 # ============================================================================
 
 @dataclass
 class EnvironmentInfo:
-    """Information about a discovered environment."""
+    """发现的环境的信息。"""
     name: str
     class_name: str
     file_path: str
@@ -124,11 +124,11 @@ class EnvironmentInfo:
 
 @dataclass
 class RunState:
-    """State for a training run."""
+    """训练运行的状态。"""
     run_id: str
     environment: str
     config: Dict[str, Any]
-    status: str = "pending"  # pending, starting, running, stopping, stopped, completed, failed
+    status: str = "pending"  # pending（待处理）、starting（启动中）、running（运行中）、stopping（停止中）、stopped（已停止）、completed（已完成）、failed（失败）
     error_message: str = ""
     wandb_project: str = ""
     wandb_run_name: str = ""
@@ -139,7 +139,7 @@ class RunState:
     env_process: Optional[subprocess.Popen] = None
 
 
-# Global state
+# 全局状态
 _environments: List[EnvironmentInfo] = []
 _current_env: Optional[str] = None
 _current_config: Dict[str, Any] = {}
@@ -147,17 +147,17 @@ _env_config_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _active_runs: Dict[str, RunState] = {}
 _last_status_check: Dict[str, float] = {}
 
-# Rate limiting for status checks (30 minutes)
+# 状态检查的速率限制（30 分钟）
 MIN_STATUS_CHECK_INTERVAL = 30 * 60
 
 
 # ============================================================================
-# Environment Discovery
+# 环境发现
 # ============================================================================
 
 def _scan_environments() -> List[EnvironmentInfo]:
     """
-    Scan the environments directory for BaseEnv subclasses using AST.
+    使用 AST 扫描环境目录中的 BaseEnv 子类。
     """
     environments = []
     
@@ -175,6 +175,7 @@ def _scan_environments() -> List[EnvironmentInfo]:
             for node in ast.walk(tree):
                 if isinstance(node, ast.ClassDef):
                     # Check if class has BaseEnv as base
+                    # 检查类是否以 BaseEnv 为基类
                     for base in node.bases:
                         base_name = ""
                         if isinstance(base, ast.Name):
@@ -183,7 +184,7 @@ def _scan_environments() -> List[EnvironmentInfo]:
                             base_name = base.attr
                         
                         if base_name == "BaseEnv":
-                            # Extract name from class attribute if present
+                            # 如果存在则从类属性中提取名称
                             env_name = py_file.stem
                             description = ""
                             config_class = "BaseEnvConfig"
@@ -198,6 +199,7 @@ def _scan_environments() -> List[EnvironmentInfo]:
                                                 config_class = item.value.id
                                 
                                 # Get docstring
+                                # 获取文档字符串
                                 if isinstance(item, ast.Expr) and isinstance(item.value, ast.Constant):
                                     if isinstance(item.value.value, str) and not description:
                                         description = item.value.value.split("\n")[0].strip()
@@ -218,19 +220,19 @@ def _scan_environments() -> List[EnvironmentInfo]:
 
 def _get_env_config_fields(env_file_path: str) -> Dict[str, Dict[str, Any]]:
     """
-    Dynamically import an environment and extract its config fields.
-    
-    Uses config_init() to get the actual config class, with fallback to
-    directly importing BaseEnvConfig if config_init fails.
+    动态导入环境并提取其配置字段。
+
+    使用 config_init() 获取实际的配置类，如果 config_init 失败
+    则回退到直接导入 BaseEnvConfig。
     """
     try:
-        # Load the environment module
+        # 加载环境模块
         spec = importlib.util.spec_from_file_location("env_module", env_file_path)
         module = importlib.util.module_from_spec(spec)
         sys.modules["env_module"] = module
         spec.loader.exec_module(module)
         
-        # Find the BaseEnv subclass
+        # 查找 BaseEnv 子类
         env_class = None
         for name, obj in vars(module).items():
             if isinstance(obj, type) and name != "BaseEnv":
@@ -241,13 +243,13 @@ def _get_env_config_fields(env_file_path: str) -> Dict[str, Dict[str, Any]]:
         if not env_class:
             return {}
         
-        # Try calling config_init to get the actual config class
+        # 尝试调用 config_init 获取实际的配置类
         config_class = None
         try:
             env_config, server_configs = env_class.config_init()
             config_class = type(env_config)
         except Exception as config_error:
-            # Fallback: try to import BaseEnvConfig directly from atroposlib
+            # 回退：尝试直接从 atroposlib 导入 BaseEnvConfig
             logger.info("config_init failed (%s), using BaseEnvConfig defaults", config_error)
             try:
                 from atroposlib.envs.base import BaseEnvConfig
@@ -258,7 +260,7 @@ def _get_env_config_fields(env_file_path: str) -> Dict[str, Dict[str, Any]]:
         if not config_class:
             return {}
         
-        # Helper to make values JSON-serializable (handle enums, etc.)
+        # 辅助函数使值可 JSON 序列化（处理枚举等）
         def make_serializable(val):
             if val is None:
                 return None
@@ -268,7 +270,7 @@ def _get_env_config_fields(env_file_path: str) -> Dict[str, Dict[str, Any]]:
                 return val.name
             return val
         
-        # Extract fields from the Pydantic model
+        # 从 Pydantic 模型中提取字段
         fields = {}
         for field_name, field_info in config_class.model_fields.items():
             field_type = field_info.annotation
@@ -277,7 +279,7 @@ def _get_env_config_fields(env_file_path: str) -> Dict[str, Dict[str, Any]]:
             
             is_locked = field_name in LOCKED_FIELD_NAMES
             
-            # Convert type to string
+            # 将类型转换为字符串
             type_name = getattr(field_type, "__name__", str(field_type))
             if hasattr(field_type, "__origin__"):
                 type_name = str(field_type)
@@ -301,39 +303,39 @@ def _get_env_config_fields(env_file_path: str) -> Dict[str, Dict[str, Any]]:
 
 
 def _initialize_environments():
-    """Initialize environment list on first use."""
+    """首次使用时初始化环境列表。"""
     global _environments
     if not _environments:
         _environments = _scan_environments()
 
 
 # ============================================================================
-# Subprocess Management
+# 子进程管理
 # ============================================================================
 
 async def _spawn_training_run(run_state: RunState, config_path: Path):
     """
-    Spawn the three processes needed for training:
-    1. run-api (Atropos API server)
-    2. launch_training.py (Tinker trainer + inference server)
-    3. environment.py serve (the Atropos environment)
+    启动训练所需的三个进程：
+    1. run-api（Atropos API 服务器）
+    2. launch_training.py（Tinker 训练器 + 推理服务器）
+    3. environment.py serve（Atropos 环境）
     """
     run_id = run_state.run_id
     
     _ensure_logs_dir()
 
-    # Log file paths
+    # 日志文件路径
     api_log = LOGS_DIR / f"api_{run_id}.log"
     trainer_log = LOGS_DIR / f"trainer_{run_id}.log"
     env_log = LOGS_DIR / f"env_{run_id}.log"
     
     try:
-        # Step 1: Start the Atropos API server (run-api)
+        # 第一步：启动 Atropos API 服务器 (run-api)
         logger.info("[%s] Starting Atropos API server (run-api)...", run_id)
         
-        # File must stay open while the subprocess runs; we store the handle
-        # on run_state so _stop_training_run() can close it when done.
-        api_log_file = open(api_log, "w")  # closed by _stop_training_run
+        # 文件必须在子进程运行期间保持打开；我们将句柄存储在
+        # run_state 上，以便 _stop_training_run() 完成时可以关闭它。
+        api_log_file = open(api_log, "w")  # 由 _stop_training_run 关闭
         run_state.api_log_file = api_log_file
         run_state.api_process = subprocess.Popen(
             ["run-api"],
@@ -342,7 +344,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
             cwd=str(TINKER_ATROPOS_ROOT),
         )
         
-        # Wait for API to start
+        # 等待 API 启动
         await asyncio.sleep(5)
         
         if run_state.api_process.poll() is not None:
@@ -353,10 +355,10 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         
         logger.info("[%s] Atropos API server started", run_id)
         
-        # Step 2: Start the Tinker trainer
+        # 第二步：启动 Tinker 训练器
         logger.info("[%s] Starting Tinker trainer: launch_training.py --config %s", run_id, config_path)
         
-        trainer_log_file = open(trainer_log, "w")  # closed by _stop_training_run
+        trainer_log_file = open(trainer_log, "w")  # 由 _stop_training_run 关闭
         run_state.trainer_log_file = trainer_log_file
         run_state.trainer_process = subprocess.Popen(
             [sys.executable, "launch_training.py", "--config", str(config_path)],
@@ -366,7 +368,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
             env={**os.environ, "TINKER_API_KEY": os.getenv("TINKER_API_KEY", "")},
         )
         
-        # Wait for trainer to initialize (it starts FastAPI inference server on 8001)
+        # 等待训练器初始化（它在端口 8001 上启动 FastAPI 推理服务器）
         logger.info("[%s] Waiting 30 seconds for trainer to initialize...", run_id)
         await asyncio.sleep(30)
         
@@ -378,11 +380,11 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         
         logger.info("[%s] Trainer started, inference server on port 8001", run_id)
         
-        # Step 3: Start the environment
+        # 第三步：启动环境
         logger.info("[%s] Waiting 90 more seconds before starting environment...", run_id)
         await asyncio.sleep(90)
         
-        # Find the environment file
+        # 查找环境文件
         env_info = None
         for env in _environments:
             if env.name == run_state.environment:
@@ -397,7 +399,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         
         logger.info("[%s] Starting environment: %s serve", run_id, env_info.file_path)
         
-        env_log_file = open(env_log, "w")  # closed by _stop_training_run
+        env_log_file = open(env_log, "w")  # 由 _stop_training_run 关闭
         run_state.env_log_file = env_log_file
         run_state.env_process = subprocess.Popen(
             [sys.executable, str(env_info.file_path), "serve", "--config", str(config_path)],
@@ -406,7 +408,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
             cwd=str(TINKER_ATROPOS_ROOT),
         )
         
-        # Wait for environment to connect
+        # 等待环境连接
         await asyncio.sleep(10)
         
         if run_state.env_process.poll() is not None:
@@ -419,7 +421,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         run_state.start_time = time.time()
         logger.info("[%s] Training run started successfully!", run_id)
         
-        # Start background monitoring
+        # 启动后台监控
         asyncio.create_task(_monitor_training_run(run_state))
         
     except Exception as e:
@@ -429,11 +431,11 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
 
 
 async def _monitor_training_run(run_state: RunState):
-    """Background task to monitor a training run."""
+    """后台任务，监控训练运行。"""
     while run_state.status == "running":
-        await asyncio.sleep(30)  # Check every 30 seconds
-        
-        # Check if any process has died
+        await asyncio.sleep(30)  # 每 30 秒检查一次
+
+        # 检查是否有进程已退出
         if run_state.env_process and run_state.env_process.poll() is not None:
             exit_code = run_state.env_process.returncode
             if exit_code == 0:
@@ -462,8 +464,8 @@ async def _monitor_training_run(run_state: RunState):
 
 
 def _stop_training_run(run_state: RunState):
-    """Stop all processes for a training run."""
-    # Stop in reverse order: env -> trainer -> api
+    """停止训练运行的所有进程。"""
+    # 按逆序停止：环境 -> 训练器 -> API
     if run_state.env_process and run_state.env_process.poll() is None:
         logger.info("[%s] Stopping environment process...", run_state.run_id)
         run_state.env_process.terminate()
@@ -491,7 +493,7 @@ def _stop_training_run(run_state: RunState):
     if run_state.status == "running":
         run_state.status = "stopped"
 
-    # Close log file handles that were opened for subprocess stdout.
+    # 关闭为子进程 stdout 打开的日志文件句柄。
     for attr in ("env_log_file", "trainer_log_file", "api_log_file"):
         fh = getattr(run_state, attr, None)
         if fh is not None:
@@ -503,30 +505,30 @@ def _stop_training_run(run_state: RunState):
 
 
 # ============================================================================
-# Environment Discovery Tools
+# 环境发现工具
 # ============================================================================
 
 async def rl_list_environments() -> str:
     """
-    List all available RL environments.
-    
-    Scans tinker-atropos/tinker_atropos/environments/ for Python files
-    containing classes that inherit from BaseEnv.
-    
-    Returns information about each environment including:
-    - name: Environment identifier
-    - class_name: Python class name
-    - file_path: Path to the environment file
-    - description: Brief description if available
-    
-    TIP: To create or modify RL environments:
-    1. Use terminal/file tools to inspect existing environments
-    2. Study how they load datasets, define verifiers, and structure rewards
-    3. Inspect HuggingFace datasets to understand data formats
-    4. Copy an existing environment as a template
-    
-    Returns:
-        JSON string with list of environments
+    列出所有可用的 RL 环境。
+
+    扫描 tinker-atropos/tinker_atropos/environments/ 目录中
+    包含继承自 BaseEnv 的类的 Python 文件。
+
+    返回每个环境的信息，包括：
+    - name: 环境标识符
+    - class_name: Python 类名
+    - file_path: 环境文件的路径
+    - description: 简要描述（如果可用）
+
+    提示：要创建或修改 RL 环境：
+    1. 使用终端/文件工具检查现有环境
+    2. 研究它们如何加载数据集、定义验证器和构建奖励结构
+    3. 检查 HuggingFace 数据集以了解数据格式
+    4. 复制现有环境作为模板
+
+    返回：
+        包含环境列表的 JSON 字符串
     """
     _initialize_environments()
     
@@ -553,19 +555,19 @@ async def rl_list_environments() -> str:
 
 async def rl_select_environment(name: str) -> str:
     """
-    Select an RL environment for training.
-    
-    This loads the environment's configuration fields into memory.
-    After selecting, use rl_get_current_config() to see all configurable options
-    and rl_edit_config() to modify specific fields.
-    
-    Args:
-        name: Name of the environment to select (from rl_list_environments)
-    
-    Returns:
-        JSON string with selection result, file path, and configurable field count
-    
-    TIP: Read the returned file_path to understand how the environment works.
+    选择一个 RL 环境用于训练。
+
+    将环境的配置字段加载到内存中。
+    选择后，使用 rl_get_current_config() 查看所有可配置选项，
+    使用 rl_edit_config() 修改特定字段。
+
+    参数：
+        name: 要选择的环境名称（来自 rl_list_environments）
+
+    返回：
+        包含选择结果、文件路径和可配置字段数量的 JSON 字符串
+
+    提示：阅读返回的 file_path 以了解环境的工作原理。
     """
     global _current_env, _current_config
     
@@ -585,17 +587,17 @@ async def rl_select_environment(name: str) -> str:
     
     _current_env = name
     
-    # Dynamically discover config fields
+    # 动态发现配置字段
     config_fields = _get_env_config_fields(env_info.file_path)
     _env_config_cache[name] = config_fields
     
-    # Initialize current config with defaults for non-locked fields
+    # 用非锁定字段的默认值初始化当前配置
     _current_config = {}
     for field_name, field_info in config_fields.items():
         if not field_info.get("locked", False):
             _current_config[field_name] = field_info.get("default")
     
-    # Auto-set wandb_name to "{env_name}-DATETIME" to avoid overlaps
+    # 自动设置 wandb_name 为 "{env_name}-日期时间" 以避免重叠
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     _current_config["wandb_name"] = f"{name}-{timestamp}"
     
@@ -607,22 +609,22 @@ async def rl_select_environment(name: str) -> str:
 
 
 # ============================================================================
-# Configuration Tools
+# 配置工具
 # ============================================================================
 
 async def rl_get_current_config() -> str:
     """
-    Get the current environment configuration.
-    
-    Returns all configurable fields for the selected environment.
-    Each environment may have different configuration options.
-    
-    Fields are divided into:
-    - configurable_fields: Can be changed with rl_edit_config()
-    - locked_fields: Infrastructure settings that cannot be changed
-    
-    Returns:
-        JSON string with configurable and locked fields
+    获取当前环境配置。
+
+    返回所选环境的所有可配置字段。
+    每个环境可能有不同的配置选项。
+
+    字段分为：
+    - configurable_fields: 可通过 rl_edit_config() 更改
+    - locked_fields: 不可更改的基础设施设置
+
+    返回：
+        包含可配置和锁定字段的 JSON 字符串
     """
     if not _current_env:
         return json.dumps({
@@ -659,19 +661,19 @@ async def rl_get_current_config() -> str:
 
 async def rl_edit_config(field: str, value: Any) -> str:
     """
-    Update a configuration field.
-    
-    Use rl_get_current_config() first to see available fields for the
-    selected environment. Each environment has different options.
-    
-    Locked fields (infrastructure settings) cannot be changed.
-    
-    Args:
-        field: Name of the field to update (from rl_get_current_config)
-        value: New value for the field
-    
-    Returns:
-        JSON string with updated config or error message
+    更新配置字段。
+
+    先使用 rl_get_current_config() 查看所选环境的可用字段。
+    每个环境有不同的选项。
+
+    锁定字段（基础设施设置）不可更改。
+
+    参数：
+        field: 要更新的字段名称（来自 rl_get_current_config）
+        value: 字段的新值
+
+    返回：
+        包含更新后配置或错误消息的 JSON 字符串
     """
     if not _current_env:
         return json.dumps({
@@ -704,39 +706,39 @@ async def rl_edit_config(field: str, value: Any) -> str:
 
 
 # ============================================================================
-# Training Management Tools
+# 训练管理工具
 # ============================================================================
 
 async def rl_start_training() -> str:
     """
-    Start a new RL training run with the current environment and config.
-    
-    Requires an environment to be selected first using rl_select_environment().
-    Use rl_edit_config() to adjust configuration before starting.
-    
-    This spawns three processes:
-    1. run-api (Atropos trajectory API)
-    2. launch_training.py (Tinker trainer + inference server)
-    3. environment.py serve (the selected environment)
-    
-    WARNING: Training runs take hours. Use rl_check_status() to monitor
-    progress (recommended: check every 30 minutes at most).
-    
-    Returns:
-        JSON string with run_id and initial status
+    使用当前环境和配置启动新的 RL 训练运行。
+
+    需要先使用 rl_select_environment() 选择环境。
+    启动前使用 rl_edit_config() 调整配置。
+
+    这会启动三个进程：
+    1. run-api（Atropos 轨迹 API）
+    2. launch_training.py（Tinker 训练器 + 推理服务器）
+    3. environment.py serve（所选环境）
+
+    警告：训练运行需要数小时。使用 rl_check_status() 监控
+    进度（建议：最多每 30 分钟检查一次）。
+
+    返回：
+        包含 run_id 和初始状态的 JSON 字符串
     """
     if not _current_env:
         return json.dumps({
             "error": "No environment selected. Use rl_select_environment(name) first.",
         }, indent=2)
     
-    # Check API keys
+    # 检查 API 密钥
     if not os.getenv("TINKER_API_KEY"):
         return json.dumps({
             "error": "TINKER_API_KEY not set. Add it to ~/.hermes/.env",
         }, indent=2)
     
-    # Find environment file
+    # 查找环境文件
     env_info = None
     for env in _environments:
         if env.name == _current_env:
@@ -748,26 +750,26 @@ async def rl_start_training() -> str:
             "error": f"Environment file not found for '{_current_env}'",
         }, indent=2)
     
-    # Generate run ID
+    # 生成运行 ID
     run_id = str(uuid.uuid4())[:8]
     
-    # Create config YAML
+    # 创建配置 YAML
     CONFIGS_DIR.mkdir(exist_ok=True)
     config_path = CONFIGS_DIR / f"run_{run_id}.yaml"
     
-    # Start with locked config as base
+    # 以锁定配置为基础
     import copy
     run_config = copy.deepcopy(LOCKED_FIELDS)
     
     if "env" not in run_config:
         run_config["env"] = {}
     
-    # Apply configurable fields
+    # 应用可配置字段
     for field_name, value in _current_config.items():
         if value is not None and value != "":
             run_config["env"][field_name] = value
     
-    # Set WandB settings
+    # 设置 WandB 配置
     wandb_project = _current_config.get("wandb_project", "atropos-tinker")
     if "tinker" not in run_config:
         run_config["tinker"] = {}
@@ -780,7 +782,7 @@ async def rl_start_training() -> str:
     with open(config_path, "w") as f:
         yaml.dump(run_config, f, default_flow_style=False)
     
-    # Create run state
+    # 创建运行状态
     run_state = RunState(
         run_id=run_id,
         environment=_current_env,
@@ -792,7 +794,7 @@ async def rl_start_training() -> str:
     
     _active_runs[run_id] = run_state
     
-    # Start training in background
+    # 在后台启动训练
     asyncio.create_task(_spawn_training_run(run_state, config_path))
     
     return json.dumps({
@@ -814,18 +816,18 @@ async def rl_start_training() -> str:
 
 async def rl_check_status(run_id: str) -> str:
     """
-    Get status and metrics for a training run.
-    
-    RATE LIMITED: For long-running training, this function enforces a
-    minimum 30-minute interval between checks for the same run_id.
-    
-    Args:
-        run_id: The run ID returned by rl_start_training()
-    
-    Returns:
-        JSON string with run status and metrics
+    获取训练运行的状态和指标。
+
+    速率限制：对于长时间运行的训练，此函数对同一 run_id
+    强制执行最少 30 分钟的检查间隔。
+
+    参数：
+        run_id: rl_start_training() 返回的运行 ID
+
+    返回：
+        包含运行状态和指标的 JSON 字符串
     """
-    # Check rate limiting
+    # 检查速率限制
     now = time.time()
     if run_id in _last_status_check:
         elapsed = now - _last_status_check[run_id]
@@ -848,7 +850,7 @@ async def rl_check_status(run_id: str) -> str:
     
     run_state = _active_runs[run_id]
     
-    # Check process status
+    # 检查进程状态
     processes = {
         "api": run_state.api_process.poll() if run_state.api_process else None,
         "trainer": run_state.trainer_process.poll() if run_state.trainer_process else None,
@@ -878,7 +880,7 @@ async def rl_check_status(run_id: str) -> str:
     if run_state.error_message:
         result["error"] = run_state.error_message
     
-    # Try to get WandB metrics if available
+    # 尝试获取 WandB 指标（如果可用）
     try:
         import wandb
         api = wandb.Api()
@@ -903,13 +905,13 @@ async def rl_check_status(run_id: str) -> str:
 
 async def rl_stop_training(run_id: str) -> str:
     """
-    Stop a running training job.
-    
-    Args:
-        run_id: The run ID to stop
-    
-    Returns:
-        JSON string with stop confirmation
+    停止正在运行的训练任务。
+
+    参数：
+        run_id: 要停止的运行 ID
+
+    返回：
+        包含停止确认的 JSON 字符串
     """
     if run_id not in _active_runs:
         return json.dumps({
@@ -935,13 +937,13 @@ async def rl_stop_training(run_id: str) -> str:
 
 async def rl_get_results(run_id: str) -> str:
     """
-    Get final results and metrics for a training run.
-    
-    Args:
-        run_id: The run ID to get results for
-    
-    Returns:
-        JSON string with final results
+    获取训练运行的最终结果和指标。
+
+    参数：
+        run_id: 要获取结果的运行 ID
+
+    返回：
+        包含最终结果的 JSON 字符串
     """
     if run_id not in _active_runs:
         return json.dumps({
@@ -958,7 +960,7 @@ async def rl_get_results(run_id: str) -> str:
         "wandb_run_name": run_state.wandb_run_name,
     }
     
-    # Get WandB metrics
+    # 获取 WandB 指标
     try:
         import wandb
         api = wandb.Api()
@@ -979,10 +981,10 @@ async def rl_get_results(run_id: str) -> str:
 
 async def rl_list_runs() -> str:
     """
-    List all training runs (active and completed).
-    
-    Returns:
-        JSON string with list of runs and their status
+    列出所有训练运行（活跃和已完成的）。
+
+    返回：
+        包含运行列表及其状态的 JSON 字符串
     """
     runs = []
     for run_id, run_state in _active_runs.items():
@@ -1000,20 +1002,20 @@ async def rl_list_runs() -> str:
 
 
 # ============================================================================
-# Inference Testing (via Atropos `process` mode with OpenRouter)
+# 推理测试（通过 Atropos `process` 模式使用 OpenRouter）
 # ============================================================================
 
-# Test models at different scales for robustness testing
-# These are cheap, capable models on OpenRouter for testing parsing/scoring
+# 不同规模的测试模型，用于健壮性测试
+# 这些是 OpenRouter 上便宜、能力不错的模型，用于测试解析/评分
 TEST_MODELS = [
     {"id": "qwen/qwen3-8b", "name": "Qwen3 8B", "scale": "small"},
     {"id": "z-ai/glm-4.7-flash", "name": "GLM-4.7 Flash", "scale": "medium"},
     {"id": "minimax/minimax-m2.7", "name": "MiniMax M2.7", "scale": "large"},
 ]
 
-# Default test parameters - quick but representative
-DEFAULT_NUM_STEPS = 3       # Number of steps (items) to test
-DEFAULT_GROUP_SIZE = 16     # Completions per item (like training)
+# 默认测试参数 - 快速但有代表性
+DEFAULT_NUM_STEPS = 3       # 测试的步数（项目数）
+DEFAULT_GROUP_SIZE = 16     # 每个项目的补全数（与训练类似）
 
 
 async def rl_test_inference(
@@ -1022,29 +1024,29 @@ async def rl_test_inference(
     models: Optional[List[str]] = None,
 ) -> str:
     """
-    Quick inference test for any environment using Atropos's `process` mode.
-    
-    Runs a few steps of inference + scoring to validate:
-    - Environment loads correctly
-    - Prompt construction works
-    - Inference parsing is robust (tested with multiple model scales)
-    - Verifier/scoring logic works
-    
-    Default: 3 steps × 16 completions = 48 total rollouts per model.
-    Tests 3 models = 144 total rollouts. Quick sanity check.
-    
-    Test models (varying intelligence levels for robustness):
-    - qwen/qwen3-8b (small)
-    - zhipu-ai/glm-4-flash (medium)
-    - minimax/minimax-m1 (large)
-    
-    Args:
-        num_steps: Steps to run (default: 3, max recommended for testing)
-        group_size: Completions per step (default: 16, like training)
-        models: Optional model IDs to test. If None, uses all 3 test models.
-    
-    Returns:
-        JSON with results per model: steps_tested, accuracy, scores
+    任何环境的快速推理测试，使用 Atropos 的 `process` 模式。
+
+    运行几个步骤的推理+评分来验证：
+    - 环境正确加载
+    - 提示词构造正常工作
+    - 推理解析健壮（使用多个模型规模测试）
+    - 验证器/评分逻辑正常工作
+
+    默认：3 步 x 16 补全 = 每个模型 48 次 rollout。
+    测试 3 个模型 = 共 144 次 rollout。快速健全性检查。
+
+    测试模型（不同智能水平以测试健壮性）：
+    - qwen/qwen3-8b（小型）
+    - zhipu-ai/glm-4-flash（中型）
+    - minimax/minimax-m1（大型）
+
+    参数：
+        num_steps: 运行步数（默认：3，测试建议最大值）
+        group_size: 每步补全数（默认：16，与训练相同）
+        models: 可选的模型 ID 列表。如果为 None，使用全部 3 个测试模型。
+
+    返回：
+        包含每个模型结果的 JSON：测试步数、准确率、分数
     """
     if not _current_env:
         return json.dumps({
@@ -1057,7 +1059,7 @@ async def rl_test_inference(
             "error": "OPENROUTER_API_KEY not set. Required for inference testing.",
         }, indent=2)
     
-    # Find environment info
+    # 查找环境信息
     env_info = None
     for env in _environments:
         if env.name == _current_env:
@@ -1069,7 +1071,7 @@ async def rl_test_inference(
             "error": f"Environment '{_current_env}' not found",
         }, indent=2)
     
-    # Determine which models to test
+    # 确定要测试的模型
     if models:
         test_models = [m for m in TEST_MODELS if m["id"] in models]
         if not test_models:
@@ -1077,7 +1079,7 @@ async def rl_test_inference(
     else:
         test_models = TEST_MODELS
     
-    # Calculate total rollouts for logging
+    # 计算总 rollout 数用于日志记录
     total_rollouts_per_model = num_steps * group_size
     total_rollouts = total_rollouts_per_model * len(test_models)
     
@@ -1093,7 +1095,7 @@ async def rl_test_inference(
         "models_tested": [],
     }
     
-    # Create output directory for test results
+    # 为测试结果创建输出目录
     _ensure_logs_dir()
     test_output_dir = LOGS_DIR / "inference_tests"
     test_output_dir.mkdir(exist_ok=True)
@@ -1106,42 +1108,42 @@ async def rl_test_inference(
         print(f"Testing with {model_info['name']} ({model_id})")
         print(f"{'='*60}")
         
-        # Output file for this test run
+        # 此测试运行的输出文件
         output_file = test_output_dir / f"test_{_current_env}_{model_safe_name}.jsonl"
         
-        # Generate unique run ID for wandb
+        # 为 wandb 生成唯一运行 ID
         test_run_id = str(uuid.uuid4())[:8]
         wandb_run_name = f"test_inference_RSIAgent_{_current_env}_{test_run_id}"
         
-        # Build the process command using Atropos's built-in CLI
-        # This runs the environment's actual code with OpenRouter as the inference backend
-        # We pass our locked settings + test-specific overrides via CLI args
+        # 使用 Atropos 内置 CLI 构建 process 命令
+        # 这使用 OpenRouter 作为推理后端运行环境的实际代码
+        # 我们通过 CLI 参数传递锁定设置 + 测试特定的覆盖
         cmd = [
             sys.executable, env_info.file_path, "process",
-            # Test-specific overrides
+            # 测试特定的覆盖
             "--env.total_steps", str(num_steps),
             "--env.group_size", str(group_size),
             "--env.use_wandb", "true",  # Enable wandb for test tracking
             "--env.wandb_name", wandb_run_name,
             "--env.data_path_to_save_groups", str(output_file),
-            # Use locked settings from our config
+            # 使用我们配置中的锁定设置
             "--env.tokenizer_name", LOCKED_FIELDS["env"]["tokenizer_name"],
             "--env.max_token_length", str(LOCKED_FIELDS["env"]["max_token_length"]),
             "--env.max_num_workers", str(LOCKED_FIELDS["env"]["max_num_workers"]),
             "--env.max_batches_offpolicy", str(LOCKED_FIELDS["env"]["max_batches_offpolicy"]),
-            # OpenRouter config for inference testing
-            # IMPORTANT: Use server_type=openai for OpenRouter (not sglang)
-            # sglang is only for actual training with Tinker's inference server
+            # 用于推理测试的 OpenRouter 配置
+            # 重要：OpenRouter 使用 server_type=openai（不是 sglang）
+            # sglang 仅用于 Tinker 推理服务器的实际训练
             "--openai.base_url", "https://openrouter.ai/api/v1",
             "--openai.api_key", api_key,
             "--openai.model_name", model_id,
-            "--openai.server_type", "openai",  # OpenRouter is OpenAI-compatible
-            "--openai.health_check", "false",  # OpenRouter doesn't have health endpoint
+            "--openai.server_type", "openai",  # OpenRouter 兼容 OpenAI 协议
+            "--openai.health_check", "false",  # OpenRouter 没有健康检查端点
         ]
         
-        # Debug: Print the full command
+        # 调试：打印完整命令
         cmd_str = " ".join(str(c) for c in cmd)
-        # Hide API key in printed output
+        # 在打印输出中隐藏 API 密钥
         cmd_display = cmd_str.replace(api_key, "***API_KEY***")
         print(f"Command: {cmd_display}")
         print(f"Working dir: {TINKER_ATROPOS_ROOT}")
@@ -1161,7 +1163,7 @@ async def rl_test_inference(
         }
         
         try:
-            # Run the process command with real-time output streaming
+            # 运行 process 命令并实时输出流
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -1169,31 +1171,31 @@ async def rl_test_inference(
                 cwd=str(TINKER_ATROPOS_ROOT),
             )
             
-            # Stream output in real-time while collecting for logs
+            # 实时流式输出，同时收集日志
             stdout_lines = []
             stderr_lines = []
             log_file = test_output_dir / f"test_{_current_env}_{model_safe_name}.log"
             
             async def read_stream(stream, lines_list, prefix=""):
-                """Read stream line by line and print in real-time."""
+                """逐行读取流并实时打印。"""
                 while True:
                     line = await stream.readline()
                     if not line:
                         break
                     decoded = line.decode().rstrip()
                     lines_list.append(decoded)
-                    # Print progress-related lines in real-time
+                    # 实时打印进度相关的行
                     if any(kw in decoded.lower() for kw in ['processing', 'group', 'step', 'progress', '%', 'completed']):
                         print(f"  {prefix}{decoded}")
             
-            # Read both streams concurrently with timeout
+            # 带超时并发读取两个流
             try:
                 await asyncio.wait_for(
                     asyncio.gather(
                         read_stream(process.stdout, stdout_lines, "📊 "),
                         read_stream(process.stderr, stderr_lines, "⚠️ "),
                     ),
-                    timeout=600,  # 10 minute timeout per model
+                    timeout=600,  # 每个模型 10 分钟超时
                 )
             except asyncio.TimeoutError:
                 process.kill()
@@ -1201,11 +1203,11 @@ async def rl_test_inference(
             
             await process.wait()
             
-            # Combine output for logging
+            # 合并输出用于日志记录
             stdout_text = "\n".join(stdout_lines)
             stderr_text = "\n".join(stderr_lines)
             
-            # Write logs to files for inspection outside CLI
+            # 将日志写入文件以便在 CLI 外部检查
             with open(log_file, "w") as f:
                 f.write(f"Command: {cmd_display}\n")
                 f.write(f"Working dir: {TINKER_ATROPOS_ROOT}\n")
@@ -1225,7 +1227,7 @@ async def rl_test_inference(
                 model_results["stdout"] = stdout_text[-1000:]
                 model_results["log_file"] = str(log_file)
                 print(f"\n  ❌ Error: {model_results['error']}")
-                # Print last few lines of stderr for debugging
+                # 打印最后几行 stderr 用于调试
                 if stderr_lines:
                     print("  Last errors:")
                     for line in stderr_lines[-5:]:
@@ -1235,9 +1237,9 @@ async def rl_test_inference(
                 print(f"  Output file: {output_file}")
                 print(f"  File exists: {output_file.exists()}")
                 
-                # Parse the output JSONL file
+                # 解析输出 JSONL 文件
                 if output_file.exists():
-                    # Read JSONL file (one JSON object per line = one step)
+                    # 读取 JSONL 文件（每行一个 JSON 对象 = 一步）
                     with open(output_file, "r") as f:
                         for line in f:
                             line = line.strip()
@@ -1271,7 +1273,7 @@ async def rl_test_inference(
             model_results["error"] = str(e)
             print(f"  Error: {e}")
         
-        # Calculate stats
+        # 计算统计数据
         if model_results["total_completions"] > 0:
             model_results["accuracy"] = round(
                 model_results["correct_completions"] / model_results["total_completions"], 3
@@ -1294,7 +1296,7 @@ async def rl_test_inference(
         
         results["models_tested"].append(model_results)
     
-    # Overall summary
+    # 总体摘要
     working_models = [m for m in results["models_tested"] if m.get("steps_tested", 0) > 0]
     
     results["summary"] = {
@@ -1313,26 +1315,26 @@ async def rl_test_inference(
 
 
 # ============================================================================
-# Requirements Check
+# 依赖检查
 # ============================================================================
 
 def check_rl_python_version() -> bool:
     """
-    Check if Python version meets the minimum for RL tools.
-    
-    tinker-atropos depends on the 'tinker' package which requires Python >= 3.11.
+    检查 Python 版本是否满足 RL 工具的最低要求。
+
+    tinker-atropos 依赖的 'tinker' 包要求 Python >= 3.11。
     """
     return sys.version_info >= (3, 11)
 
 
 def check_rl_api_keys() -> bool:
     """
-    Check if required API keys and Python version are available.
-    
-    RL training requires:
-    - Python >= 3.11 (tinker package requirement)
-    - TINKER_API_KEY for the Tinker training API
-    - WANDB_API_KEY for Weights & Biases metrics
+    检查必需的 API 密钥和 Python 版本是否可用。
+
+    RL 训练需要：
+    - Python >= 3.11（tinker 包要求）
+    - TINKER_API_KEY：用于 Tinker 训练 API
+    - WANDB_API_KEY：用于 Weights & Biases 指标
     """
     if not check_rl_python_version():
         return False
@@ -1343,7 +1345,7 @@ def check_rl_api_keys() -> bool:
 
 def get_missing_keys() -> List[str]:
     """
-    Get list of missing requirements for RL tools (API keys and Python version).
+    获取 RL 工具缺少的依赖列表（API 密钥和 Python 版本）。
     """
     missing = []
     if not check_rl_python_version():
@@ -1356,7 +1358,7 @@ def get_missing_keys() -> List[str]:
 
 
 # ---------------------------------------------------------------------------
-# Schemas + Registry
+# Schema 定义 + 注册到注册表
 # ---------------------------------------------------------------------------
 from tools.registry import registry
 

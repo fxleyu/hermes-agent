@@ -1,8 +1,8 @@
 """
-Qwen 2.5 tool call parser.
+Qwen 2.5 工具调用解析器。
 
-Uses the same <tool_call> format as Hermes.
-Registered as a separate parser name for clarity when using --tool-parser=qwen.
+使用与 Hermes 相同的 <tool_call> 格式。
+注册为单独的解析器名称，以便在使用 --tool-parser=qwen 时更清晰。
 """
 
 from environments.tool_call_parsers import register_parser
@@ -12,8 +12,8 @@ from environments.tool_call_parsers.hermes_parser import HermesToolCallParser
 @register_parser("qwen")
 class QwenToolCallParser(HermesToolCallParser):
     """
-    Parser for Qwen 2.5 tool calls.
-    Same <tool_call>{"name": ..., "arguments": ...}</tool_call> format as Hermes.
+    Qwen 2.5 工具调用的解析器。
+    与 Hermes 使用相同的 <tool_call>{"name": ..., "arguments": ...}</tool_call> 格式。
     """
 
-    pass  # Identical format -- inherits everything from Hermes
+    pass  # 格式完全相同 -- 从 Hermes 继承所有逻辑

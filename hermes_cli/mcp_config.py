@@ -1,11 +1,11 @@
 """
-MCP Server Management CLI — ``hermes mcp`` subcommand.
+MCP 服务器管理 CLI -- ``hermes mcp`` 子命令。
 
-Implements ``hermes mcp add/remove/list/test/configure`` for interactive
-MCP server lifecycle management (issue #690 Phase 2).
+实现 ``hermes mcp add/remove/list/test/configure`` 功能，用于交互式
+MCP 服务器生命周期管理（issue #690 Phase 2）。
 
-Relies on tools/mcp_tool.py for connection/discovery and keeps
-configuration in ~/.hermes/config.yaml under the ``mcp_servers`` key.
+依赖 tools/mcp_tool.py 进行连接/发现，并将配置保存在
+~/.hermes/config.yaml 的 ``mcp_servers`` 键下。
 """
 
 import asyncio
@@ -33,7 +33,7 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MCP_PRESETS: Dict[str, Dict[str, Any]] = {}
 
 
-# ─── UI Helpers ───────────────────────────────────────────────────────────────
+# ─── UI 辅助函数 ───────────────────────────────────────────────────────────────
 
 def _info(text: str):
     print(color(f"  {text}", Colors.DIM))
@@ -65,10 +65,10 @@ def _prompt(question: str, *, password: bool = False, default: str = "") -> str:
     return _shared_prompt(question, default=default, password=password)
 
 
-# ─── Config Helpers ───────────────────────────────────────────────────────────
+# ─── 配置辅助函数 ───────────────────────────────────────────────────────────
 
 def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
-    """Return the ``mcp_servers`` dict from config, or empty dict."""
+    """从配置中返回 ``mcp_servers`` 字典，如果不存在则返回空字典。"""
     if config is None:
         config = load_config()
     servers = config.get("mcp_servers")
@@ -78,14 +78,14 @@ def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
 
 
 def _save_mcp_server(name: str, server_config: dict):
-    """Add or update a server entry in config.yaml."""
+    """在 config.yaml 中添加或更新一个服务器条目。"""
     config = load_config()
     config.setdefault("mcp_servers", {})[name] = server_config
     save_config(config)
 
 
 def _remove_mcp_server(name: str) -> bool:
-    """Remove a server from config.yaml.  Returns True if it existed."""
+    """从 config.yaml 中移除一个服务器。如果该服务器存在则返回 True。"""
     config = load_config()
     servers = config.get("mcp_servers", {})
     if name not in servers:
@@ -98,12 +98,12 @@ def _remove_mcp_server(name: str) -> bool:
 
 
 def _env_key_for_server(name: str) -> str:
-    """Convert server name to an env-var key like ``MCP_MYSERVER_API_KEY``."""
+    """将服务器名称转换为环境变量名，如 ``MCP_MYSERVER_API_KEY``。"""
     return f"MCP_{name.upper().replace('-', '_')}_API_KEY"
 
 
 def _parse_env_assignments(raw_env: Optional[List[str]]) -> Dict[str, str]:
-    """Parse ``KEY=VALUE`` strings from CLI args into an env dict."""
+    """将 CLI 参数中的 ``KEY=VALUE`` 字符串解析为环境变量字典。"""
     parsed: Dict[str, str] = {}
     for item in raw_env or []:
         text = str(item or "").strip()
@@ -130,7 +130,7 @@ def _apply_mcp_preset(
     cmd_args: List[str],
     server_config: Dict[str, Any],
 ) -> tuple[Optional[str], Optional[str], List[str], bool]:
-    """Apply a known MCP preset when transport details were omitted."""
+    """当未提供传输方式时，应用已知的 MCP 预设配置。"""
     if not preset_name:
         return url, command, cmd_args, False
 
@@ -155,15 +155,15 @@ def _apply_mcp_preset(
     return url, command, cmd_args, True
 
 
-# ─── Discovery (temporary connect) ───────────────────────────────────────────
+# ─── 服务发现（临时连接） ───────────────────────────────────────────
 
 def _probe_single_server(
     name: str, config: dict, connect_timeout: float = 30
 ) -> List[Tuple[str, str]]:
-    """Temporarily connect to one MCP server, list its tools, disconnect.
+    """临时连接到一个 MCP 服务器，列出其工具列表后断开。
 
-    Returns list of ``(tool_name, description)`` tuples.
-    Raises on connection failure.
+    返回 ``(tool_name, description)`` 元组列表。
+    连接失败时抛出异常。
     """
     from tools.mcp_tool import (
         _ensure_mcp_loop,
@@ -182,7 +182,7 @@ def _probe_single_server(
         )
         for t in server._tools:
             desc = getattr(t, "description", "") or ""
-            # Truncate long descriptions for display
+            # 截断过长的描述文本用于显示
             if len(desc) > 80:
                 desc = desc[:77] + "..."
             tools_found.append((t.name, desc))
@@ -199,16 +199,16 @@ def _probe_single_server(
 
 
 def _unwrap_exception_group(exc: BaseException) -> Exception:
-    """Extract the root-cause exception from anyio TaskGroup wrappers.
+    """从 anyio TaskGroup 包装中提取根本原因异常。
 
-    The MCP SDK uses anyio task groups, which wrap errors in
-    ``BaseExceptionGroup`` / ``ExceptionGroup``.  This makes error
-    messages opaque ("unhandled errors in a TaskGroup").  We unwrap
-    to surface the real cause (e.g. "401 Unauthorized").
+    MCP SDK 使用 anyio 任务组，会将错误包装在
+    ``BaseExceptionGroup`` / ``ExceptionGroup`` 中。这会使错误信息变得
+    不透明（"unhandled errors in a TaskGroup"）。我们进行解包以暴露
+    真正的原因（例如 "401 Unauthorized"）。
     """
     while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
         exc = exc.exceptions[0]
-    # Return a plain Exception so callers can catch normally
+    # 返回一个普通的 Exception 以便调用者可以正常捕获
     if isinstance(exc, Exception):
         return exc
     return RuntimeError(str(exc))
@@ -217,7 +217,7 @@ def _unwrap_exception_group(exc: BaseException) -> Exception:
 # ─── hermes mcp add ──────────────────────────────────────────────────────────
 
 def cmd_mcp_add(args):
-    """Add a new MCP server with discovery-first tool selection."""
+    """添加新的 MCP 服务器，通过发现优先的工具选择流程。"""
     name = args.name
     url = getattr(args, "url", None)
     command = getattr(args, "command", None)
@@ -245,7 +245,7 @@ def cmd_mcp_add(args):
         _error("--env is only supported for stdio MCP servers (--command or stdio presets)")
         return
 
-    # Validate transport
+    # 验证传输方式
     if not url and not command:
         _error("Must specify --url <endpoint>, --command <cmd>, or --preset <name>")
         _info("Examples:")
@@ -254,14 +254,14 @@ def cmd_mcp_add(args):
         _info('  hermes mcp add myserver --preset mypreset')
         return
 
-    # Check if server already exists
+    # 检查服务器是否已存在
     existing = _get_mcp_servers()
     if name in existing:
         if not _confirm(f"Server '{name}' already exists. Overwrite?", default=False):
             _info("Cancelled.")
             return
 
-    # Build initial config
+    # 构建初始配置
     if url:
         server_config["url"] = url
     else:
@@ -272,7 +272,7 @@ def cmd_mcp_add(args):
             server_config["env"] = explicit_env
 
 
-    # ── Authentication ────────────────────────────────────────────────
+    # ── 认证 ────────────────────────────────────────────────
 
     if url and auth_type == "oauth":
         print()
@@ -293,14 +293,14 @@ def cmd_mcp_add(args):
         if not oauth_ok:
             _info("This server may not support OAuth.")
             if _confirm("Continue without authentication?", default=True):
-                # Don't store auth: oauth — server doesn't support it
+    # 不要存储 auth: oauth -- 服务器不支持该认证方式
                 pass
             else:
                 _info("Cancelled.")
                 return
 
     elif url:
-        # Prompt for API key / Bearer token for HTTP servers
+        # 为 HTTP 服务器提示输入 API 密钥/Bearer 令牌
         print()
         _info(f"Connecting to {url}")
         needs_auth = _confirm("Does this server require authentication?", default=True)
@@ -317,13 +317,13 @@ def cmd_mcp_add(args):
                         save_env_value(env_key, api_key)
                         _success(f"Saved to {display_hermes_home()}/.env as {env_key}")
 
-                # Set header with env var interpolation
+                # 使用环境变量插值设置请求头
                 if api_key or existing_key:
                     server_config["headers"] = {
                         "Authorization": f"Bearer ${{{env_key}}}"
                     }
 
-    # ── Discovery: connect and list tools ─────────────────────────────
+    # ── 服务发现：连接并列出工具 ─────────────────────────────
 
     print()
     print(color(f"  Connecting to '{name}'...", Colors.CYAN))
@@ -346,7 +346,7 @@ def cmd_mcp_add(args):
             _success(f"Saved '{name}' to config")
         return
 
-    # ── Tool selection ────────────────────────────────────────────────
+    # ── 工具选择 ────────────────────────────────────────────────
 
     print()
     _success(f"Connected! Found {len(tools)} tool(s) from '{name}':")
@@ -356,7 +356,7 @@ def cmd_mcp_add(args):
         print(f"    {color(tool_name, Colors.GREEN):40s} {short}")
     print()
 
-    # Ask: enable all, select, or cancel
+    # 询问：启用全部、选择部分或取消
     try:
         choice = input(
             color(f"  Enable all {len(tools)} tools? [Y/n/select]: ", Colors.YELLOW)
@@ -371,7 +371,7 @@ def cmd_mcp_add(args):
         return
 
     if choice in ("s", "select"):
-        # Interactive tool selection
+        # 交互式工具选择
         from hermes_cli.curses_ui import curses_checklist
 
         labels = [f"{t[0]}  —  {t[1]}" for t in tools]
@@ -393,11 +393,11 @@ def cmd_mcp_add(args):
         tool_count = len(chosen_names)
         total = len(tools)
     else:
-        # Enable all (no filter needed — default behaviour)
+        # 启用全部（无需过滤 -- 默认行为）
         tool_count = len(tools)
         total = len(tools)
 
-    # ── Save ──────────────────────────────────────────────────────────
+    # ── 保存 ──────────────────────────────────────────────────────────
 
     server_config["enabled"] = True
     _save_mcp_server(name, server_config)
@@ -410,7 +410,7 @@ def cmd_mcp_add(args):
 # ─── hermes mcp remove ───────────────────────────────────────────────────────
 
 def cmd_mcp_remove(args):
-    """Remove an MCP server from config."""
+    """从配置中移除一个 MCP 服务器。"""
     name = args.name
     existing = _get_mcp_servers()
 
@@ -428,9 +428,9 @@ def cmd_mcp_remove(args):
     _remove_mcp_server(name)
     _success(f"Removed '{name}' from config")
 
-    # Clean up OAuth tokens if they exist — route through MCPOAuthManager so
-    # any provider instance cached in the current process (e.g. from an
-    # earlier `hermes mcp test` in the same session) is evicted too.
+    # 清理 OAuth 令牌（如果存在）-- 通过 MCPOAuthManager 路由处理，这样
+    # 当前进程中缓存的任何 provider 实例（例如来自同一会话中较早的
+    # `hermes mcp test`）也会被清除。
     try:
         from tools.mcp_oauth_manager import get_manager
         get_manager().remove(name)
@@ -442,7 +442,7 @@ def cmd_mcp_remove(args):
 # ─── hermes mcp list ──────────────────────────────────────────────────────────
 
 def cmd_mcp_list(args=None):
-    """List all configured MCP servers."""
+    """列出所有已配置的 MCP 服务器。"""
     servers = _get_mcp_servers()
 
     if not servers:
@@ -459,15 +459,15 @@ def cmd_mcp_list(args=None):
     print(color("  MCP Servers:", Colors.CYAN + Colors.BOLD))
     print()
 
-    # Table header
+    # 表头
     print(f"  {'Name':<16} {'Transport':<30} {'Tools':<12} {'Status':<10}")
     print(f"  {'─' * 16} {'─' * 30} {'─' * 12} {'─' * 10}")
 
     for name, cfg in servers.items():
-        # Transport info
+        # 传输方式信息
         if "url" in cfg:
             url = cfg["url"]
-            # Truncate long URLs
+            # 截断过长的 URL
             if len(url) > 28:
                 url = url[:25] + "..."
             transport = url
@@ -483,7 +483,7 @@ def cmd_mcp_list(args=None):
         else:
             transport = "?"
 
-        # Tool count
+        # 工具数量
         tools_cfg = cfg.get("tools", {})
         if isinstance(tools_cfg, dict):
             include = tools_cfg.get("include")
@@ -497,7 +497,7 @@ def cmd_mcp_list(args=None):
         else:
             tools_str = "all"
 
-        # Enabled status
+        # 启用状态
         enabled = cfg.get("enabled", True)
         if isinstance(enabled, str):
             enabled = enabled.lower() in ("true", "1", "yes")
@@ -511,7 +511,7 @@ def cmd_mcp_list(args=None):
 # ─── hermes mcp test ──────────────────────────────────────────────────────────
 
 def cmd_mcp_test(args):
-    """Test connection to an MCP server."""
+    """测试与 MCP 服务器的连接。"""
     name = args.name
     servers = _get_mcp_servers()
 
@@ -526,14 +526,14 @@ def cmd_mcp_test(args):
     print()
     print(color(f"  Testing '{name}'...", Colors.CYAN))
 
-    # Show transport info
+    # 显示传输方式信息
     if "url" in cfg:
         _info(f"Transport: HTTP → {cfg['url']}")
     else:
         cmd = cfg.get("command", "?")
         _info(f"Transport: stdio → {cmd}")
 
-    # Show auth info (masked)
+    # 显示认证信息（已脱敏）
     auth_type = cfg.get("auth", "")
     headers = cfg.get("headers", {})
     if auth_type == "oauth":
@@ -541,7 +541,7 @@ def cmd_mcp_test(args):
     elif headers:
         for k, v in headers.items():
             if isinstance(v, str) and ("key" in k.lower() or "auth" in k.lower()):
-                # Mask the value
+                # 脱敏处理值
                 resolved = _interpolate_value(v)
                 if len(resolved) > 8:
                     masked = resolved[:4] + "***" + resolved[-4:]
@@ -551,7 +551,7 @@ def cmd_mcp_test(args):
     else:
         _info("Auth: none")
 
-    # Attempt connection
+    # 尝试连接
     start = time.monotonic()
     try:
         tools = _probe_single_server(name, cfg)
@@ -573,7 +573,7 @@ def cmd_mcp_test(args):
 
 
 def _interpolate_value(value: str) -> str:
-    """Resolve ``${ENV_VAR}`` references in a string."""
+    """解析字符串中的 ``${ENV_VAR}`` 环境变量引用。"""
     def _replace(m):
         return os.getenv(m.group(1), "")
     return re.sub(r"\$\{(\w+)\}", _replace, value)
@@ -582,17 +582,15 @@ def _interpolate_value(value: str) -> str:
 # ─── hermes mcp login ────────────────────────────────────────────────────────
 
 def cmd_mcp_login(args):
-    """Force re-authentication for an OAuth-based MCP server.
+    """强制对基于 OAuth 的 MCP 服务器重新进行身份验证。
 
-    Deletes cached tokens (both on disk and in the running process's
-    MCPOAuthManager cache) and triggers a fresh OAuth flow via the
-    existing probe path.
+    删除缓存的令牌（包括磁盘上和运行中进程的 MCPOAuthManager 缓存），
+    并通过现有的探测路径触发全新的 OAuth 流程。
 
-    Use this when:
-      - Tokens are stuck in a bad state (server revoked, refresh token
-        consumed by an external process, etc.)
-      - You want to re-authenticate to change scopes or account
-      - A tool call returned ``needs_reauth: true``
+    使用场景：
+      - 令牌处于异常状态（服务器撤销、refresh token 被外部进程消耗等）
+      - 需要重新认证以更换作用域或账户
+      - 工具调用返回了 ``needs_reauth: true``
     """
     name = args.name
     servers = _get_mcp_servers()
@@ -613,8 +611,7 @@ def cmd_mcp_login(args):
         _info("Use `hermes mcp remove` + `hermes mcp add` to reconfigure auth.")
         return
 
-    # Wipe both disk and in-memory cache so the next probe forces a fresh
-    # OAuth flow.
+    # 同时清除磁盘和内存缓存，确保下次探测时强制执行全新的 OAuth 流程。
     try:
         from tools.mcp_oauth_manager import get_manager
         mgr = get_manager()
@@ -625,7 +622,7 @@ def cmd_mcp_login(args):
     print()
     _info(f"Starting OAuth flow for '{name}'...")
 
-    # Probe triggers the OAuth flow (browser redirect + callback capture).
+    # 探测操作会触发 OAuth 流程（浏览器重定向 + 回调捕获）。
     try:
         tools = _probe_single_server(name, server_config)
         if tools:
@@ -639,7 +636,7 @@ def cmd_mcp_login(args):
 # ─── hermes mcp configure ────────────────────────────────────────────────────
 
 def cmd_mcp_configure(args):
-    """Reconfigure which tools are enabled for an existing MCP server."""
+    """重新配置现有 MCP 服务器中哪些工具被启用。"""
     import sys as _sys
     if not _sys.stdin.isatty():
         print("Error: 'hermes mcp configure' requires an interactive terminal.", file=_sys.stderr)
@@ -656,7 +653,7 @@ def cmd_mcp_configure(args):
 
     cfg = servers[name]
 
-    # Discover all available tools
+    # 发现所有可用工具
     print()
     print(color(f"  Connecting to '{name}' to discover tools...", Colors.CYAN))
 
@@ -670,7 +667,7 @@ def cmd_mcp_configure(args):
         _warning("Server reports no tools.")
         return
 
-    # Determine which are currently enabled
+    # 确定当前已启用哪些工具
     tools_cfg = cfg.get("tools", {})
     if isinstance(tools_cfg, dict):
         include = tools_cfg.get("include")
@@ -699,7 +696,7 @@ def cmd_mcp_configure(args):
     _info(f"Currently {currently}/{total} tools enabled for '{name}'.")
     print()
 
-    # Interactive checklist
+    # 交互式复选列表
     from hermes_cli.curses_ui import curses_checklist
 
     labels = [f"{t[0]}  —  {t[1]}" for t in all_tools]
@@ -714,12 +711,12 @@ def cmd_mcp_configure(args):
         _info("No changes made.")
         return
 
-    # Update config
+    # 更新配置
     config = load_config()
     server_entry = config.get("mcp_servers", {}).get(name, {})
 
     if len(chosen) == total:
-        # All selected → remove include/exclude (register all)
+        # 全部选中 -> 移除 include/exclude（注册全部工具）
         server_entry.pop("tools", None)
     else:
         chosen_names = [tool_names[i] for i in sorted(chosen)]
@@ -735,10 +732,10 @@ def cmd_mcp_configure(args):
     _info("Start a new session for changes to take effect.")
 
 
-# ─── Dispatcher ───────────────────────────────────────────────────────────────
+# ─── 命令分发器 ───────────────────────────────────────────────────────────────
 
 def mcp_command(args):
-    """Main dispatcher for ``hermes mcp`` subcommands."""
+    """``hermes mcp`` 子命令的主分发器。"""
     action = getattr(args, "mcp_action", None)
 
     if action == "serve":
@@ -762,7 +759,7 @@ def mcp_command(args):
     if handler:
         handler(args)
     else:
-        # No subcommand — show list
+        # 未指定子命令 -- 显示列表
         cmd_mcp_list()
         print(color("  Commands:", Colors.CYAN))
         _info("hermes mcp serve                              Run as MCP server")

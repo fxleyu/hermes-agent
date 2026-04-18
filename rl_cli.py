@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """
-RL Training CLI Runner
+RL 训练 CLI 运行器
 
-Dedicated CLI runner for RL training workflows with:
-- Extended timeouts for long-running training
-- RL-focused system prompts
-- Full toolset including RL training tools
-- Special handling for 30-minute check intervals
+专用于 RL 训练工作流的 CLI 运行器，具有以下特性：
+- 为长时间运行的训练提供扩展超时
+- 以 RL 为重点的系统提示词
+- 包含 RL 训练工具在内的完整工具集
+- 特别处理 30 分钟检查间隔
 
-Usage:
+用法:
     python rl_cli.py "Train a model on GSM8k for math reasoning"
     python rl_cli.py --interactive
     python rl_cli.py --list-environments
 
-Environment Variables:
-    TINKER_API_KEY: API key for Tinker service (required)
-    WANDB_API_KEY: API key for WandB metrics (required)
-    OPENROUTER_API_KEY: API key for OpenRouter (required for agent)
+环境变量:
+    TINKER_API_KEY: Tinker 服务的 API 密钥（必需）
+    WANDB_API_KEY: WandB 指标的 API 密钥（必需）
+    OPENROUTER_API_KEY: OpenRouter 的 API 密钥（Agent 必需）
 """
 
 import asyncio
@@ -27,8 +27,8 @@ from pathlib import Path
 import fire
 import yaml
 
-# Load .env from ~/.hermes/.env first, then project root as dev fallback.
-# User-managed env files should override stale shell exports on restart.
+# 首先从 ~/.hermes/.env 加载 .env，然后从项目根目录作为开发回退。
+# 用户管理的 env 文件应在重启时覆盖过时的 shell 导出。
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
 
@@ -38,26 +38,26 @@ _loaded_env_paths = load_hermes_dotenv(hermes_home=_hermes_home, project_env=_pr
 for _env_path in _loaded_env_paths:
     print(f"✅ Loaded environment variables from {_env_path}")
 
-# Set terminal working directory to tinker-atropos submodule
-# This ensures terminal commands run in the right context for RL work
+# 将终端工作目录设置为 tinker-atropos 子模块
+# 这确保终端命令在 RL 工作的正确上下文中运行
 tinker_atropos_dir = Path(__file__).parent / 'tinker-atropos'
 if tinker_atropos_dir.exists():
     os.environ['TERMINAL_CWD'] = str(tinker_atropos_dir)
-    os.environ['HERMES_QUIET'] = '1'  # Disable temp subdirectory creation
+    os.environ['HERMES_QUIET'] = '1'  # 禁用临时子目录创建
     print(f"📂 Terminal working directory: {tinker_atropos_dir}")
 else:
-    # Fall back to hermes-agent directory if submodule not found
+    # 如果子模块未找到，回退到 hermes-agent 目录
     os.environ['TERMINAL_CWD'] = str(Path(__file__).parent)
     os.environ['HERMES_QUIET'] = '1'
     print(f"⚠️  tinker-atropos submodule not found, using: {Path(__file__).parent}")
 
-# Import agent and tools
+# 导入 Agent 和工具
 from run_agent import AIAgent
 from tools.rl_training_tool import get_missing_keys
 
 
 # ============================================================================
-# Config Loading
+# 配置加载
 # ============================================================================
 
 from hermes_constants import get_hermes_home, OPENROUTER_BASE_URL
@@ -68,10 +68,10 @@ DEFAULT_BASE_URL = OPENROUTER_BASE_URL
 
 def load_hermes_config() -> dict:
     """
-    Load configuration from ~/.hermes/config.yaml.
-    
-    Returns:
-        dict: Configuration with model, base_url, etc.
+    从 ~/.hermes/config.yaml 加载配置。
+
+    返回:
+        dict: 包含 model、base_url 等的配置
     """
     config_path = _hermes_home / 'config.yaml'
     
@@ -85,14 +85,14 @@ def load_hermes_config() -> dict:
             with open(config_path, "r") as f:
                 file_config = yaml.safe_load(f) or {}
             
-            # Get model from config
+            # 从配置中获取模型
             if "model" in file_config:
                 if isinstance(file_config["model"], str):
                     config["model"] = file_config["model"]
                 elif isinstance(file_config["model"], dict):
                     config["model"] = file_config["model"].get("default", DEFAULT_MODEL)
             
-            # Get base_url if specified
+            # 如果指定了 base_url 则获取
             if "base_url" in file_config:
                 config["base_url"] = file_config["base_url"]
                 
@@ -103,13 +103,13 @@ def load_hermes_config() -> dict:
 
 
 # ============================================================================
-# RL-Specific Configuration
+# RL 专用配置
 # ============================================================================
 
-# Extended timeouts for long-running RL operations
-RL_MAX_ITERATIONS = 200  # Allow many more iterations for long workflows
+# 为长时间运行的 RL 操作扩展超时
+RL_MAX_ITERATIONS = 200  # 允许更多迭代以支持长工作流
 
-# RL-focused system prompt
+# 以 RL 为重点的系统提示词
 RL_SYSTEM_PROMPT = """You are an automated post-training engineer specializing in reinforcement learning for language models.
 
 ## Your Capabilities
@@ -169,19 +169,19 @@ When asked to train a model, follow this workflow:
 5. Monitor progress and adjust as needed
 """
 
-# Toolsets to enable for RL workflows
+# 为 RL 工作流启用的工具集
 RL_TOOLSETS = ["terminal", "web", "rl"]
 
 
 # ============================================================================
-# Helper Functions
+# 辅助函数
 # ============================================================================
 
 def check_requirements():
-    """Check that all required environment variables and services are available."""
+    """检查所有必需的环境变量和服务是否可用。"""
     errors = []
     
-    # Check API keys
+    # 检查 API 密钥
     if not os.getenv("OPENROUTER_API_KEY"):
         errors.append("OPENROUTER_API_KEY not set - required for agent")
     
@@ -200,7 +200,7 @@ def check_requirements():
 
 
 def check_tinker_atropos():
-    """Check if tinker-atropos submodule is properly set up."""
+    """检查 tinker-atropos 子模块是否正确设置。"""
     tinker_path = Path(__file__).parent / "tinker-atropos"
     
     if not tinker_path.exists():
@@ -217,7 +217,7 @@ def check_tinker_atropos():
 
 
 def list_environments_sync():
-    """List available environments (synchronous wrapper)."""
+    """列出可用环境（同步包装器）。"""
     from tools.rl_training_tool import rl_list_environments
     import json
     
@@ -229,7 +229,7 @@ def list_environments_sync():
 
 
 # ============================================================================
-# Main CLI
+# 主 CLI
 # ============================================================================
 
 def main(
@@ -245,37 +245,37 @@ def main(
     save_trajectories: bool = True,
 ):
     """
-    RL Training CLI - Dedicated runner for RL training workflows.
-    
-    Args:
-        task: The training task/goal (e.g., "Train a model on GSM8k for math")
-        model: Model to use for the agent (reads from ~/.hermes/config.yaml if not provided)
-        api_key: OpenRouter API key (uses OPENROUTER_API_KEY env var if not provided)
-        base_url: API base URL (reads from config or defaults to OpenRouter)
-        max_iterations: Maximum agent iterations (default: 200 for long workflows)
-        interactive: Run in interactive mode (multiple conversations)
-        list_environments: Just list available RL environments and exit
-        check_server: Check if RL API server is running and exit
-        verbose: Enable verbose logging
-        save_trajectories: Save conversation trajectories (default: True for RL)
-    
-    Examples:
-        # Train on a specific environment
+    RL 训练 CLI - 专用于 RL 训练工作流的运行器。
+
+    参数:
+        task: 训练任务/目标（例如 "Train a model on GSM8k for math"）
+        model: Agent 使用的模型（未提供时从 ~/.hermes/config.yaml 读取）
+        api_key: OpenRouter API 密钥（未提供时使用 OPENROUTER_API_KEY 环境变量）
+        base_url: API 基础 URL（从配置读取或默认使用 OpenRouter）
+        max_iterations: 最大 Agent 迭代次数（默认: 200，适用于长工作流）
+        interactive: 以交互模式运行（多轮对话）
+        list_environments: 仅列出可用的 RL 环境并退出
+        check_server: 检查 RL API 服务器是否运行并退出
+        verbose: 启用详细日志
+        save_trajectories: 保存对话轨迹（默认: True，用于 RL）
+
+    示例:
+        # 在特定环境上训练
         python rl_cli.py "Train a model on GSM8k math problems"
-        
-        # Interactive mode
+
+        # 交互模式
         python rl_cli.py --interactive
-        
-        # List available environments
+
+        # 列出可用环境
         python rl_cli.py --list-environments
-        
-        # Check server status
+
+        # 检查服务器状态
         python rl_cli.py --check-server
     """
-    # Load config from ~/.hermes/config.yaml
+    # 从 ~/.hermes/config.yaml 加载配置
     config = load_hermes_config()
     
-    # Use config values if not explicitly provided
+    # 如果未显式提供，则使用配置值
     if model is None:
         model = config["model"]
     if base_url is None:
@@ -284,7 +284,7 @@ def main(
     print("🎯 RL Training Agent")
     print("=" * 60)
     
-    # Handle setup check
+    # 处理设置检查
     if check_server:
         print("\n🔍 Checking tinker-atropos setup...")
         ok, result = check_tinker_atropos()
@@ -293,7 +293,7 @@ def main(
             print(f"   Path: {result.get('path')}")
             print(f"   Environments found: {result.get('environments_count', 0)}")
             
-            # Also check API keys
+            # 同时检查 API 密钥
             missing = get_missing_keys()
             if missing:
                 print(f"\n⚠️  Missing API keys: {', '.join(missing)}")
@@ -307,7 +307,7 @@ def main(
             print("  pip install -e ./tinker-atropos")
         return
     
-    # Handle environment listing
+    # 处理环境列表
     if list_environments:
         print("\n📋 Available RL Environments:")
         print("-" * 40)
@@ -341,11 +341,11 @@ def main(
             print("  pip install -e ./tinker-atropos")
         return
     
-    # Check requirements
+    # 检查必要条件
     if not check_requirements():
         sys.exit(1)
     
-    # Set default task if none provided
+    # 如果没有提供任务且非交互模式，设置默认任务
     if not task and not interactive:
         print("\n⚠️  No task provided. Use --interactive for interactive mode or provide a task.")
         print("\nExamples:")
@@ -354,7 +354,7 @@ def main(
         print('  python rl_cli.py --interactive')
         return
     
-    # Get API key
+    # 获取 API 密钥
     api_key = api_key or os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         print("❌ No API key provided. Set OPENROUTER_API_KEY or pass --api-key")
@@ -365,7 +365,7 @@ def main(
     print(f"📁 Toolsets: {', '.join(RL_TOOLSETS)}")
     print("=" * 60)
     
-    # Create agent with RL configuration
+    # 使用 RL 配置创建 Agent
     agent = AIAgent(
         base_url=base_url,
         api_key=api_key,
@@ -379,7 +379,7 @@ def main(
     )
     
     if interactive:
-        # Interactive mode - multiple conversations
+        # 交互模式 - 多轮对话
         print("\n🔄 Interactive RL Training Mode")
         print("Type 'quit' or 'exit' to end the session.")
         print("Type 'status' to check active training runs.")
@@ -397,7 +397,7 @@ def main(
                     break
                 
                 if user_input.lower() == 'status':
-                    # Quick status check
+                    # 快速状态检查
                     from tools.rl_training_tool import rl_list_runs
                     import json
                     result = asyncio.run(rl_list_runs())
@@ -410,7 +410,7 @@ def main(
                         print("\nNo active runs.")
                     continue
                 
-                # Run the agent
+                # 运行 Agent
                 print("\n" + "=" * 60)
                 response = agent.run_conversation(user_input)
                 print("\n" + "=" * 60)
@@ -424,7 +424,7 @@ def main(
                     import traceback
                     traceback.print_exc()
     else:
-        # Single task mode
+        # 单任务模式
         print(f"\n📝 Task: {task}")
         print("-" * 40)
         

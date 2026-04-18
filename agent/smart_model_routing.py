@@ -1,4 +1,4 @@
-"""Helpers for optional cheap-vs-strong model routing."""
+"""可选的经济模型与强力模型智能路由辅助工具。"""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 
 from utils import is_truthy_value
 
+# 用于判断消息复杂度的关键词集合——包含这些词的消息视为复杂消息
 _COMPLEX_KEYWORDS = {
     "debug",
     "debugging",
@@ -45,7 +46,7 @@ _COMPLEX_KEYWORDS = {
     "kubernetes",
 }
 
-_URL_RE = re.compile(r"https?://|www\.", re.IGNORECASE)
+_URL_RE = re.compile(r"https?://|www\.", re.IGNORECASE)  # URL 匹配正则
 
 
 def _coerce_bool(value: Any, default: bool = False) -> bool:
@@ -60,12 +61,13 @@ def _coerce_int(value: Any, default: int) -> int:
 
 
 def choose_cheap_model_route(user_message: str, routing_config: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Return the configured cheap-model route when a message looks simple.
+    """当消息看起来简单时，返回配置的经济模型路由。
 
-    Conservative by design: if the message has signs of code/tool/debugging/
-    long-form work, keep the primary model.
+    设计上偏保守：如果消息有代码/工具/调试/长文本工作的迹象，
+    则保持使用主模型。
     """
     cfg = routing_config or {}
+    # 未启用路由则直接返回
     if not _coerce_bool(cfg.get("enabled"), False):
         return None
 
@@ -81,9 +83,11 @@ def choose_cheap_model_route(user_message: str, routing_config: Optional[Dict[st
     if not text:
         return None
 
+    # 简单消息的字符数和词数上限
     max_chars = _coerce_int(cfg.get("max_simple_chars"), 160)
     max_words = _coerce_int(cfg.get("max_simple_words"), 28)
 
+    # 依次检查各种复杂消息特征——任一命中则不使用经济模型
     if len(text) > max_chars:
         return None
     if len(text.split()) > max_words:
@@ -95,11 +99,13 @@ def choose_cheap_model_route(user_message: str, routing_config: Optional[Dict[st
     if _URL_RE.search(text):
         return None
 
+    # 检查是否包含复杂关键词
     lowered = text.lower()
     words = {token.strip(".,:;!?()[]{}\"'`") for token in lowered.split()}
     if words & _COMPLEX_KEYWORDS:
         return None
 
+    # 消息被判定为简单，返回经济模型路由配置
     route = dict(cheap_model)
     route["provider"] = provider
     route["model"] = model
@@ -108,11 +114,12 @@ def choose_cheap_model_route(user_message: str, routing_config: Optional[Dict[st
 
 
 def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any]], primary: Dict[str, Any]) -> Dict[str, Any]:
-    """Resolve the effective model/runtime for one turn.
+    """解析单轮对话的有效模型/运行时配置。
 
-    Returns a dict with model/runtime/signature/label fields.
+    返回包含 model/runtime/signature/label 字段的字典。
     """
     route = choose_cheap_model_route(user_message, routing_config)
+    # 如果不适用经济模型路由，则使用主模型
     if not route:
         return {
             "model": primary.get("model"),
@@ -136,8 +143,10 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
             ),
         }
 
+    # 延迟导入以避免循环依赖
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
+    # 如果配置了显式的 API 密钥环境变量名，则从环境变量中获取
     explicit_api_key = None
     api_key_env = str(route.get("api_key_env") or "").strip()
     if api_key_env:

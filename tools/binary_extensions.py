@@ -1,41 +1,42 @@
-"""Binary file extensions to skip for text-based operations.
+"""文本操作中需要跳过的二进制文件扩展名集合。
 
-These files can't be meaningfully compared as text and are often large.
-Ported from free-code src/constants/files.ts.
+这些文件无法作为文本进行有意义的比较，且通常体积较大。
+移植自 free-code src/constants/files.ts。
 """
 
 BINARY_EXTENSIONS = frozenset({
-    # Images
+    # 图片
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".tiff", ".tif",
-    # Videos
+    # 视频
     ".mp4", ".mov", ".avi", ".mkv", ".webm", ".wmv", ".flv", ".m4v", ".mpeg", ".mpg",
-    # Audio
+    # 音频
     ".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma", ".aiff", ".opus",
-    # Archives
+    # 压缩包
     ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar", ".xz", ".z", ".tgz", ".iso",
-    # Executables/binaries
+    # 可执行文件/二进制文件
     ".exe", ".dll", ".so", ".dylib", ".bin", ".o", ".a", ".obj", ".lib",
     ".app", ".msi", ".deb", ".rpm",
-    # Documents (exclude .pdf — text-based, agents may want to inspect)
+    # 文档（排除 .pdf——PDF 是基于文本的，代理可能需要检查其内容）
     ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
     ".odt", ".ods", ".odp",
-    # Fonts
+    # 字体
     ".ttf", ".otf", ".woff", ".woff2", ".eot",
-    # Bytecode / VM artifacts
+    # 字节码/虚拟机产物
     ".pyc", ".pyo", ".class", ".jar", ".war", ".ear", ".node", ".wasm", ".rlib",
-    # Database files
+    # 数据库文件
     ".sqlite", ".sqlite3", ".db", ".mdb", ".idx",
-    # Design / 3D
+    # 设计/3D 文件
     ".psd", ".ai", ".eps", ".sketch", ".fig", ".xd", ".blend", ".3ds", ".max",
     # Flash
     ".swf", ".fla",
-    # Lock/profiling data
+    # 锁文件/性能分析数据
     ".lockb", ".dat", ".data",
 })
 
 
 def has_binary_extension(path: str) -> bool:
-    """Check if a file path has a binary extension. Pure string check, no I/O."""
+    """检查文件路径是否具有二进制文件扩展名。纯字符串检查，不涉及 I/O 操作。"""
+    # 从路径中查找最后一个 '.' 的位置，提取扩展名并与已知集合比较
     dot = path.rfind(".")
     if dot == -1:
         return False

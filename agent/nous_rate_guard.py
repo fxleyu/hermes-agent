@@ -1,13 +1,13 @@
-"""Cross-session rate limit guard for Nous Portal.
+"""Nous Portal 的跨会话速率限制防护。
 
-Writes rate limit state to a shared file so all sessions (CLI, gateway,
-cron, auxiliary) can check whether Nous Portal is currently rate-limited
-before making requests.  Prevents retry amplification when RPH is tapped.
+将速率限制状态写入共享文件，使所有会话（CLI、网关、
+cron、辅助）在发起请求前检查 Nous Portal 是否当前处于
+速率限制状态。防止 RPH 配额耗尽时的重试放大效应。
 
-Each 429 from Nous triggers up to 9 API calls per conversation turn
-(3 SDK retries x 3 Hermes retries), and every one of those calls counts
-against RPH.  By recording the rate limit state on first 429 and checking
-it before subsequent attempts, we eliminate the amplification effect.
+每个来自 Nous 的 429 错误会在每轮对话中触发最多 9 次 API 调用
+（3 次 SDK 重试 x 3 次 Hermes 重试），且每一次调用都计入 RPH。
+通过在首次 429 时记录速率限制状态，并在后续尝试前检查该状态，
+我们消除了重试放大效应。
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ _STATE_FILENAME = "nous.json"
 
 
 def _state_path() -> str:
-    """Return the path to the Nous rate limit state file."""
+    """返回 Nous 速率限制状态文件的路径。"""
     try:
         from hermes_constants import get_hermes_home
         base = get_hermes_home()
@@ -36,14 +36,14 @@ def _state_path() -> str:
 
 
 def _parse_reset_seconds(headers: Optional[Mapping[str, str]]) -> Optional[float]:
-    """Extract the best available reset-time estimate from response headers.
+    """从响应头中提取最佳可用的重置时间估算。
 
-    Priority:
-      1. x-ratelimit-reset-requests-1h  (hourly RPH window — most useful)
-      2. x-ratelimit-reset-requests     (per-minute RPM window)
-      3. retry-after                     (generic HTTP header)
+    优先级：
+      1. x-ratelimit-reset-requests-1h（每小时 RPH 窗口——最有用）
+      2. x-ratelimit-reset-requests（每分钟 RPM 窗口）
+      3. retry-after（通用 HTTP 头）
 
-    Returns seconds-from-now, or None if no usable header found.
+    返回距现在的秒数，如果没有可用头信息则返回 None。
     """
     if not headers:
         return None
@@ -73,32 +73,32 @@ def record_nous_rate_limit(
     error_context: Optional[dict[str, Any]] = None,
     default_cooldown: float = 300.0,
 ) -> None:
-    """Record that Nous Portal is rate-limited.
+    """记录 Nous Portal 当前处于速率限制状态。
 
-    Parses the reset time from response headers or error context.
-    Falls back to ``default_cooldown`` (5 minutes) if no reset info
-    is available.  Writes to a shared file that all sessions can read.
+    从响应头或错误上下文中解析重置时间。
+    如果没有重置信息，回退到 ``default_cooldown``（5 分钟）。
+    写入所有会话可读取的共享文件。
 
-    Args:
-        headers: HTTP response headers from the 429 error.
-        error_context: Structured error context from _extract_api_error_context().
-        default_cooldown: Fallback cooldown in seconds when no header data.
+    参数：
+        headers：来自 429 错误的 HTTP 响应头。
+        error_context：来自 _extract_api_error_context() 的结构化错误上下文。
+        default_cooldown：无头信息数据时的回退冷却时间（秒）。
     """
     now = time.time()
     reset_at = None
 
-    # Try headers first (most accurate)
+    # 首先尝试从头信息获取（最准确）
     header_seconds = _parse_reset_seconds(headers)
     if header_seconds is not None:
         reset_at = now + header_seconds
 
-    # Try error_context reset_at (from body parsing)
+    # 尝试从 error_context 的 reset_at 获取（来自响应体解析）
     if reset_at is None and isinstance(error_context, dict):
         ctx_reset = error_context.get("reset_at")
         if isinstance(ctx_reset, (int, float)) and ctx_reset > now:
             reset_at = float(ctx_reset)
 
-    # Default cooldown
+    # 使用默认冷却时间
     if reset_at is None:
         reset_at = now + default_cooldown
 
@@ -113,14 +113,14 @@ def record_nous_rate_limit(
             "reset_seconds": reset_at - now,
         }
 
-        # Atomic write: write to temp file + rename
+        # 原子写入：先写入临时文件，再重命名
         fd, tmp_path = tempfile.mkstemp(dir=state_dir, suffix=".tmp")
         try:
             with os.fdopen(fd, "w") as f:
                 json.dump(state, f)
             os.replace(tmp_path, path)
         except Exception:
-            # Clean up temp file on failure
+            # 写入失败时清理临时文件
             try:
                 os.unlink(tmp_path)
             except OSError:
@@ -136,10 +136,10 @@ def record_nous_rate_limit(
 
 
 def nous_rate_limit_remaining() -> Optional[float]:
-    """Check if Nous Portal is currently rate-limited.
+    """检查 Nous Portal 当前是否处于速率限制状态。
 
-    Returns:
-        Seconds remaining until reset, or None if not rate-limited.
+    返回：
+        距重置的剩余秒数，如果未受限则返回 None。
     """
     path = _state_path()
     try:
@@ -149,7 +149,7 @@ def nous_rate_limit_remaining() -> Optional[float]:
         remaining = reset_at - time.time()
         if remaining > 0:
             return remaining
-        # Expired — clean up
+        # 已过期——清理状态文件
         try:
             os.unlink(path)
         except OSError:
@@ -160,7 +160,7 @@ def nous_rate_limit_remaining() -> Optional[float]:
 
 
 def clear_nous_rate_limit() -> None:
-    """Clear the rate limit state (e.g., after a successful Nous request)."""
+    """清除速率限制状态（例如在 Nous 请求成功后）。"""
     try:
         os.unlink(_state_path())
     except FileNotFoundError:
@@ -170,7 +170,7 @@ def clear_nous_rate_limit() -> None:
 
 
 def format_remaining(seconds: float) -> str:
-    """Format seconds remaining into human-readable duration."""
+    """将剩余秒数格式化为人类可读的时间。"""
     s = max(0, int(seconds))
     if s < 60:
         return f"{s}s"

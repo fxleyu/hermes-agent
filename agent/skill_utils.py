@@ -1,8 +1,7 @@
-"""Lightweight skill metadata utilities shared by prompt_builder and skills_tool.
+"""轻量级技能元数据工具，由 prompt_builder 和 skills_tool 共享。
 
-This module intentionally avoids importing the tool registry, CLI config, or any
-heavy dependency chain.  It is safe to import at module level without triggering
-tool registration or provider resolution.
+此模块有意避免导入工具注册表、CLI 配置或任何重量级依赖链。
+可以在模块级别安全导入，不会触发工具注册或提供商解析。
 """
 
 import logging
@@ -16,7 +15,7 @@ from hermes_constants import get_config_path, get_skills_dir
 
 logger = logging.getLogger(__name__)
 
-# ── Platform mapping ──────────────────────────────────────────────────────
+# ── 平台映射 ──────────────────────────────────────────────────────
 
 PLATFORM_MAP = {
     "macos": "darwin",
@@ -26,13 +25,13 @@ PLATFORM_MAP = {
 
 EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub"))
 
-# ── Lazy YAML loader ─────────────────────────────────────────────────────
+# ── 延迟 YAML 加载器 ─────────────────────────────────────────────────────
 
 _yaml_load_fn = None
 
 
 def yaml_load(content: str):
-    """Parse YAML with lazy import and CSafeLoader preference."""
+    """使用延迟导入和 CSafeLoader 优先策略解析 YAML。"""
     global _yaml_load_fn
     if _yaml_load_fn is None:
         import yaml
@@ -46,17 +45,17 @@ def yaml_load(content: str):
     return _yaml_load_fn(content)
 
 
-# ── Frontmatter parsing ──────────────────────────────────────────────────
+# ── Frontmatter 解析 ──────────────────────────────────────────────────
 
 
 def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
-    """Parse YAML frontmatter from a markdown string.
+    """从 markdown 字符串中解析 YAML frontmatter。
 
-    Uses yaml with CSafeLoader for full YAML support (nested metadata, lists)
-    with a fallback to simple key:value splitting for robustness.
+    使用 yaml + CSafeLoader 实现完整 YAML 支持（嵌套元数据、列表），
+    并使用简单的 key:value 分割作为健壮性回退。
 
     Returns:
-        (frontmatter_dict, remaining_body)
+        (frontmatter 字典, 剩余正文)
     """
     frontmatter: Dict[str, Any] = {}
     body = content
@@ -76,7 +75,7 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
         if isinstance(parsed, dict):
             frontmatter = parsed
     except Exception:
-        # Fallback: simple key:value parsing for malformed YAML
+        # 回退：对格式不正确的 YAML 使用简单的 key:value 解析
         for line in yaml_content.strip().split("\n"):
             if ":" not in line:
                 continue
@@ -86,20 +85,18 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     return frontmatter, body
 
 
-# ── Platform matching ─────────────────────────────────────────────────────
+# ── 平台匹配 ─────────────────────────────────────────────────────
 
 
 def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
-    """Return True when the skill is compatible with the current OS.
+    """当技能与当前操作系统兼容时返回 True。
 
-    Skills declare platform requirements via a top-level ``platforms`` list
-    in their YAML frontmatter::
+    技能通过 YAML frontmatter 中的顶级 ``platforms`` 列表声明平台要求::
 
-        platforms: [macos]          # macOS only
-        platforms: [macos, linux]   # macOS and Linux
+        platforms: [macos]          # 仅 macOS
+        platforms: [macos, linux]   # macOS 和 Linux
 
-    If the field is absent or empty the skill is compatible with **all**
-    platforms (backward-compatible default).
+    如果该字段缺失或为空，则技能与**所有**平台兼容（向后兼容默认值）。
     """
     platforms = frontmatter.get("platforms")
     if not platforms:
@@ -115,20 +112,18 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
     return False
 
 
-# ── Disabled skills ───────────────────────────────────────────────────────
+# ── 已禁用的技能 ───────────────────────────────────────────────────────
 
 
 def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
-    """Read disabled skill names from config.yaml.
+    """从 config.yaml 读取已禁用的技能名称。
 
     Args:
-        platform: Explicit platform name (e.g. ``"telegram"``).  When
-            *None*, resolves from ``HERMES_PLATFORM`` or
-            ``HERMES_SESSION_PLATFORM`` env vars.  Falls back to the
-            global disabled list when no platform is determined.
+        platform: 显式平台名称（如 ``"telegram"``）。当为 *None* 时，
+            从 ``HERMES_PLATFORM`` 或 ``HERMES_SESSION_PLATFORM`` 环境变量
+            解析。如果没有确定平台，则回退到全局禁用列表。
 
-    Reads the config file directly (no CLI config imports) to stay
-    lightweight.
+    直接读取配置文件（不导入 CLI 配置）以保持轻量。
     """
     config_path = get_config_path()
     if not config_path.exists():
@@ -168,15 +163,15 @@ def _normalize_string_set(values) -> Set[str]:
     return {str(v).strip() for v in values if str(v).strip()}
 
 
-# ── External skills directories ──────────────────────────────────────────
+# ── 外部技能目录 ──────────────────────────────────────────────────
 
 
 def get_external_skills_dirs() -> List[Path]:
-    """Read ``skills.external_dirs`` from config.yaml and return validated paths.
+    """从 config.yaml 读取 ``skills.external_dirs`` 并返回验证过的路径。
 
-    Each entry is expanded (``~`` and ``${VAR}``) and resolved to an absolute
-    path.  Only directories that actually exist are returned.  Duplicates and
-    paths that resolve to the local ``~/.hermes/skills/`` are silently skipped.
+    每个条目会被展开（``~`` 和 ``${VAR}``）并解析为绝对路径。
+    只返回实际存在的目录。重复路径和解析为本地
+    ``~/.hermes/skills/`` 的路径会被静默跳过。
     """
     config_path = get_config_path()
     if not config_path.exists():
@@ -208,7 +203,7 @@ def get_external_skills_dirs() -> List[Path]:
         entry = str(entry).strip()
         if not entry:
             continue
-        # Expand ~ and environment variables
+        # 展开 ~ 和环境变量
         expanded = os.path.expanduser(os.path.expandvars(entry))
         p = Path(expanded).resolve()
         if p == local_skills:
@@ -225,23 +220,23 @@ def get_external_skills_dirs() -> List[Path]:
 
 
 def get_all_skills_dirs() -> List[Path]:
-    """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
+    """返回所有技能目录：本地 ``~/.hermes/skills/`` 在前，然后是外部目录。
 
-    The local dir is always first (and always included even if it doesn't exist
-    yet — callers handle that).  External dirs follow in config order.
+    本地目录始终排第一（即使尚不存在也始终包含——调用方会处理此情况）。
+    外部目录按配置顺序排列。
     """
     dirs = [get_skills_dir()]
     dirs.extend(get_external_skills_dirs())
     return dirs
 
 
-# ── Condition extraction ──────────────────────────────────────────────────
+# ── 条件提取 ──────────────────────────────────────────────────
 
 
 def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
-    """Extract conditional activation fields from parsed frontmatter."""
+    """从解析后的 frontmatter 中提取条件激活字段。"""
     metadata = frontmatter.get("metadata")
-    # Handle cases where metadata is not a dict (e.g., a string from malformed YAML)
+    # 处理 metadata 不是 dict 的情况（如格式不正确的 YAML 中的字符串）
     if not isinstance(metadata, dict):
         metadata = {}
     hermes = metadata.get("hermes") or {}
@@ -255,24 +250,24 @@ def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
     }
 
 
-# ── Skill config extraction ───────────────────────────────────────────────
+# ── 技能配置提取 ───────────────────────────────────────────────
 
 
 def extract_skill_config_vars(frontmatter: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Extract config variable declarations from parsed frontmatter.
+    """从解析后的 frontmatter 中提取配置变量声明。
 
-    Skills declare config.yaml settings they need via::
+    技能通过以下方式声明其需要的 config.yaml 设置::
 
         metadata:
           hermes:
             config:
               - key: wiki.path
-                description: Path to the LLM Wiki knowledge base directory
+                description: LLM Wiki 知识库目录的路径
                 default: "~/wiki"
-                prompt: Wiki directory path
+                prompt: Wiki 目录路径
 
-    Returns a list of dicts with keys: ``key``, ``description``, ``default``,
-    ``prompt``.  Invalid or incomplete entries are silently skipped.
+    返回包含以下键的字典列表：``key``、``description``、``default``、
+    ``prompt``。无效或不完整的条目会被静默跳过。
     """
     metadata = frontmatter.get("metadata")
     if not isinstance(metadata, dict):
@@ -296,7 +291,7 @@ def extract_skill_config_vars(frontmatter: Dict[str, Any]) -> List[Dict[str, Any
         key = str(item.get("key", "")).strip()
         if not key or key in seen:
             continue
-        # Must have at least key and description
+        # 必须至少有 key 和 description
         desc = str(item.get("description", "")).strip()
         if not desc:
             continue
@@ -318,13 +313,12 @@ def extract_skill_config_vars(frontmatter: Dict[str, Any]) -> List[Dict[str, Any
 
 
 def discover_all_skill_config_vars() -> List[Dict[str, Any]]:
-    """Scan all enabled skills and collect their config variable declarations.
+    """扫描所有启用的技能并收集其配置变量声明。
 
-    Walks every skills directory, parses each SKILL.md frontmatter, and returns
-    a deduplicated list of config var dicts.  Each dict also includes a
-    ``skill`` key with the skill name for attribution.
+    遍历每个技能目录，解析每个 SKILL.md 的 frontmatter，返回
+    去重的配置变量字典列表。每个字典还包含用于归属的 ``skill`` 键和技能名称。
 
-    Disabled and platform-incompatible skills are excluded.
+    已禁用和平台不兼容的技能会被排除。
     """
     all_vars: List[Dict[str, Any]] = []
     seen_keys: set = set()
@@ -356,14 +350,14 @@ def discover_all_skill_config_vars() -> List[Dict[str, Any]]:
     return all_vars
 
 
-# Storage prefix: all skill config vars are stored under skills.config.*
-# in config.yaml.  Skill authors declare logical keys (e.g. "wiki.path");
-# the system adds this prefix for storage and strips it for display.
+# 存储前缀：所有技能配置变量存储在 config.yaml 的 skills.config.* 下。
+# 技能作者声明逻辑键（如 "wiki.path"）；
+# 系统在存储时添加此前缀，在展示时去掉。
 SKILL_CONFIG_PREFIX = "skills.config"
 
 
 def _resolve_dotpath(config: Dict[str, Any], dotted_key: str):
-    """Walk a nested dict following a dotted key.  Returns None if any part is missing."""
+    """沿点分隔键遍历嵌套字典。任何部分缺失时返回 None。"""
     parts = dotted_key.split(".")
     current = config
     for part in parts:
@@ -377,12 +371,12 @@ def _resolve_dotpath(config: Dict[str, Any], dotted_key: str):
 def resolve_skill_config_values(
     config_vars: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Resolve current values for skill config vars from config.yaml.
+    """从 config.yaml 解析技能配置变量的当前值。
 
-    Skill config is stored under ``skills.config.<key>`` in config.yaml.
-    Returns a dict mapping **logical** keys (as declared by skills) to their
-    current values (or the declared default if the key isn't set).
-    Path values are expanded via ``os.path.expanduser``.
+    技能配置存储在 config.yaml 的 ``skills.config.<key>`` 下。
+    返回将**逻辑**键（技能声明的键）映射到其当前值的字典
+    （如果键未设置则使用声明的默认值）。
+    路径值通过 ``os.path.expanduser`` 展开。
     """
     config_path = get_config_path()
     config: Dict[str, Any] = {}
@@ -403,7 +397,7 @@ def resolve_skill_config_values(
         if value is None or (isinstance(value, str) and not value.strip()):
             value = var.get("default", "")
 
-        # Expand ~ in path-like values
+        # 展开路径值中的 ~
         if isinstance(value, str) and ("~" in value or "${" in value):
             value = os.path.expanduser(os.path.expandvars(value))
 
@@ -412,11 +406,11 @@ def resolve_skill_config_values(
     return resolved
 
 
-# ── Description extraction ────────────────────────────────────────────────
+# ── 描述提取 ────────────────────────────────────────────────────
 
 
 def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
-    """Extract a truncated description from parsed frontmatter."""
+    """从解析后的 frontmatter 中提取截断的描述。"""
     raw_desc = frontmatter.get("description", "")
     if not raw_desc:
         return ""
@@ -426,13 +420,13 @@ def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
     return desc
 
 
-# ── File iteration ────────────────────────────────────────────────────────
+# ── 文件迭代 ────────────────────────────────────────────────────
 
 
 def iter_skill_index_files(skills_dir: Path, filename: str):
-    """Walk skills_dir yielding sorted paths matching *filename*.
+    """遍历 skills_dir，按排序顺序产出匹配 *filename* 的路径。
 
-    Excludes ``.git``, ``.github``, ``.hub`` directories.
+    排除 ``.git``、``.github``、``.hub`` 目录。
     """
     matches = []
     for root, dirs, files in os.walk(skills_dir):
@@ -443,15 +437,15 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
         yield path
 
 
-# ── Namespace helpers for plugin-provided skills ───────────────────────────
+# ── 插件提供的技能的命名空间辅助工具 ───────────────────────────
 
 _NAMESPACE_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 def parse_qualified_name(name: str) -> Tuple[Optional[str], str]:
-    """Split ``'namespace:skill-name'`` into ``(namespace, bare_name)``.
+    """将 ``'namespace:skill-name'`` 拆分为 ``(namespace, bare_name)``。
 
-    Returns ``(None, name)`` when there is no ``':'``.
+    当没有 ``':'`` 时返回 ``(None, name)``。
     """
     if ":" not in name:
         return None, name
@@ -459,7 +453,7 @@ def parse_qualified_name(name: str) -> Tuple[Optional[str], str]:
 
 
 def is_valid_namespace(candidate: Optional[str]) -> bool:
-    """Check whether *candidate* is a valid namespace (``[a-zA-Z0-9_-]+``)."""
+    """检查 *candidate* 是否为有效的命名空间（``[a-zA-Z0-9_-]+``）。"""
     if not candidate:
         return False
     return bool(_NAMESPACE_RE.match(candidate))

@@ -1,12 +1,11 @@
-"""API error classification for smart failover and recovery.
+"""API 错误分类模块，用于智能故障转移与恢复。
 
-Provides a structured taxonomy of API errors and a priority-ordered
-classification pipeline that determines the correct recovery action
-(retry, rotate credential, fallback to another provider, compress
-context, or abort).
+提供结构化的 API 错误分类体系和按优先级排列的分类管道，
+用于确定正确的恢复操作（重试、轮换凭据、回退到其他提供商、
+压缩上下文，或中止）。
 
-Replaces scattered inline string-matching with a centralized classifier
-that the main retry loop in run_agent.py consults for every API failure.
+替代了分散的内联字符串匹配，提供了一个集中化的分类器，
+run_agent.py 中的主重试循环在每次 API 失败时都会查询此分类器。
 """
 
 from __future__ import annotations
@@ -19,49 +18,49 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
-# ── Error taxonomy ──────────────────────────────────────────────────────
+# ── 错误分类体系 ──────────────────────────────────────────────────────
 
 class FailoverReason(enum.Enum):
-    """Why an API call failed — determines recovery strategy."""
+    """API 调用失败原因 —— 决定恢复策略。"""
 
-    # Authentication / authorization
-    auth = "auth"                        # Transient auth (401/403) — refresh/rotate
-    auth_permanent = "auth_permanent"    # Auth failed after refresh — abort
+    # 认证/授权相关
+    auth = "auth"                        # 临时性认证失败 (401/403) —— 刷新/轮换
+    auth_permanent = "auth_permanent"    # 刷新后认证仍失败 —— 中止
 
-    # Billing / quota
-    billing = "billing"                  # 402 or confirmed credit exhaustion — rotate immediately
-    rate_limit = "rate_limit"            # 429 or quota-based throttling — backoff then rotate
+    # 计费/配额相关
+    billing = "billing"                  # 402 或确认的额度耗尽 —— 立即轮换
+    rate_limit = "rate_limit"            # 429 或基于配额的限流 —— 退避后轮换
 
-    # Server-side
-    overloaded = "overloaded"            # 503/529 — provider overloaded, backoff
-    server_error = "server_error"        # 500/502 — internal server error, retry
+    # 服务端相关
+    overloaded = "overloaded"            # 503/529 —— 提供商过载，退避等待
+    server_error = "server_error"        # 500/502 —— 内部服务器错误，重试
 
-    # Transport
-    timeout = "timeout"                  # Connection/read timeout — rebuild client + retry
+    # 传输层相关
+    timeout = "timeout"                  # 连接/读取超时 —— 重建客户端并重试
 
-    # Context / payload
-    context_overflow = "context_overflow"  # Context too large — compress, not failover
-    payload_too_large = "payload_too_large"  # 413 — compress payload
+    # 上下文/负载相关
+    context_overflow = "context_overflow"  # 上下文过大 —— 压缩，不做故障转移
+    payload_too_large = "payload_too_large"  # 413 —— 压缩负载
 
-    # Model
-    model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
+    # 模型相关
+    model_not_found = "model_not_found"  # 404 或无效模型 —— 回退到其他模型
 
-    # Request format
-    format_error = "format_error"        # 400 bad request — abort or strip + retry
+    # 请求格式相关
+    format_error = "format_error"        # 400 错误请求 —— 中止或剥离后重试
 
-    # Provider-specific
-    thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
-    long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
+    # 提供商特定
+    thinking_signature = "thinking_signature"  # Anthropic 思维块签名无效
+    long_context_tier = "long_context_tier"    # Anthropic "额外用量"层级限制
 
-    # Catch-all
-    unknown = "unknown"                  # Unclassifiable — retry with backoff
+    # 兜底
+    unknown = "unknown"                  # 无法分类 —— 带退避重试
 
 
-# ── Classification result ───────────────────────────────────────────────
+# ── 分类结果 ───────────────────────────────────────────────
 
 @dataclass
 class ClassifiedError:
-    """Structured classification of an API error with recovery hints."""
+    """API 错误的结构化分类结果，包含恢复提示。"""
 
     reason: FailoverReason
     status_code: Optional[int] = None
@@ -70,8 +69,7 @@ class ClassifiedError:
     message: str = ""
     error_context: Dict[str, Any] = field(default_factory=dict)
 
-    # Recovery action hints — the retry loop checks these instead of
-    # re-classifying the error itself.
+    # 恢复操作提示 —— 重试循环检查这些字段，而不是重新分类错误本身。
     retryable: bool = True
     should_compress: bool = False
     should_rotate_credential: bool = False
@@ -83,9 +81,9 @@ class ClassifiedError:
 
 
 
-# ── Provider-specific patterns ──────────────────────────────────────────
+# ── 提供商特定的错误模式 ──────────────────────────────────────────
 
-# Patterns that indicate billing exhaustion (not transient rate limit)
+# 表示计费额度耗尽（非临时性速率限制）的模式
 _BILLING_PATTERNS = [
     "insufficient credits",
     "insufficient_quota",
@@ -99,7 +97,7 @@ _BILLING_PATTERNS = [
     "plan does not include",
 ]
 
-# Patterns that indicate rate limiting (transient, will resolve)
+# 表示速率限制（临时性，会自动恢复）的模式
 _RATE_LIMIT_PATTERNS = [
     "rate limit",
     "rate_limit",
@@ -111,14 +109,14 @@ _RATE_LIMIT_PATTERNS = [
     "try again in",
     "please retry after",
     "resource_exhausted",
-    "rate increased too quickly",  # Alibaba/DashScope throttling
-    # AWS Bedrock throttling
+    "rate increased too quickly",  # 阿里巴巴/DashScope 限流
+    # AWS Bedrock 限流
     "throttlingexception",
     "too many concurrent requests",
     "servicequotaexceededexception",
 ]
 
-# Usage-limit patterns that need disambiguation (could be billing OR rate_limit)
+# 需要区分（可能是计费问题或速率限制）的用量限制模式
 _USAGE_LIMIT_PATTERNS = [
     "usage limit",
     "quota",
@@ -126,7 +124,7 @@ _USAGE_LIMIT_PATTERNS = [
     "key limit exceeded",
 ]
 
-# Patterns confirming usage limit is transient (not billing)
+# 确认用量限制为临时性（非计费问题）的信号模式
 _USAGE_LIMIT_TRANSIENT_SIGNALS = [
     "try again",
     "retry",
@@ -138,15 +136,15 @@ _USAGE_LIMIT_TRANSIENT_SIGNALS = [
     "window",
 ]
 
-# Payload-too-large patterns detected from message text (no status_code attr).
-# Proxies and some backends embed the HTTP status in the error message.
+# 从消息文本检测的负载过大模式（无 status_code 属性时使用）。
+# 代理和某些后端会在错误消息中嵌入 HTTP 状态码。
 _PAYLOAD_TOO_LARGE_PATTERNS = [
     "request entity too large",
     "payload too large",
     "error code: 413",
 ]
 
-# Context overflow patterns
+# 上下文溢出模式
 _CONTEXT_OVERFLOW_PATTERNS = [
     "context length",
     "context size",
@@ -160,29 +158,29 @@ _CONTEXT_OVERFLOW_PATTERNS = [
     "prompt exceeds max length",
     "max_tokens",
     "maximum number of tokens",
-    # vLLM / local inference server patterns
+    # vLLM / 本地推理服务器模式
     "exceeds the max_model_len",
     "max_model_len",
     "prompt length",             # "engine prompt length X exceeds"
     "input is too long",
     "maximum model length",
-    # Ollama patterns
+    # Ollama 模式
     "context length exceeded",
     "truncating input",
-    # llama.cpp / llama-server patterns
+    # llama.cpp / llama-server 模式
     "slot context",              # "slot context: N tokens, prompt N tokens"
     "n_ctx_slot",
-    # Chinese error messages (some providers return these)
+    # 中文错误消息（部分提供商会返回这些）
     "超过最大长度",
     "上下文长度",
-    # AWS Bedrock Converse API error patterns
+    # AWS Bedrock Converse API 错误模式
     "input is too long",
     "max input token",
     "input token",
     "exceeds the maximum number of input tokens",
 ]
 
-# Model not found patterns
+# 模型未找到模式
 _MODEL_NOT_FOUND_PATTERNS = [
     "is not a valid model",
     "invalid model",
@@ -194,7 +192,7 @@ _MODEL_NOT_FOUND_PATTERNS = [
     "unsupported model",
 ]
 
-# Auth patterns (non-status-code signals)
+# 认证模式（非状态码信号）
 _AUTH_PATTERNS = [
     "invalid api key",
     "invalid_api_key",
@@ -207,12 +205,12 @@ _AUTH_PATTERNS = [
     "access denied",
 ]
 
-# Anthropic thinking block signature patterns
+# Anthropic 思维块签名模式
 _THINKING_SIG_PATTERNS = [
-    "signature",  # Combined with "thinking" check
+    "signature",  # 需结合 "thinking" 一起检查
 ]
 
-# Transport error type names
+# 传输层错误类型名
 _TRANSPORT_ERROR_TYPES = frozenset({
     "ReadTimeout", "ConnectTimeout", "PoolTimeout",
     "ConnectError", "RemoteProtocolError",
@@ -220,12 +218,12 @@ _TRANSPORT_ERROR_TYPES = frozenset({
     "ConnectionAbortedError", "BrokenPipeError",
     "TimeoutError", "ReadError",
     "ServerDisconnectedError",
-    # OpenAI SDK errors (not subclasses of Python builtins)
+    # OpenAI SDK 错误（非 Python 内置类型的子类）
     "APIConnectionError",
     "APITimeoutError",
 })
 
-# Server disconnect patterns (no status code, but transport-level)
+# 服务器断开连接模式（无状态码，但属于传输层问题）
 _SERVER_DISCONNECT_PATTERNS = [
     "server disconnected",
     "peer closed connection",
@@ -237,7 +235,7 @@ _SERVER_DISCONNECT_PATTERNS = [
 ]
 
 
-# ── Classification pipeline ─────────────────────────────────────────────
+# ── 分类管道 ─────────────────────────────────────────────────
 
 def classify_api_error(
     error: Exception,
@@ -248,42 +246,41 @@ def classify_api_error(
     context_length: int = 200000,
     num_messages: int = 0,
 ) -> ClassifiedError:
-    """Classify an API error into a structured recovery recommendation.
+    """将 API 错误分类为结构化的恢复建议。
 
-    Priority-ordered pipeline:
-      1. Special-case provider-specific patterns (thinking sigs, tier gates)
-      2. HTTP status code + message-aware refinement
-      3. Error code classification (from body)
-      4. Message pattern matching (billing vs rate_limit vs context vs auth)
-      5. Transport error heuristics
-      6. Server disconnect + large session → context overflow
-      7. Fallback: unknown (retryable with backoff)
+    按优先级排列的分类管道：
+      1. 特殊处理提供商特定模式（思维签名、层级限制）
+      2. HTTP 状态码 + 消息感知的细化
+      3. 错误码分类（来自响应体）
+      4. 消息模式匹配（计费 vs 速率限制 vs 上下文 vs 认证）
+      5. 传输层错误启发式
+      6. 服务器断开 + 大会话 → 上下文溢出
+      7. 兜底：未知（可重试，带退避）
 
-    Args:
-        error: The exception from the API call.
-        provider: Current provider name (e.g. "openrouter", "anthropic").
-        model: Current model slug.
-        approx_tokens: Approximate token count of the current context.
-        context_length: Maximum context length for the current model.
+    参数：
+        error: API 调用抛出的异常。
+        provider: 当前提供商名称（如 "openrouter"、"anthropic"）。
+        model: 当前模型标识。
+        approx_tokens: 当前上下文的近似 token 数。
+        context_length: 当前模型的最大上下文长度。
 
-    Returns:
-        ClassifiedError with reason and recovery action hints.
+    返回：
+        ClassifiedError，包含原因和恢复操作提示。
     """
     status_code = _extract_status_code(error)
     error_type = type(error).__name__
     body = _extract_error_body(error)
     error_code = _extract_error_code(body)
 
-    # Build a comprehensive error message string for pattern matching.
-    # str(error) alone may not include the body message (e.g. OpenAI SDK's
-    # APIStatusError.__str__ returns the first arg, not the body).  Append
-    # the body message so patterns like "try again" in 402 disambiguation
-    # are detected even when only present in the structured body.
+    # 构建用于模式匹配的综合错误消息字符串。
+    # 仅 str(error) 可能不包含响应体消息（如 OpenAI SDK 的
+    # APIStatusError.__str__ 返回第一个参数而非响应体）。追加
+    # 响应体消息，使得像 "try again" 这样的模式在 402 区分中能被检测到。
     #
-    # Also extract metadata.raw — OpenRouter wraps upstream provider errors
-    # inside {"error": {"message": "Provider returned error", "metadata":
-    # {"raw": "<actual error JSON>"}}} and the real error message (e.g.
-    # "context length exceeded") is only in the inner JSON.
+    # 同时提取 metadata.raw —— OpenRouter 将上游提供商错误包装在
+    # {"error": {"message": "Provider returned error", "metadata":
+    # {"raw": "<实际错误 JSON>"}}} 中，真正的错误消息（如
+    # "context length exceeded"）仅在内部 JSON 中。
     _raw_msg = str(error).lower()
     _body_msg = ""
     _metadata_msg = ""
@@ -291,7 +288,7 @@ def classify_api_error(
         _err_obj = body.get("error", {})
         if isinstance(_err_obj, dict):
             _body_msg = (_err_obj.get("message") or "").lower()
-            # Parse metadata.raw for wrapped provider errors
+            # 解析 metadata.raw 中包装的提供商错误
             _metadata = _err_obj.get("metadata", {})
             if isinstance(_metadata, dict):
                 _raw_json = _metadata.get("raw") or ""
@@ -307,7 +304,7 @@ def classify_api_error(
                         pass
         if not _body_msg:
             _body_msg = (body.get("message") or "").lower()
-    # Combine all message sources for pattern matching
+    # 合并所有消息来源用于模式匹配
     parts = [_raw_msg]
     if _body_msg and _body_msg not in _raw_msg:
         parts.append(_body_msg)
@@ -328,12 +325,12 @@ def classify_api_error(
         defaults.update(overrides)
         return ClassifiedError(**defaults)
 
-    # ── 1. Provider-specific patterns (highest priority) ────────────
+    # ── 1. 提供商特定模式（最高优先级）────────────────
 
-    # Anthropic thinking block signature invalid (400).
-    # Don't gate on provider — OpenRouter proxies Anthropic errors, so the
-    # provider may be "openrouter" even though the error is Anthropic-specific.
-    # The message pattern ("signature" + "thinking") is unique enough.
+    # Anthropic 思维块签名无效（400）。
+    # 不限制提供商 —— OpenRouter 代理 Anthropic 错误，所以
+    # 即使错误来自 Anthropic，提供商也可能是 "openrouter"。
+    # 消息模式（"signature" + "thinking"）足够唯一。
     if (
         status_code == 400
         and "signature" in error_msg
@@ -345,7 +342,7 @@ def classify_api_error(
             should_compress=False,
         )
 
-    # Anthropic long-context tier gate (429 "extra usage" + "long context")
+    # Anthropic 长上下文层级限制（429 "extra usage" + "long context"）
     if (
         status_code == 429
         and "extra usage" in error_msg
@@ -357,7 +354,7 @@ def classify_api_error(
             should_compress=True,
         )
 
-    # ── 2. HTTP status code classification ──────────────────────────
+    # ── 2. HTTP 状态码分类 ──────────────────────────
 
     if status_code is not None:
         classified = _classify_by_status(
@@ -370,14 +367,14 @@ def classify_api_error(
         if classified is not None:
             return classified
 
-    # ── 3. Error code classification ────────────────────────────────
+    # ── 3. 错误码分类 ────────────────────────────────
 
     if error_code:
         classified = _classify_by_error_code(error_code, error_msg, _result)
         if classified is not None:
             return classified
 
-    # ── 4. Message pattern matching (no status code) ────────────────
+    # ── 4. 消息模式匹配（无状态码时）────────────────
 
     classified = _classify_by_message(
         error_msg, error_type,
@@ -388,11 +385,10 @@ def classify_api_error(
     if classified is not None:
         return classified
 
-    # ── 5. Server disconnect + large session → context overflow ─────
-    # Must come BEFORE generic transport error catch — a disconnect on
-    # a large session is more likely context overflow than a transient
-    # transport hiccup.  Without this ordering, RemoteProtocolError
-    # always maps to timeout regardless of session size.
+    # ── 5. 服务器断开 + 大会话 → 上下文溢出 ─────
+    # 必须在通用传输层错误捕获之前 —— 大会话上的断开连接
+    # 更可能是上下文溢出，而非临时性传输故障。没有此排序，
+    # RemoteProtocolError 总是映射为 timeout 而忽略会话大小。
 
     is_disconnect = any(p in error_msg for p in _SERVER_DISCONNECT_PATTERNS)
     if is_disconnect and not status_code:
@@ -405,17 +401,17 @@ def classify_api_error(
             )
         return _result(FailoverReason.timeout, retryable=True)
 
-    # ── 6. Transport / timeout heuristics ───────────────────────────
+    # ── 6. 传输层/超时启发式 ───────────────────────────
 
     if error_type in _TRANSPORT_ERROR_TYPES or isinstance(error, (TimeoutError, ConnectionError, OSError)):
         return _result(FailoverReason.timeout, retryable=True)
 
-    # ── 7. Fallback: unknown ────────────────────────────────────────
+    # ── 7. 兜底：未知 ────────────────────────────────────
 
     return _result(FailoverReason.unknown, retryable=True)
 
 
-# ── Status code classification ──────────────────────────────────────────
+# ── 状态码分类 ──────────────────────────────────────────
 
 def _classify_by_status(
     status_code: int,
@@ -430,14 +426,14 @@ def _classify_by_status(
     num_messages: int = 0,
     result_fn,
 ) -> Optional[ClassifiedError]:
-    """Classify based on HTTP status code with message-aware refinement."""
+    """基于 HTTP 状态码进行分类，结合消息感知细化。"""
 
     if status_code == 401:
-        # Not retryable on its own — credential pool rotation and
-        # provider-specific refresh (Codex, Anthropic, Nous) run before
-        # the retryability check in run_agent.py.  If those succeed, the
-        # loop `continue`s.  If they fail, retryable=False ensures we
-        # hit the client-error abort path (which tries fallback first).
+        # 401 本身不可重试 —— 凭据池轮换和提供商特定刷新
+        # （Codex、Anthropic、Nous）在 run_agent.py 的可重试性
+        # 检查之前运行。如果它们成功，循环 `continue`。
+        # 如果失败，retryable=False 确保命中客户端错误中止路径
+        #（该路径会先尝试回退）。
         return result_fn(
             FailoverReason.auth,
             retryable=False,
@@ -446,7 +442,7 @@ def _classify_by_status(
         )
 
     if status_code == 403:
-        # OpenRouter 403 "key limit exceeded" is actually billing
+        # OpenRouter 403 "key limit exceeded" 实际上是计费问题
         if "key limit exceeded" in error_msg or "spending limit" in error_msg:
             return result_fn(
                 FailoverReason.billing,
@@ -470,7 +466,7 @@ def _classify_by_status(
                 retryable=False,
                 should_fallback=True,
             )
-        # Generic 404 — could be model or endpoint
+        # 通用 404 —— 可能是模型或端点问题
         return result_fn(
             FailoverReason.model_not_found,
             retryable=False,
@@ -485,7 +481,7 @@ def _classify_by_status(
         )
 
     if status_code == 429:
-        # Already checked long_context_tier above; this is a normal rate limit
+        # 长上下文层级已在上面检查过；这里是普通速率限制
         return result_fn(
             FailoverReason.rate_limit,
             retryable=True,
@@ -509,7 +505,7 @@ def _classify_by_status(
     if status_code in (503, 529):
         return result_fn(FailoverReason.overloaded, retryable=True)
 
-    # Other 4xx — non-retryable
+    # 其他 4xx —— 不可重试
     if 400 <= status_code < 500:
         return result_fn(
             FailoverReason.format_error,
@@ -517,7 +513,7 @@ def _classify_by_status(
             should_fallback=True,
         )
 
-    # Other 5xx — retryable
+    # 其他 5xx —— 可重试
     if 500 <= status_code < 600:
         return result_fn(FailoverReason.server_error, retryable=True)
 
@@ -525,18 +521,18 @@ def _classify_by_status(
 
 
 def _classify_402(error_msg: str, result_fn) -> ClassifiedError:
-    """Disambiguate 402: billing exhaustion vs transient usage limit.
+    """区分 402：计费额度耗尽 vs 临时性用量限制。
 
-    The key insight from OpenClaw: some 402s are transient rate limits
-    disguised as payment errors.  "Usage limit, try again in 5 minutes"
-    is NOT a billing problem — it's a periodic quota that resets.
+    来自 OpenClaw 的关键洞察：某些 402 是伪装成付款错误的临时性
+    速率限制。"Usage limit, try again in 5 minutes" 不是计费问题
+    —— 而是一个会自动重置的周期性配额。
     """
-    # Check for transient usage-limit signals first
+    # 先检查临时性用量限制信号
     has_usage_limit = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
     has_transient_signal = any(p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS)
 
     if has_usage_limit and has_transient_signal:
-        # Transient quota — treat as rate limit, not billing
+        # 临时性配额 —— 视为速率限制，而非计费问题
         return result_fn(
             FailoverReason.rate_limit,
             retryable=True,
@@ -544,7 +540,7 @@ def _classify_402(error_msg: str, result_fn) -> ClassifiedError:
             should_fallback=True,
         )
 
-    # Confirmed billing exhaustion
+    # 确认是计费额度耗尽
     return result_fn(
         FailoverReason.billing,
         retryable=False,
@@ -565,9 +561,9 @@ def _classify_400(
     num_messages: int = 0,
     result_fn,
 ) -> ClassifiedError:
-    """Classify 400 Bad Request — context overflow, format error, or generic."""
+    """分类 400 Bad Request —— 上下文溢出、格式错误或通用错误。"""
 
-    # Context overflow from 400
+    # 来自 400 的上下文溢出
     if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
         return result_fn(
             FailoverReason.context_overflow,
@@ -575,7 +571,7 @@ def _classify_400(
             should_compress=True,
         )
 
-    # Some providers return model-not-found as 400 instead of 404 (e.g. OpenRouter).
+    # 某些提供商将模型未找到作为 400 而非 404 返回（如 OpenRouter）。
     if any(p in error_msg for p in _MODEL_NOT_FOUND_PATTERNS):
         return result_fn(
             FailoverReason.model_not_found,
@@ -583,8 +579,8 @@ def _classify_400(
             should_fallback=True,
         )
 
-    # Some providers return rate limit / billing errors as 400 instead of 429/402.
-    # Check these patterns before falling through to format_error.
+    # 某些提供商将速率限制/计费错误作为 400 而非 429/402 返回。
+    # 在回退到 format_error 之前检查这些模式。
     if any(p in error_msg for p in _RATE_LIMIT_PATTERNS):
         return result_fn(
             FailoverReason.rate_limit,
@@ -600,14 +596,14 @@ def _classify_400(
             should_fallback=True,
         )
 
-    # Generic 400 + large session → probable context overflow
-    # Anthropic sometimes returns a bare "Error" message when context is too large
+    # 通用 400 + 大会话 → 可能的上下文溢出
+    # Anthropic 有时在上下文过大时返回简单的 "Error" 消息
     err_body_msg = ""
     if isinstance(body, dict):
         err_obj = body.get("error", {})
         if isinstance(err_obj, dict):
             err_body_msg = (err_obj.get("message") or "").strip().lower()
-        # Responses API (and some providers) use flat body: {"message": "..."}
+        # Responses API（以及某些提供商）使用扁平 body: {"message": "..."}
         if not err_body_msg:
             err_body_msg = (body.get("message") or "").strip().lower()
     is_generic = len(err_body_msg) < 30 or err_body_msg in ("error", "")
@@ -620,7 +616,7 @@ def _classify_400(
             should_compress=True,
         )
 
-    # Non-retryable format error
+    # 不可重试的格式错误
     return result_fn(
         FailoverReason.format_error,
         retryable=False,
@@ -628,12 +624,12 @@ def _classify_400(
     )
 
 
-# ── Error code classification ───────────────────────────────────────────
+# ── 错误码分类 ───────────────────────────────────────────
 
 def _classify_by_error_code(
     error_code: str, error_msg: str, result_fn,
 ) -> Optional[ClassifiedError]:
-    """Classify by structured error codes from the response body."""
+    """基于响应体中的结构化错误码进行分类。"""
     code_lower = error_code.lower()
 
     if code_lower in ("resource_exhausted", "throttled", "rate_limit_exceeded"):
@@ -668,7 +664,7 @@ def _classify_by_error_code(
     return None
 
 
-# ── Message pattern classification ──────────────────────────────────────
+# ── 消息模式分类 ──────────────────────────────────────────
 
 def _classify_by_message(
     error_msg: str,
@@ -678,9 +674,9 @@ def _classify_by_message(
     context_length: int,
     result_fn,
 ) -> Optional[ClassifiedError]:
-    """Classify based on error message patterns when no status code is available."""
+    """当没有状态码时，基于错误消息模式进行分类。"""
 
-    # Payload-too-large patterns (from message text when no status_code)
+    # 负载过大模式（来自消息文本，无 status_code 时使用）
     if any(p in error_msg for p in _PAYLOAD_TOO_LARGE_PATTERNS):
         return result_fn(
             FailoverReason.payload_too_large,
@@ -688,10 +684,10 @@ def _classify_by_message(
             should_compress=True,
         )
 
-    # Usage-limit patterns need the same disambiguation as 402: some providers
-    # surface "usage limit" errors without an HTTP status code.  A transient
-    # signal ("try again", "resets at", …) means it's a periodic quota, not
-    # billing exhaustion.
+    # 用量限制模式需要与 402 相同的区分：某些提供商在没有
+    # HTTP 状态码的情况下返回 "usage limit" 错误。临时性信号
+    # （"try again"、"resets at"、…）意味着这是周期性配额，
+    # 而非计费额度耗尽。
     has_usage_limit = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
     if has_usage_limit:
         has_transient_signal = any(p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS)
@@ -709,7 +705,7 @@ def _classify_by_message(
             should_fallback=True,
         )
 
-    # Billing patterns
+    # 计费模式
     if any(p in error_msg for p in _BILLING_PATTERNS):
         return result_fn(
             FailoverReason.billing,
@@ -718,7 +714,7 @@ def _classify_by_message(
             should_fallback=True,
         )
 
-    # Rate limit patterns
+    # 速率限制模式
     if any(p in error_msg for p in _RATE_LIMIT_PATTERNS):
         return result_fn(
             FailoverReason.rate_limit,
@@ -727,7 +723,7 @@ def _classify_by_message(
             should_fallback=True,
         )
 
-    # Context overflow patterns
+    # 上下文溢出模式
     if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
         return result_fn(
             FailoverReason.context_overflow,
@@ -735,11 +731,11 @@ def _classify_by_message(
             should_compress=True,
         )
 
-    # Auth patterns
-    # Auth errors should NOT be retried directly — the credential is invalid and
-    # retrying with the same key will always fail.  Set retryable=False so the
-    # caller triggers credential rotation (should_rotate_credential=True) or
-    # provider fallback rather than an immediate retry loop.
+    # 认证模式
+    # 认证错误不应直接重试 —— 凭据无效，用相同密钥重试
+    # 总会失败。设置 retryable=False 以触发凭据轮换
+    # （should_rotate_credential=True）或提供商回退，
+    # 而非立即重试循环。
     if any(p in error_msg for p in _AUTH_PATTERNS):
         return result_fn(
             FailoverReason.auth,
@@ -748,7 +744,7 @@ def _classify_by_message(
             should_fallback=True,
         )
 
-    # Model not found patterns
+    # 模型未找到模式
     if any(p in error_msg for p in _MODEL_NOT_FOUND_PATTERNS):
         return result_fn(
             FailoverReason.model_not_found,
@@ -759,20 +755,20 @@ def _classify_by_message(
     return None
 
 
-# ── Helpers ─────────────────────────────────────────────────────────────
+# ── 辅助函数 ─────────────────────────────────────────────────
 
 def _extract_status_code(error: Exception) -> Optional[int]:
-    """Walk the error and its cause chain to find an HTTP status code."""
+    """遍历错误及其原因链查找 HTTP 状态码。"""
     current = error
-    for _ in range(5):  # Max depth to prevent infinite loops
+    for _ in range(5):  # 最大深度，防止无限循环
         code = getattr(current, "status_code", None)
         if isinstance(code, int):
             return code
-        # Some SDKs use .status instead of .status_code
+        # 某些 SDK 使用 .status 而非 .status_code
         code = getattr(current, "status", None)
         if isinstance(code, int) and 100 <= code < 600:
             return code
-        # Walk cause chain
+        # 遍历原因链
         cause = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
         if cause is None or cause is current:
             break
@@ -781,11 +777,11 @@ def _extract_status_code(error: Exception) -> Optional[int]:
 
 
 def _extract_error_body(error: Exception) -> dict:
-    """Extract the structured error body from an SDK exception."""
+    """从 SDK 异常中提取结构化错误体。"""
     body = getattr(error, "body", None)
     if isinstance(body, dict):
         return body
-    # Some errors have .response.json()
+    # 某些错误有 .response.json()
     response = getattr(error, "response", None)
     if response is not None:
         try:
@@ -798,7 +794,7 @@ def _extract_error_body(error: Exception) -> dict:
 
 
 def _extract_error_code(body: dict) -> str:
-    """Extract an error code string from the response body."""
+    """从响应体中提取错误码字符串。"""
     if not body:
         return ""
     error_obj = body.get("error", {})
@@ -806,7 +802,7 @@ def _extract_error_code(body: dict) -> str:
         code = error_obj.get("code") or error_obj.get("type") or ""
         if isinstance(code, str) and code.strip():
             return code.strip()
-    # Top-level code
+    # 顶层错误码
     code = body.get("code") or body.get("error_code") or ""
     if isinstance(code, (str, int)):
         return str(code).strip()
@@ -814,8 +810,8 @@ def _extract_error_code(body: dict) -> str:
 
 
 def _extract_message(error: Exception, body: dict) -> str:
-    """Extract the most informative error message."""
-    # Try structured body first
+    """提取最具信息量的错误消息。"""
+    # 优先使用结构化的响应体
     if body:
         error_obj = body.get("error", {})
         if isinstance(error_obj, dict):
@@ -825,5 +821,5 @@ def _extract_message(error: Exception, body: dict) -> str:
         msg = body.get("message", "")
         if isinstance(msg, str) and msg.strip():
             return msg.strip()[:500]
-    # Fallback to str(error)
+    # 回退到 str(error)
     return str(error)[:500]

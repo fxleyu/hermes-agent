@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-body_calc.py — All-in-one fitness calculator.
+body_calc.py — 一站式健身计算器。
 
-Subcommands:
-  bmi      <weight_kg> <height_cm>
-  tdee     <weight_kg> <height_cm> <age> <M|F> <activity 1-5>
-  1rm      <weight> <reps>
+子命令:
+  bmi      <体重_kg> <身高_cm>
+  tdee     <体重_kg> <身高_cm> <年龄> <M|F> <活动等级 1-5>
+  1rm      <重量> <次数>
   macros   <tdee_kcal> <cut|maintain|bulk>
-  bodyfat  <M|F> <neck_cm> <waist_cm> [hip_cm] <height_cm>
+  bodyfat  <M|F> <颈围_cm> <腰围_cm> [臀围_cm] <身高_cm>
 
-No external dependencies — stdlib only.
+无需外部依赖 — 仅使用标准库。
 """
 import sys
 import math

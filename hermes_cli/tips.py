@@ -1,15 +1,15 @@
-"""Random tips shown at CLI session start to help users discover features."""
+"""在 CLI 会话启动时显示的随机提示，帮助用户发现功能特性。"""
 
 import random
 
 
 # ---------------------------------------------------------------------------
-# Tip corpus — one-liners covering slash commands, CLI flags, config,
-# keybindings, tools, gateway, skills, profiles, and workflow tricks.
+# 提示语料库 —— 涵盖斜杠命令、CLI 标志、配置、
+# 快捷键、工具、网关、技能、配置文件和工作流技巧的一行式提示。
 # ---------------------------------------------------------------------------
 
 TIPS = [
-    # --- Slash Commands ---
+    # --- 斜杠命令 ---
     "/btw <question> asks a quick side question without tools or history — great for clarifications.",
     "/background <prompt> runs a task in a separate session while your current one stays free.",
     "/branch forks the current session so you can explore a different direction without losing progress.",
@@ -43,7 +43,7 @@ TIPS = [
     "/config shows your current configuration at a glance.",
     "/stop kills all running background processes spawned by the agent.",
 
-    # --- @ Context References ---
+    # --- @ 上下文引用 ---
     "@file:path/to/file.py injects file contents directly into your message.",
     "@file:main.py:10-50 injects only lines 10-50 of a file.",
     "@folder:src/ injects a directory tree listing.",
@@ -54,7 +54,7 @@ TIPS = [
     "Typing @ triggers filesystem path completion — navigate to any file interactively.",
     "Combine multiple references: \"Review @file:main.py and @file:test.py for consistency.\"",
 
-    # --- Keybindings ---
+    # --- 快捷键 ---
     "Alt+Enter (or Ctrl+J) inserts a newline for multi-line input.",
     "Ctrl+C interrupts the agent. Double-press within 2 seconds to force exit.",
     "Ctrl+Z suspends Hermes to the background — run fg in your shell to resume.",
@@ -63,7 +63,7 @@ TIPS = [
     "Alt+V pastes an image from your clipboard into the conversation.",
     "Pasting 5+ lines auto-saves to a file and inserts a compact reference instead.",
 
-    # --- CLI Flags ---
+    # --- CLI 标志 ---
     "hermes -c resumes your most recent CLI session. hermes -c \"project name\" resumes by title.",
     "hermes -w creates an isolated git worktree — perfect for parallel agent workflows.",
     "hermes -w -q \"Fix issue #42\" combines worktree isolation with a one-shot query.",
@@ -76,7 +76,7 @@ TIPS = [
     "hermes chat --source telegram tags the session for filtering in hermes sessions list.",
     "hermes -p work chat runs under a specific profile without changing your default.",
 
-    # --- CLI Subcommands ---
+    # --- CLI 子命令 ---
     "hermes doctor --fix diagnoses and auto-repairs config and dependency issues.",
     "hermes dump outputs a compact setup summary — great for bug reports.",
     "hermes config set KEY VALUE auto-routes secrets to .env and everything else to config.yaml.",
@@ -102,7 +102,7 @@ TIPS = [
     "hermes memory setup lets you configure an external memory provider (Honcho, Mem0, etc.).",
     "hermes webhook subscribe creates event-driven webhook routes with HMAC validation.",
 
-    # --- Configuration ---
+    # --- 配置选项 ---
     "Set display.bell_on_complete: true in config.yaml to hear a bell when long tasks finish.",
     "Set display.streaming: true to see tokens appear in real time as the model generates.",
     "Set display.show_reasoning: true to watch the model's chain-of-thought reasoning.",
@@ -125,7 +125,7 @@ TIPS = [
     "Custom personalities can be defined in config.yaml under agent.personalities.",
     "provider_routing controls OpenRouter provider sorting, whitelisting, and blacklisting.",
 
-    # --- Tools & Capabilities ---
+    # --- 工具与能力 ---
     "execute_code runs Python scripts that call Hermes tools programmatically — results stay out of context.",
     "delegate_task spawns up to 3 concurrent sub-agents with isolated contexts for parallel work.",
     "web_extract works on PDF URLs — pass any PDF link and it converts to markdown.",
@@ -147,26 +147,26 @@ TIPS = [
     "Terminal background processes support watch_patterns to alert on specific output lines.",
     "The terminal tool supports 6 backends: local, Docker, SSH, Modal, Daytona, and Singularity.",
 
-    # --- Profiles ---
+    # --- 配置文件（Profile） ---
     "Each profile gets its own config, API keys, memory, sessions, skills, and cron jobs.",
     "Profile names become shell commands — 'hermes profile create coder' creates the 'coder' command.",
     "hermes profile export coder -o backup.tar.gz creates a portable profile archive.",
     "If two profiles accidentally share a bot token, the second gateway is blocked with a clear error.",
 
-    # --- Sessions ---
+    # --- 会话 ---
     "Sessions auto-generate descriptive titles after the first exchange — no manual naming needed.",
     "Session titles support lineage: \"my project\" → \"my project #2\" → \"my project #3\".",
     "When exiting, Hermes prints a resume command with session ID and stats.",
     "hermes sessions export backup.jsonl exports all sessions for backup or analysis.",
     "hermes -r SESSION_ID resumes any specific past session by its ID.",
 
-    # --- Memory ---
+    # --- 记忆 ---
     "Memory is a frozen snapshot — changes appear in the system prompt only at next session start.",
     "Memory entries are automatically scanned for prompt injection and exfiltration patterns.",
     "The agent has two memory stores: personal notes (~2200 chars) and user profile (~1375 chars).",
     "Corrections you give the agent (\"no, do it this way\") are often auto-saved to memory.",
 
-    # --- Skills ---
+    # --- 技能 ---
     "Over 80 bundled skills covering github, creative, mlops, productivity, research, and more.",
     "Every installed skill automatically becomes a slash command — type / to see them all.",
     "hermes skills install official/security/1password installs optional skills from the repo.",
@@ -175,21 +175,21 @@ TIPS = [
     "The agent can create its own skills as procedural memory using skill_manage.",
     "The plan skill saves markdown plans under .hermes/plans/ in the active workspace.",
 
-    # --- Cron & Scheduling ---
+    # --- 定时任务与调度 ---
     "Cron jobs can attach skills: hermes cron add --skill blogwatcher \"Check for new posts\".",
     "Cron delivery targets include telegram, discord, slack, email, sms, and 12+ more platforms.",
     "If a cron response starts with [SILENT], delivery is suppressed — useful for monitoring-only jobs.",
     "Cron supports relative delays (30m), intervals (every 2h), cron expressions, and ISO timestamps.",
     "Cron jobs run in completely fresh agent sessions — prompts must be self-contained.",
 
-    # --- Voice ---
+    # --- 语音 ---
     "Voice mode works with zero API keys if faster-whisper is installed (free local speech-to-text).",
     "Five TTS providers available: Edge TTS (free), ElevenLabs, OpenAI, NeuTTS (free local), MiniMax.",
     "/voice on enables voice mode in the CLI. Ctrl+B toggles push-to-talk recording.",
     "Streaming TTS plays sentences as they generate — you don't wait for the full response.",
     "Voice messages on Telegram, Discord, WhatsApp, and Slack are auto-transcribed.",
 
-    # --- Gateway & Messaging ---
+    # --- 网关与消息 ---
     "Hermes runs on 18 platforms: Telegram, Discord, Slack, WhatsApp, Signal, Matrix, email, and more.",
     "hermes gateway install sets it up as a system service that starts on boot.",
     "DingTalk uses Stream Mode — no webhooks or public URL needed.",
@@ -201,7 +201,7 @@ TIPS = [
     "/sethome marks a chat as the home channel for cron job deliveries.",
     "The gateway supports inactivity-based timeouts — active agents can run indefinitely.",
 
-    # --- Security ---
+    # --- 安全 ---
     "Dangerous command approval has 4 tiers: once, session, always (permanent allowlist), deny.",
     "Smart approval mode uses an LLM to auto-approve safe commands and flag dangerous ones.",
     "SSRF protection blocks private networks, loopback, link-local, and cloud metadata addresses.",
@@ -210,7 +210,7 @@ TIPS = [
     "Context files (.hermes.md, AGENTS.md) are security-scanned for prompt injection before loading.",
     "command_allowlist in config.yaml permanently approves specific shell command patterns.",
 
-    # --- Context & Compression ---
+    # --- 上下文与压缩 ---
     "Context auto-compresses when it reaches the threshold — memories are flushed and history summarized.",
     "The status bar turns yellow, then orange, then red as context fills up.",
     "SOUL.md at ~/.hermes/SOUL.md is the agent's primary identity — customize it to shape behavior.",
@@ -218,7 +218,7 @@ TIPS = [
     "Subdirectory AGENTS.md files are discovered progressively as the agent navigates into folders.",
     "Context files are capped at 20,000 characters with smart head/tail truncation.",
 
-    # --- Browser ---
+    # --- 浏览器 ---
     "Five browser providers: local Chromium, Browserbase, Browser Use, Camofox, and Firecrawl.",
     "Camofox is an anti-detection browser — Firefox fork with C++ fingerprint spoofing.",
     "browser_navigate returns a page snapshot automatically — no need to call browser_snapshot after.",
@@ -230,24 +230,24 @@ TIPS = [
     "MCP servers auto-generate toolsets at runtime — hermes tools can toggle them per platform.",
     "MCP OAuth support: auth: oauth enables browser-based authorization with PKCE.",
 
-    # --- Checkpoints & Rollback ---
+    # --- 检查点与回滚 ---
     "Checkpoints have zero overhead when no files are modified — enabled by default.",
     "A pre-rollback snapshot is saved automatically so you can undo the undo.",
     "/rollback also undoes the conversation turn, so the agent doesn't remember rolled-back changes.",
     "Checkpoints use shadow repos in ~/.hermes/checkpoints/ — your project's .git is never touched.",
 
-    # --- Batch & Data ---
+    # --- 批量处理与数据 ---
     "batch_runner.py processes hundreds of prompts in parallel for training data generation.",
     "hermes chat -Q enables quiet mode for programmatic use — suppresses banner and spinner.",
     "Trajectory saving (--save-trajectories) captures full tool-use traces for model training.",
 
-    # --- Plugins ---
+    # --- 插件 ---
     "Three plugin types: general (tools/hooks), memory providers, and context engines.",
     "hermes plugins install owner/repo installs plugins directly from GitHub.",
     "8 external memory providers available: Honcho, OpenViking, Mem0, Hindsight, and more.",
     "Plugin hooks include pre_tool_call, post_tool_call, pre_llm_call, and post_llm_call.",
 
-    # --- Miscellaneous ---
+    # --- 其他 ---
     "Prompt caching (Anthropic) reduces costs by reusing cached system prompt prefixes.",
     "The agent auto-generates session titles in a background thread — zero latency impact.",
     "Smart model routing can auto-route simple queries to a cheaper model.",
@@ -263,7 +263,7 @@ TIPS = [
     "tool_preview_length: 0 in config shows full file paths in the spinner's activity feed.",
     "hermes status --deep runs deeper diagnostic checks across all components.",
 
-    # --- Hidden Gems & Power-User Tricks ---
+    # --- 隐藏彩蛋与高级技巧 ---
     "BOOT.md at ~/.hermes/BOOT.md runs automatically on every gateway start — use it for startup checks.",
     "Cron jobs can attach a Python script (--script) whose stdout is injected into the prompt as context.",
     "Cron scripts live in ~/.hermes/scripts/ and run before the agent — perfect for data collection pipelines.",
@@ -337,13 +337,11 @@ TIPS = [
 
 
 def get_random_tip(exclude_recent: int = 0) -> str:
-    """Return a random tip string.
+    """返回一条随机提示字符串。
 
-    Args:
-        exclude_recent: not used currently; reserved for future
-            deduplication across sessions.
+    参数:
+        exclude_recent: 当前未使用；保留用于未来跨会话去重。
     """
     return random.choice(TIPS)
-
 
 

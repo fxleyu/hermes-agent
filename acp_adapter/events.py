@@ -1,10 +1,9 @@
-"""Callback factories for bridging AIAgent events to ACP notifications.
+"""将 AIAgent 事件桥接到 ACP 通知的回调工厂。
 
-Each factory returns a callable with the signature that AIAgent expects
-for its callbacks. Internally, the callbacks push ACP session updates
-to the client via ``conn.session_update()`` using
-``asyncio.run_coroutine_threadsafe()`` (since AIAgent runs in a worker
-thread while the event loop lives on the main thread).
+每个工厂返回一个符合 AIAgent 期望的回调签名的可调用对象。
+在内部，回调通过 ``conn.session_update()`` 使用
+``asyncio.run_coroutine_threadsafe()`` 将 ACP 会话更新推送给客户端
+（因为 AIAgent 在工作线程中运行，而事件循环在主线程上）。
 """
 
 import asyncio
@@ -30,7 +29,7 @@ def _send_update(
     loop: asyncio.AbstractEventLoop,
     update: Any,
 ) -> None:
-    """Fire-and-forget an ACP session update from a worker thread."""
+    """从工作线程中发送即发即忘的 ACP 会话更新。"""
     try:
         future = asyncio.run_coroutine_threadsafe(
             conn.session_update(session_id, update), loop
@@ -41,7 +40,7 @@ def _send_update(
 
 
 # ------------------------------------------------------------------
-# Tool progress callback
+# 工具进度回调
 # ------------------------------------------------------------------
 
 def make_tool_progress_cb(
@@ -50,20 +49,20 @@ def make_tool_progress_cb(
     loop: asyncio.AbstractEventLoop,
     tool_call_ids: Dict[str, Deque[str]],
 ) -> Callable:
-    """Create a ``tool_progress_callback`` for AIAgent.
+    """创建 AIAgent 的 ``tool_progress_callback``。
 
-    Signature expected by AIAgent::
+    AIAgent 期望的签名::
 
         tool_progress_callback(event_type: str, name: str, preview: str, args: dict, **kwargs)
 
-    Emits ``ToolCallStart`` for ``tool.started`` events and tracks IDs in a FIFO
-    queue per tool name so duplicate/parallel same-name calls still complete
-    against the correct ACP tool call.  Other event types (``tool.completed``,
-    ``reasoning.available``) are silently ignored.
+    为 ``tool.started`` 事件发出 ``ToolCallStart``，并在每个工具名称的 FIFO
+    队列中追踪 ID，这样重复/并行的同名调用仍然能与正确的
+    ACP 工具调用完成配对。其他事件类型（``tool.completed``、
+    ``reasoning.available``）被静默忽略。
     """
 
     def _tool_progress(event_type: str, name: str = None, preview: str = None, args: Any = None, **kwargs) -> None:
-        # Only emit ACP ToolCallStart for tool.started; ignore other event types
+        # 仅为 tool.started 事件发出 ACP ToolCallStart；忽略其他事件类型
         if event_type != "tool.started":
             return
         if isinstance(args, str):
@@ -91,7 +90,7 @@ def make_tool_progress_cb(
 
 
 # ------------------------------------------------------------------
-# Thinking callback
+# 思考过程回调
 # ------------------------------------------------------------------
 
 def make_thinking_cb(
@@ -99,7 +98,7 @@ def make_thinking_cb(
     session_id: str,
     loop: asyncio.AbstractEventLoop,
 ) -> Callable:
-    """Create a ``thinking_callback`` for AIAgent."""
+    """创建 AIAgent 的 ``thinking_callback``。"""
 
     def _thinking(text: str) -> None:
         if not text:
@@ -111,7 +110,7 @@ def make_thinking_cb(
 
 
 # ------------------------------------------------------------------
-# Step callback
+# 步骤回调
 # ------------------------------------------------------------------
 
 def make_step_cb(
@@ -120,9 +119,9 @@ def make_step_cb(
     loop: asyncio.AbstractEventLoop,
     tool_call_ids: Dict[str, Deque[str]],
 ) -> Callable:
-    """Create a ``step_callback`` for AIAgent.
+    """创建 AIAgent 的 ``step_callback``。
 
-    Signature expected by AIAgent::
+    AIAgent 期望的签名::
 
         step_callback(api_call_count: int, prev_tools: list)
     """
@@ -156,7 +155,7 @@ def make_step_cb(
 
 
 # ------------------------------------------------------------------
-# Agent message callback
+# 代理消息回调
 # ------------------------------------------------------------------
 
 def make_message_cb(
@@ -164,7 +163,7 @@ def make_message_cb(
     session_id: str,
     loop: asyncio.AbstractEventLoop,
 ) -> Callable:
-    """Create a callback that streams agent response text to the editor."""
+    """创建一个将代理响应文本流式传输到编辑器的回调。"""
 
     def _message(text: str) -> None:
         if not text:

@@ -1,27 +1,26 @@
-"""MemoryManager — orchestrates the built-in memory provider plus at most
-ONE external plugin memory provider.
+"""MemoryManager——协调内置记忆提供者加上最多一个外部插件记忆提供者。
 
-Single integration point in run_agent.py. Replaces scattered per-backend
-code with one manager that delegates to registered providers.
+run_agent.py 中的单一集成点。用一个管理器替代分散在各后端中的代码，
+统一委派给已注册的提供者。
 
-The BuiltinMemoryProvider is always registered first and cannot be removed.
-Only ONE external (non-builtin) provider is allowed at a time — attempting
-to register a second external provider is rejected with a warning.  This
-prevents tool schema bloat and conflicting memory backends.
+BuiltinMemoryProvider 始终首先注册且不可移除。
+同一时间只允许一个外部（非内置）提供者——
+尝试注册第二个外部提供者会被拒绝并发出警告。
+这可以防止工具 schema 膨胀和记忆后端冲突。
 
-Usage in run_agent.py:
+在 run_agent.py 中的用法：
     self._memory_manager = MemoryManager()
     self._memory_manager.add_provider(BuiltinMemoryProvider(...))
-    # Only ONE of these:
+    # 以下只能选一个：
     self._memory_manager.add_provider(plugin_provider)
 
-    # System prompt
+    # 系统提示
     prompt_parts.append(self._memory_manager.build_system_prompt())
 
-    # Pre-turn
+    # 回合前
     context = self._memory_manager.prefetch_all(user_message)
 
-    # Post-turn
+    # 回合后
     self._memory_manager.sync_all(user_msg, assistant_response)
     self._memory_manager.queue_prefetch_all(user_msg)
 """
@@ -40,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Context fencing helpers
+# 上下文围栏辅助工具
 # ---------------------------------------------------------------------------
 
 _FENCE_TAG_RE = re.compile(r'</?\s*memory-context\s*>', re.IGNORECASE)
@@ -55,7 +54,7 @@ _INTERNAL_NOTE_RE = re.compile(
 
 
 def sanitize_context(text: str) -> str:
-    """Strip fence tags, injected context blocks, and system notes from provider output."""
+    """从提供者输出中剥除围栏标签、注入的上下文块和系统注释。"""
     text = _INTERNAL_CONTEXT_RE.sub('', text)
     text = _INTERNAL_NOTE_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)
@@ -63,10 +62,10 @@ def sanitize_context(text: str) -> str:
 
 
 def build_memory_context_block(raw_context: str) -> str:
-    """Wrap prefetched memory in a fenced block with system note.
+    """将预取的记忆包装在带系统注释的围栏块中。
 
-    The fence prevents the model from treating recalled context as user
-    discourse.  Injected at API-call time only — never persisted.
+    围栏防止模型将召回的上下文视为用户对话。
+    仅在 API 调用时注入——从不持久化。
     """
     if not raw_context or not raw_context.strip():
         return ""
@@ -81,25 +80,25 @@ def build_memory_context_block(raw_context: str) -> str:
 
 
 class MemoryManager:
-    """Orchestrates the built-in provider plus at most one external provider.
+    """协调内置提供者加上最多一个外部提供者。
 
-    The builtin provider is always first. Only one non-builtin (external)
-    provider is allowed.  Failures in one provider never block the other.
+    内置提供者始终排第一。只允许一个非内置（外部）提供者。
+    一个提供者的失败不会阻塞另一个。
     """
 
     def __init__(self) -> None:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
-        self._has_external: bool = False  # True once a non-builtin provider is added
+        self._has_external: bool = False  # 添加非内置提供者后变为 True
 
-    # -- Registration --------------------------------------------------------
+    # -- 注册 --------------------------------------------------------
 
     def add_provider(self, provider: MemoryProvider) -> None:
-        """Register a memory provider.
+        """注册一个记忆提供者。
 
-        Built-in provider (name ``"builtin"``) is always accepted.
-        Only **one** external (non-builtin) provider is allowed — a second
-        attempt is rejected with a warning.
+        内置提供者（名称为 ``"builtin"``）始终被接受。
+        只允许**一个**外部（非内置）提供者——
+        第二次尝试会被拒绝并发出警告。
         """
         is_builtin = provider.name == "builtin"
 
@@ -120,7 +119,7 @@ class MemoryManager:
 
         self._providers.append(provider)
 
-        # Index tool names → provider for routing
+        # 为路由建立工具名 → 提供者索引
         for schema in provider.get_tool_schemas():
             tool_name = schema.get("name", "")
             if tool_name and tool_name not in self._tool_to_provider:
@@ -142,23 +141,23 @@ class MemoryManager:
 
     @property
     def providers(self) -> List[MemoryProvider]:
-        """All registered providers in order."""
+        """按顺序返回所有已注册的提供者。"""
         return list(self._providers)
 
     def get_provider(self, name: str) -> Optional[MemoryProvider]:
-        """Get a provider by name, or None if not registered."""
+        """按名称获取提供者，未注册时返回 None。"""
         for p in self._providers:
             if p.name == name:
                 return p
         return None
 
-    # -- System prompt -------------------------------------------------------
+    # -- 系统提示 -------------------------------------------------------
 
     def build_system_prompt(self) -> str:
-        """Collect system prompt blocks from all providers.
+        """从所有提供者收集系统提示块。
 
-        Returns combined text, or empty string if no providers contribute.
-        Each non-empty block is labeled with the provider name.
+        返回合并后的文本，如果没有提供者贡献则返回空字符串。
+        每个非空块都用提供者名称标记。
         """
         blocks = []
         for provider in self._providers:
@@ -173,13 +172,13 @@ class MemoryManager:
                 )
         return "\n\n".join(blocks)
 
-    # -- Prefetch / recall ---------------------------------------------------
+    # -- 预取 / 召回 ---------------------------------------------------
 
     def prefetch_all(self, query: str, *, session_id: str = "") -> str:
-        """Collect prefetch context from all providers.
+        """从所有提供者收集预取上下文。
 
-        Returns merged context text labeled by provider. Empty providers
-        are skipped. Failures in one provider don't block others.
+        返回按提供者标记的合并上下文文本。空的提供者被跳过。
+        一个提供者的失败不会阻塞其他提供者。
         """
         parts = []
         for provider in self._providers:
@@ -195,7 +194,7 @@ class MemoryManager:
         return "\n\n".join(parts)
 
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
-        """Queue background prefetch on all providers for the next turn."""
+        """在所有提供者上排队后台预取，为下一回合做准备。"""
         for provider in self._providers:
             try:
                 provider.queue_prefetch(query, session_id=session_id)
@@ -205,10 +204,10 @@ class MemoryManager:
                     provider.name, e,
                 )
 
-    # -- Sync ----------------------------------------------------------------
+    # -- 同步 ----------------------------------------------------------------
 
     def sync_all(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        """Sync a completed turn to all providers."""
+        """将已完成的回合同步到所有提供者。"""
         for provider in self._providers:
             try:
                 provider.sync_turn(user_content, assistant_content, session_id=session_id)
@@ -218,10 +217,10 @@ class MemoryManager:
                     provider.name, e,
                 )
 
-    # -- Tools ---------------------------------------------------------------
+    # -- 工具 ---------------------------------------------------------------
 
     def get_all_tool_schemas(self) -> List[Dict[str, Any]]:
-        """Collect tool schemas from all providers."""
+        """从所有提供者收集工具 schema。"""
         schemas = []
         seen = set()
         for provider in self._providers:
@@ -239,20 +238,19 @@ class MemoryManager:
         return schemas
 
     def get_all_tool_names(self) -> set:
-        """Return set of all tool names across all providers."""
+        """返回所有提供者中所有工具名称的集合。"""
         return set(self._tool_to_provider.keys())
 
     def has_tool(self, tool_name: str) -> bool:
-        """Check if any provider handles this tool."""
+        """检查是否有提供者处理此工具。"""
         return tool_name in self._tool_to_provider
 
     def handle_tool_call(
         self, tool_name: str, args: Dict[str, Any], **kwargs
     ) -> str:
-        """Route a tool call to the correct provider.
+        """将工具调用路由到正确的提供者。
 
-        Returns JSON string result. Raises ValueError if no provider
-        handles the tool.
+        返回 JSON 字符串结果。如果没有提供者处理该工具则抛出 ValueError。
         """
         provider = self._tool_to_provider.get(tool_name)
         if provider is None:
@@ -266,12 +264,12 @@ class MemoryManager:
             )
             return tool_error(f"Memory tool '{tool_name}' failed: {e}")
 
-    # -- Lifecycle hooks -----------------------------------------------------
+    # -- 生命周期钩子 -----------------------------------------------------
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
-        """Notify all providers of a new turn.
+        """通知所有提供者新回合开始。
 
-        kwargs may include: remaining_tokens, model, platform, tool_count.
+        kwargs 可包含：remaining_tokens, model, platform, tool_count。
         """
         for provider in self._providers:
             try:
@@ -283,7 +281,7 @@ class MemoryManager:
                 )
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        """Notify all providers of session end."""
+        """通知所有提供者会话结束。"""
         for provider in self._providers:
             try:
                 provider.on_session_end(messages)
@@ -294,10 +292,10 @@ class MemoryManager:
                 )
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
-        """Notify all providers before context compression.
+        """在上下文压缩前通知所有提供者。
 
-        Returns combined text from providers to include in the compression
-        summary prompt. Empty string if no provider contributes.
+        返回提供者贡献的合并文本，用于包含在压缩摘要提示中。
+        如果没有提供者贡献则返回空字符串。
         """
         parts = []
         for provider in self._providers:
@@ -313,9 +311,9 @@ class MemoryManager:
         return "\n\n".join(parts)
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
-        """Notify external providers when the built-in memory tool writes.
+        """当内置记忆工具执行写入时通知外部提供者。
 
-        Skips the builtin provider itself (it's the source of the write).
+        跳过内置提供者本身（它是写入的来源）。
         """
         for provider in self._providers:
             if provider.name == "builtin":
@@ -330,7 +328,7 @@ class MemoryManager:
 
     def on_delegation(self, task: str, result: str, *,
                       child_session_id: str = "", **kwargs) -> None:
-        """Notify all providers that a subagent completed."""
+        """通知所有提供者子智能体已完成。"""
         for provider in self._providers:
             try:
                 provider.on_delegation(
@@ -343,7 +341,7 @@ class MemoryManager:
                 )
 
     def shutdown_all(self) -> None:
-        """Shut down all providers (reverse order for clean teardown)."""
+        """关闭所有提供者（逆序以确保干净拆卸）。"""
         for provider in reversed(self._providers):
             try:
                 provider.shutdown()
@@ -354,11 +352,11 @@ class MemoryManager:
                 )
 
     def initialize_all(self, session_id: str, **kwargs) -> None:
-        """Initialize all providers.
+        """初始化所有提供者。
 
-        Automatically injects ``hermes_home`` into *kwargs* so that every
-        provider can resolve profile-scoped storage paths without importing
-        ``get_hermes_home()`` themselves.
+        自动向 *kwargs* 注入 ``hermes_home``，使每个提供者
+        都能解析 profile 范围的存储路径，而无需自行导入
+        ``get_hermes_home()``。
         """
         if "hermes_home" not in kwargs:
             from hermes_constants import get_hermes_home

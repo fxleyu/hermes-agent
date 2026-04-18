@@ -21,7 +21,7 @@ def _read_text(path: str) -> str:
 
 @mcp.tool
 def summarize_text_file(path: str, preview_chars: int = 1200) -> dict[str, int | str]:
-    """Return basic metadata and a preview for a UTF-8 text file."""
+    """返回 UTF-8 文本文件的基本元数据和预览内容。"""
     file_path = Path(path).expanduser()
     text = _read_text(path)
     return {
@@ -34,7 +34,7 @@ def summarize_text_file(path: str, preview_chars: int = 1200) -> dict[str, int |
 
 @mcp.tool
 def search_text_file(path: str, needle: str, max_matches: int = 20) -> dict[str, Any]:
-    """Find matching lines in a UTF-8 text file."""
+    """在 UTF-8 文本文件中查找匹配行。"""
     file_path = Path(path).expanduser()
     matches: list[dict[str, Any]] = []
     for line_number, line in enumerate(_read_text(path).splitlines(), start=1):
@@ -47,7 +47,7 @@ def search_text_file(path: str, needle: str, max_matches: int = 20) -> dict[str,
 
 @mcp.resource("file://{path}")
 def read_file_resource(path: str) -> str:
-    """Expose a text file as a resource."""
+    """将文本文件暴露为资源。"""
     return _read_text(path)
 
 

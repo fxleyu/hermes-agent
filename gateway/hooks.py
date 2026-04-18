@@ -1,22 +1,22 @@
 """
-Event Hook System
+事件钩子系统
 
-A lightweight event-driven system that fires handlers at key lifecycle points.
-Hooks are discovered from ~/.hermes/hooks/ directories, each containing:
-  - HOOK.yaml  (metadata: name, description, events list)
-  - handler.py (Python handler with async def handle(event_type, context))
+一个轻量级事件驱动系统，在关键生命周期节点触发处理器。
+钩子从 ~/.hermes/hooks/ 目录中发现，每个目录包含：
+  - HOOK.yaml（元数据：名称、描述、事件列表）
+  - handler.py（Python 处理器，包含 async def handle(event_type, context)）
 
-Events:
-  - gateway:startup     -- Gateway process starts
-  - session:start       -- New session created (first message of a new session)
-  - session:end         -- Session ends (user ran /new or /reset)
-  - session:reset       -- Session reset completed (new session entry created)
-  - agent:start         -- Agent begins processing a message
-  - agent:step          -- Each turn in the tool-calling loop
-  - agent:end           -- Agent finishes processing
-  - command:*           -- Any slash command executed (wildcard match)
+事件类型：
+  - gateway:startup     -- 网关进程启动
+  - session:start       -- 新会话创建（新会话的第一条消息）
+  - session:end         -- 会话结束（用户执行了 /new 或 /reset）
+  - session:reset       -- 会话重置完成（新的会话条目已创建）
+  - agent:start         -- 代理开始处理消息
+  - agent:step          -- 工具调用循环中的每一轮
+  - agent:end           -- 代理完成处理
+  - command:*           -- 任何斜杠命令被执行（通配符匹配）
 
-Errors in hooks are caught and logged but never block the main pipeline.
+钩子中的错误会被捕获并记录日志，但绝不会阻塞主管道。
 """
 
 import asyncio
@@ -33,26 +33,26 @@ HOOKS_DIR = get_hermes_home() / "hooks"
 
 class HookRegistry:
     """
-    Discovers, loads, and fires event hooks.
+    发现、加载和触发事件钩子。
 
-    Usage:
+    用法：
         registry = HookRegistry()
         registry.discover_and_load()
         await registry.emit("agent:start", {"platform": "telegram", ...})
     """
 
     def __init__(self):
-        # event_type -> [handler_fn, ...]
+        # 事件类型 -> [处理器函数, ...]
         self._handlers: Dict[str, List[Callable]] = {}
-        self._loaded_hooks: List[dict] = []  # metadata for listing
+        self._loaded_hooks: List[dict] = []  # 用于列举的元数据
 
     @property
     def loaded_hooks(self) -> List[dict]:
-        """Return metadata about all loaded hooks."""
+        """返回所有已加载钩子的元数据。"""
         return list(self._loaded_hooks)
 
     def _register_builtin_hooks(self) -> None:
-        """Register built-in hooks that are always active."""
+        """注册始终活跃的内置钩子。"""
         try:
             from gateway.builtin_hooks.boot_md import handle as boot_md_handle
 
@@ -68,13 +68,13 @@ class HookRegistry:
 
     def discover_and_load(self) -> None:
         """
-        Scan the hooks directory for hook directories and load their handlers.
+        扫描 hooks 目录查找钩子目录并加载其处理器。
 
-        Also registers built-in hooks that are always active.
+        同时注册始终活跃的内置钩子。
 
-        Each hook directory must contain:
-          - HOOK.yaml with at least 'name' and 'events' keys
-          - handler.py with a top-level 'handle' function (sync or async)
+        每个钩子目录必须包含：
+          - HOOK.yaml，至少有 'name' 和 'events' 键
+          - handler.py，包含顶层 'handle' 函数（同步或异步）
         """
         self._register_builtin_hooks()
 
@@ -103,7 +103,7 @@ class HookRegistry:
                     print(f"[hooks] Skipping {hook_name}: no events declared", flush=True)
                     continue
 
-                # Dynamically load the handler module
+                # 动态加载处理器模块
                 spec = importlib.util.spec_from_file_location(
                     f"hermes_hook_{hook_name}", handler_path
                 )
@@ -119,7 +119,7 @@ class HookRegistry:
                     print(f"[hooks] Skipping {hook_name}: no 'handle' function found", flush=True)
                     continue
 
-                # Register the handler for each declared event
+                # 为每个声明的事件注册处理器
                 for event in events:
                     self._handlers.setdefault(event, []).append(handle_fn)
 
@@ -137,24 +137,23 @@ class HookRegistry:
 
     async def emit(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
         """
-        Fire all handlers registered for an event.
+        触发为某个事件注册的所有处理器。
 
-        Supports wildcard matching: handlers registered for "command:*" will
-        fire for any "command:..." event. Handlers registered for a base type
-        like "agent" won't fire for "agent:start" -- only exact matches and
-        explicit wildcards.
+        支持通配符匹配：注册到 "command:*" 的处理器会对任何
+        "command:..." 事件触发。注册到基本类型如 "agent" 的处理器
+        不会对 "agent:start" 触发 — 仅精确匹配和显式通配符生效。
 
-        Args:
-            event_type: The event identifier (e.g. "agent:start").
-            context:    Optional dict with event-specific data.
+        参数：
+            event_type: 事件标识符（例如 "agent:start"）。
+            context:    可选的事件特定数据字典。
         """
         if context is None:
             context = {}
 
-        # Collect handlers: exact match + wildcard match
+        # 收集处理器：精确匹配 + 通配符匹配
         handlers = list(self._handlers.get(event_type, []))
 
-        # Check for wildcard patterns (e.g., "command:*" matches "command:reset")
+        # 检查通配符模式（例如 "command:*" 匹配 "command:reset"）
         if ":" in event_type:
             base = event_type.split(":")[0]
             wildcard_key = f"{base}:*"
@@ -163,7 +162,7 @@ class HookRegistry:
         for fn in handlers:
             try:
                 result = fn(event_type, context)
-                # Support both sync and async handlers
+                # 支持同步和异步处理器
                 if asyncio.iscoroutine(result):
                     await result
             except Exception as e:

@@ -1,22 +1,22 @@
 """
-WeCom (Enterprise WeChat) platform adapter.
+企业微信（WeCom）平台适配器。
 
-Uses the WeCom AI Bot WebSocket gateway for inbound and outbound messages.
-The adapter focuses on the core gateway path:
+使用企业微信 AI Bot WebSocket 网关进行入站和出站消息通信。
+适配器聚焦于核心网关路径：
 
-- authenticate via ``aibot_subscribe``
-- receive inbound ``aibot_msg_callback`` events
-- send outbound markdown messages via ``aibot_send_msg``
-- upload outbound media via ``aibot_upload_media_*`` and send native attachments
-- best-effort download of inbound image/file attachments for agent context
+- 通过 ``aibot_subscribe`` 进行身份认证
+- 接收入站 ``aibot_msg_callback`` 事件
+- 通过 ``aibot_send_msg`` 发送出站 Markdown 消息
+- 通过 ``aibot_upload_media_*`` 上传出站媒体并发送原生附件
+- 尽力下载入站图片/文件附件以提供给 Agent 上下文
 
-Configuration in config.yaml:
+配置示例（config.yaml）：
     platforms:
       wecom:
         enabled: true
         extra:
-          bot_id: "your-bot-id"          # or WECOM_BOT_ID env var
-          secret: "your-secret"          # or WECOM_SECRET env var
+          bot_id: "your-bot-id"          # 或通过 WECOM_BOT_ID 环境变量设置
+          secret: "your-secret"          # 或通过 WECOM_SECRET 环境变量设置
           websocket_url: "wss://openws.work.weixin.qq.com"
           dm_policy: "open"              # open | allowlist | disabled | pairing
           allow_from: ["user_id_1"]
@@ -105,12 +105,12 @@ VOICE_SUPPORTED_MIMES = {"audio/amr"}
 
 
 def check_wecom_requirements() -> bool:
-    """Check if WeCom runtime dependencies are available."""
+    """检查企业微信运行时依赖是否可用。"""
     return AIOHTTP_AVAILABLE and HTTPX_AVAILABLE
 
 
 def _coerce_list(value: Any) -> List[str]:
-    """Coerce config values into a trimmed string list."""
+    """将配置值强制转换为去空格的字符串列表。"""
     if value is None:
         return []
     if isinstance(value, str):
@@ -121,7 +121,7 @@ def _coerce_list(value: Any) -> List[str]:
 
 
 def _normalize_entry(raw: str) -> str:
-    """Normalize allowlist entries such as ``wecom:user:foo``."""
+    """规范化白名单条目，如 ``wecom:user:foo``。"""
     value = str(raw).strip()
     value = re.sub(r"^wecom:", "", value, flags=re.IGNORECASE)
     value = re.sub(r"^(user|group):", "", value, flags=re.IGNORECASE)
@@ -129,7 +129,7 @@ def _normalize_entry(raw: str) -> str:
 
 
 def _entry_matches(entries: List[str], target: str) -> bool:
-    """Case-insensitive allowlist match with ``*`` support."""
+    """不区分大小写的白名单匹配，支持 ``*`` 通配符。"""
     normalized_target = str(target).strip().lower()
     for entry in entries:
         normalized = _normalize_entry(entry).lower()
@@ -139,11 +139,11 @@ def _entry_matches(entries: List[str], target: str) -> bool:
 
 
 class WeComAdapter(BasePlatformAdapter):
-    """WeCom AI Bot adapter backed by a persistent WebSocket connection."""
+    """基于持久 WebSocket 连接的企业微信 AI Bot 适配器。"""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
-    # Threshold for detecting WeCom client-side message splits.
-    # When a chunk is near the 4000-char limit, a continuation is almost certain.
+    # 检测企业微信客户端分割消息的阈值。
+    # 当一个分块接近 4000 字符限制时，几乎可以确定后续还有延续消息。
     _SPLIT_THRESHOLD = 3900
 
     def __init__(self, config: PlatformConfig):
@@ -174,19 +174,19 @@ class WeComAdapter(BasePlatformAdapter):
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE)
         self._reply_req_ids: Dict[str, str] = {}
 
-        # Text batching: merge rapid successive messages (Telegram-style).
-        # WeCom clients split long messages around 4000 chars.
+        # 文本批处理：合并快速连续的消息（Telegram 风格）。
+        # 企业微信客户端会在约 4000 字符处拆分长消息。
         self._text_batch_delay_seconds = float(os.getenv("HERMES_WECOM_TEXT_BATCH_DELAY_SECONDS", "0.6"))
         self._text_batch_split_delay_seconds = float(os.getenv("HERMES_WECOM_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
 
     # ------------------------------------------------------------------
-    # Connection lifecycle
+    # 连接生命周期
     # ------------------------------------------------------------------
 
     async def connect(self) -> bool:
-        """Connect to the WeCom AI Bot gateway."""
+        """连接企业微信 AI Bot 网关。"""
         if not AIOHTTP_AVAILABLE:
             message = "WeCom startup failed: aiohttp not installed"
             self._set_fatal_error("wecom_missing_dependency", message, retryable=True)
@@ -222,7 +222,7 @@ class WeComAdapter(BasePlatformAdapter):
             return False
 
     async def disconnect(self) -> None:
-        """Disconnect from WeCom."""
+        """断开与企业微信的连接。"""
         self._running = False
         self._mark_disconnected()
 
@@ -253,7 +253,7 @@ class WeComAdapter(BasePlatformAdapter):
         logger.info("[%s] Disconnected", self.name)
 
     async def _cleanup_ws(self) -> None:
-        """Close the live websocket/session, if any."""
+        """关闭当前活跃的 WebSocket/会话连接（如果有的话）。"""
         if self._ws and not self._ws.closed:
             await self._ws.close()
         self._ws = None
@@ -263,7 +263,7 @@ class WeComAdapter(BasePlatformAdapter):
         self._session = None
 
     async def _open_connection(self) -> None:
-        """Open and authenticate a websocket connection."""
+        """打开并认证 WebSocket 连接。"""
         await self._cleanup_ws()
         self._session = aiohttp.ClientSession(trust_env=True)
         self._ws = await self._session.ws_connect(
@@ -288,7 +288,7 @@ class WeComAdapter(BasePlatformAdapter):
             raise RuntimeError(f"{errmsg} (errcode={errcode})")
 
     async def _wait_for_handshake(self, req_id: str) -> Dict[str, Any]:
-        """Wait for the subscribe acknowledgement."""
+        """等待订阅确认响应。"""
         if not self._ws:
             raise RuntimeError("WebSocket not initialized")
 
@@ -312,7 +312,7 @@ class WeComAdapter(BasePlatformAdapter):
                 raise RuntimeError("WeCom websocket closed during authentication")
 
     async def _listen_loop(self) -> None:
-        """Read websocket events forever, reconnecting on errors."""
+        """持续读取 WebSocket 事件，出错时自动重连。"""
         backoff_idx = 0
         while self._running:
             try:
@@ -338,7 +338,7 @@ class WeComAdapter(BasePlatformAdapter):
                     logger.warning("[%s] Reconnect failed: %s", self.name, reconnect_exc)
 
     async def _read_events(self) -> None:
-        """Read websocket frames until the connection closes."""
+        """持续读取 WebSocket 帧直到连接关闭。"""
         if not self._ws:
             raise RuntimeError("WebSocket not connected")
 
@@ -352,7 +352,7 @@ class WeComAdapter(BasePlatformAdapter):
                 raise RuntimeError("WeCom websocket closed")
 
     async def _heartbeat_loop(self) -> None:
-        """Send lightweight application-level pings."""
+        """发送轻量级的应用层心跳 ping。"""
         try:
             while self._running:
                 await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
@@ -372,7 +372,7 @@ class WeComAdapter(BasePlatformAdapter):
             pass
 
     async def _dispatch_payload(self, payload: Dict[str, Any]) -> None:
-        """Route inbound websocket payloads."""
+        """路由分发入站 WebSocket 负载。"""
         req_id = self._payload_req_id(payload)
         cmd = str(payload.get("cmd") or "")
 
@@ -391,20 +391,20 @@ class WeComAdapter(BasePlatformAdapter):
         logger.debug("[%s] Ignoring websocket payload: %s", self.name, cmd or payload)
 
     def _fail_pending_responses(self, exc: Exception) -> None:
-        """Fail all outstanding request futures."""
+        """使所有未完成的请求 Future 失败。"""
         for req_id, future in list(self._pending_responses.items()):
             if not future.done():
                 future.set_exception(exc)
             self._pending_responses.pop(req_id, None)
 
     async def _send_json(self, payload: Dict[str, Any]) -> None:
-        """Send a raw JSON frame over the active websocket."""
+        """通过活跃的 WebSocket 连接发送原始 JSON 帧。"""
         if not self._ws or self._ws.closed:
             raise RuntimeError("WeCom websocket is not connected")
         await self._ws.send_json(payload)
 
     async def _send_request(self, cmd: str, body: Dict[str, Any], timeout: float = REQUEST_TIMEOUT_SECONDS) -> Dict[str, Any]:
-        """Send a JSON request and await the correlated response."""
+        """发送 JSON 请求并等待关联的响应。"""
         if not self._ws or self._ws.closed:
             raise RuntimeError("WeCom websocket is not connected")
 
@@ -425,7 +425,7 @@ class WeComAdapter(BasePlatformAdapter):
         cmd: str = APP_CMD_RESPONSE,
         timeout: float = REQUEST_TIMEOUT_SECONDS,
     ) -> Dict[str, Any]:
-        """Send a reply frame correlated to an inbound callback req_id."""
+        """发送与入站回调 req_id 关联的回复帧。"""
         if not self._ws or self._ws.closed:
             raise RuntimeError("WeCom websocket is not connected")
 
@@ -465,11 +465,11 @@ class WeComAdapter(BasePlatformAdapter):
         return payload if isinstance(payload, dict) else None
 
     # ------------------------------------------------------------------
-    # Inbound message parsing
+    # 入站消息解析
     # ------------------------------------------------------------------
 
     async def _on_message(self, payload: Dict[str, Any]) -> None:
-        """Process an inbound WeCom message callback event."""
+        """处理入站的企业微信消息回调事件。"""
         body = payload.get("body")
         if not isinstance(body, dict):
             return
@@ -528,19 +528,19 @@ class WeComAdapter(BasePlatformAdapter):
             timestamp=datetime.now(tz=timezone.utc),
         )
 
-        # Only batch plain text messages — commands, media, etc. dispatch
-        # immediately since they won't be split by the WeCom client.
+        # 仅对纯文本消息进行批处理 — 命令、媒体等立即分发，
+        # 因为它们不会被企业微信客户端拆分。
         if message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
             self._enqueue_text_event(event)
         else:
             await self.handle_message(event)
 
     # ------------------------------------------------------------------
-    # Text message aggregation (handles WeCom client-side splits)
+    # 文本消息聚合（处理企业微信客户端分割的消息）
     # ------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching."""
+        """基于会话作用域的文本消息批处理键。"""
         from gateway.session import build_session_key
         return build_session_key(
             event.source,
@@ -549,11 +549,10 @@ class WeComAdapter(BasePlatformAdapter):
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
-        """Buffer a text event and reset the flush timer.
+        """缓冲一个文本事件并重置刷新定时器。
 
-        When WeCom splits a long user message at 4000 chars, the chunks
-        arrive within a few hundred milliseconds.  This merges them into
-        a single event before dispatching.
+        当企业微信在 4000 字符处拆分用户的长消息时，各分块会在
+        几百毫秒内到达。本方法将它们合并为单个事件后再分发。
         """
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
@@ -565,12 +564,12 @@ class WeComAdapter(BasePlatformAdapter):
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-            # Merge any media that might be attached
+            # 合并可能附带的媒体
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
 
-        # Cancel any pending flush and restart the timer
+        # 取消任何待执行的刷新任务并重新启动定时器
         prior_task = self._pending_text_batch_tasks.get(key)
         if prior_task and not prior_task.done():
             prior_task.cancel()
@@ -579,10 +578,10 @@ class WeComAdapter(BasePlatformAdapter):
         )
 
     async def _flush_text_batch(self, key: str) -> None:
-        """Wait for the quiet period then dispatch the aggregated text.
+        """等待静默期后分发聚合的文本。
 
-        Uses a longer delay when the latest chunk is near WeCom's 4000-char
-        split point, since a continuation chunk is almost certain.
+        当最新分块接近企业微信 4000 字符的拆分点时，使用更长的延迟，
+        因为后续分块几乎必然到来。
         """
         current_task = asyncio.current_task()
         try:
@@ -607,7 +606,7 @@ class WeComAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _extract_text(body: Dict[str, Any]) -> Tuple[str, Optional[str]]:
-        """Extract plain text and quoted text from a callback payload."""
+        """从回调负载中提取纯文本和引用文本。"""
         text_parts: List[str] = []
         reply_text: Optional[str] = None
         msgtype = str(body.get("msgtype") or "").lower()
@@ -635,7 +634,7 @@ class WeComAdapter(BasePlatformAdapter):
                 if voice_text:
                     text_parts.append(voice_text)
 
-            # Extract appmsg title (filename) for WeCom AI Bot attachments
+            # 提取 appmsg 标题（文件名），用于企业微信 AI Bot 附件
             if msgtype == "appmsg":
                 appmsg = body.get("appmsg") if isinstance(body.get("appmsg"), dict) else {}
                 title = str(appmsg.get("title") or "").strip()
@@ -654,7 +653,7 @@ class WeComAdapter(BasePlatformAdapter):
         return "\n".join(part for part in text_parts if part).strip(), reply_text
 
     async def _extract_media(self, body: Dict[str, Any]) -> Tuple[List[str], List[str]]:
-        """Best-effort extraction of inbound media to local cache paths."""
+        """尽力提取入站媒体到本地缓存路径。"""
         media_paths: List[str] = []
         media_types: List[str] = []
         refs: List[Tuple[str, Dict[str, Any]]] = []
@@ -674,7 +673,7 @@ class WeComAdapter(BasePlatformAdapter):
                 refs.append(("image", body["image"]))
             if msgtype == "file" and isinstance(body.get("file"), dict):
                 refs.append(("file", body["file"]))
-            # Handle appmsg (WeCom AI Bot attachments with PDF/Word/Excel)
+            # 处理 appmsg（企业微信 AI Bot 附件，包含 PDF/Word/Excel）
             if msgtype == "appmsg" and isinstance(body.get("appmsg"), dict):
                 appmsg = body["appmsg"]
                 if isinstance(appmsg.get("file"), dict):
@@ -699,7 +698,7 @@ class WeComAdapter(BasePlatformAdapter):
         return media_paths, media_types
 
     async def _cache_media(self, kind: str, media: Dict[str, Any]) -> Optional[Tuple[str, str]]:
-        """Cache an inbound image/file/media reference to local storage."""
+        """将入站的图片/文件/媒体引用缓存到本地存储。"""
         if "base64" in media and media.get("base64"):
             try:
                 raw = self._decode_base64(media["base64"])
@@ -794,7 +793,7 @@ class WeComAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _derive_message_type(body: Dict[str, Any], text: str, media_types: List[str]) -> MessageType:
-        """Choose the normalized inbound message type."""
+        """选择规范化的入站消息类型。"""
         if any(mtype.startswith(("application/", "text/")) for mtype in media_types):
             return MessageType.DOCUMENT
         if any(mtype.startswith("image/") for mtype in media_types):
@@ -804,7 +803,7 @@ class WeComAdapter(BasePlatformAdapter):
         return MessageType.TEXT
 
     # ------------------------------------------------------------------
-    # Policy helpers
+    # 策略辅助方法
     # ------------------------------------------------------------------
 
     def _is_dm_allowed(self, sender_id: str) -> bool:
@@ -854,7 +853,7 @@ class WeComAdapter(BasePlatformAdapter):
         return self._reply_req_ids.get(normalized)
 
     # ------------------------------------------------------------------
-    # Outbound messaging
+    # 出站消息
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -1127,7 +1126,7 @@ class WeComAdapter(BasePlatformAdapter):
                 APP_CMD_UPLOAD_MEDIA_CHUNK,
                 {
                     "upload_id": upload_id,
-                    # Match the official SDK implementation, which currently uses 0-based chunk indexes.
+                    # 匹配官方 SDK 实现，当前使用从 0 开始的分块索引。
                     "chunk_index": chunk_index,
                     "base64_data": base64.b64encode(chunk).decode("ascii"),
                 },
@@ -1294,7 +1293,7 @@ class WeComAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send markdown to a WeCom chat via proactive ``aibot_send_msg``."""
+        """通过主动调用 ``aibot_send_msg`` 向企业微信聊天发送 Markdown 消息。"""
         del metadata
 
         if not chat_id:
@@ -1419,11 +1418,11 @@ class WeComAdapter(BasePlatformAdapter):
         )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """WeCom does not expose typing indicators in this adapter."""
+        """企业微信在此适配器中不支持打字指示器。"""
         del chat_id, metadata
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
-        """Return minimal chat info."""
+        """返回最小化的聊天信息。"""
         return {
             "name": chat_id,
             "type": "group" if chat_id and chat_id.lower().startswith("group") else "dm",

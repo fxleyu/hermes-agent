@@ -31,21 +31,21 @@ def _request(method: str, path: str, *, params: dict[str, Any] | None = None) ->
 
 @mcp.tool
 def health_check() -> dict[str, Any]:
-    """Check whether the upstream API is reachable."""
+    """检查上游 API 是否可达。"""
     payload = _request("GET", "/health")
     return {"base_url": API_BASE_URL, "result": payload}
 
 
 @mcp.tool
 def get_resource(resource_id: str) -> dict[str, Any]:
-    """Fetch one resource by ID from the upstream API."""
+    """通过 ID 从上游 API 获取单个资源。"""
     payload = _request("GET", f"/resources/{resource_id}")
     return {"resource_id": resource_id, "data": payload}
 
 
 @mcp.tool
 def search_resources(query: str, limit: int = 10) -> dict[str, Any]:
-    """Search upstream resources by query string."""
+    """通过查询字符串搜索上游资源。"""
     payload = _request("GET", "/resources", params={"q": query, "limit": limit})
     return {"query": query, "limit": limit, "results": payload}
 

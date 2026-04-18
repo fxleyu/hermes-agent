@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Fetch YouTube transcripts for Memento quiz generation.
+"""获取 YouTube 字幕用于 Memento 测验生成。
 
-Requires: pip install youtube-transcript-api
-The quiz question *generation* is done by the agent's LLM — this script only fetches transcripts.
+依赖: pip install youtube-transcript-api
+测验题目的 *生成* 由代理的 LLM 完成 — 此脚本仅获取字幕。
 """
 
 import argparse

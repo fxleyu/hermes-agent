@@ -1,4 +1,4 @@
-"""Credential-pool auth subcommands."""
+"""凭证池认证子命令。"""
 
 from __future__ import annotations
 
@@ -32,12 +32,12 @@ from hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_constants import OPENROUTER_BASE_URL
 
 
-# Providers that support OAuth login in addition to API keys.
+# 支持 OAuth 登录（除 API 密钥外）的提供商。
 _OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli"}
 
 
 def _get_custom_provider_names() -> list:
-    """Return list of (display_name, pool_key, provider_key) tuples."""
+    """返回 (显示名称, 池键, 提供商键) 元组列表。"""
     try:
         from hermes_cli.config import get_compatible_custom_providers, load_config
 
@@ -58,11 +58,11 @@ def _get_custom_provider_names() -> list:
 
 
 def _resolve_custom_provider_input(raw: str) -> str | None:
-    """If raw input matches a custom_providers entry name (case-insensitive), return its pool key."""
+    """如果原始输入匹配自定义提供商条目名称（不区分大小写），返回其池键。"""
     normalized = (raw or "").strip().lower().replace(" ", "-")
     if not normalized:
         return None
-    # Direct match on 'custom:name' format
+    # 直接匹配 'custom:name' 格式
     if normalized.startswith(CUSTOM_POOL_PREFIX):
         return normalized
     for display_name, pool_key, provider_key in _get_custom_provider_names():
@@ -77,7 +77,7 @@ def _normalize_provider(provider: str) -> str:
     normalized = (provider or "").strip().lower()
     if normalized in {"or", "open-router"}:
         return "openrouter"
-    # Check if it matches a custom provider name
+    # 检查是否匹配自定义提供商名称
     custom_key = _resolve_custom_provider_input(normalized)
     if custom_key:
         return custom_key
@@ -339,8 +339,8 @@ def auth_remove_command(args) -> None:
         raise SystemExit(f'No credential matching "{target}" for provider {provider}.')
     print(f"Removed {provider} credential #{index} ({removed.label})")
 
-    # If this was an env-seeded credential, also clear the env var from .env
-    # so it doesn't get re-seeded on the next load_pool() call.
+    # 如果这是一个环境变量注入的凭证，同时从 .env 文件中清除该环境变量，
+    # 以防止在下次调用 load_pool() 时重新注入。
     if removed.source.startswith("env:"):
         env_var = removed.source[len("env:"):]
         if env_var:
@@ -349,9 +349,8 @@ def auth_remove_command(args) -> None:
             if cleared:
                 print(f"Cleared {env_var} from .env")
 
-    # If this was a singleton-seeded credential (OAuth device_code, hermes_pkce),
-    # clear the underlying auth store / credential file so it doesn't get
-    # re-seeded on the next load_pool() call.
+    # 如果这是一个单例注入的凭证（OAuth device_code、hermes_pkce），
+    # 清除底层认证存储/凭证文件，以防止在下次调用 load_pool() 时重新注入。
     elif removed.source == "device_code" and provider in ("openai-codex", "nous"):
         from hermes_cli.auth import (
             _load_auth_store, _save_auth_store, _auth_store_lock,
@@ -387,14 +386,14 @@ def auth_reset_command(args) -> None:
 
 
 def _interactive_auth() -> None:
-    """Interactive credential pool management when `hermes auth` is called bare."""
-    # Show current pool status first
+    """当裸调用 `hermes auth` 时的交互式凭证池管理。"""
+    # 首先显示当前凭证池状态
     print("Credential Pool Status")
     print("=" * 50)
 
     auth_list_command(SimpleNamespace(provider=None))
 
-    # Show AWS Bedrock credential status (not in the pool — uses boto3 chain)
+    # 显示 AWS Bedrock 凭证状态（不在凭证池中——使用 boto3 凭证链）
     try:
         from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
         if has_aws_credentials():
@@ -413,10 +412,10 @@ def _interactive_auth() -> None:
                 print(f"  Identity: (could not resolve — boto3 STS call failed)")
             print()
     except ImportError:
-        pass  # boto3 or bedrock_adapter not available
+        pass  # boto3 或 bedrock_adapter 不可用
     print()
 
-    # Main menu
+    # 主菜单
     choices = [
         "Add a credential",
         "Remove a credential",
@@ -447,7 +446,7 @@ def _interactive_auth() -> None:
 
 
 def _pick_provider(prompt: str = "Provider") -> str:
-    """Prompt for a provider name with auto-complete hints."""
+    """通过自动补全提示选择提供商名称。"""
     known = sorted(set(list(PROVIDER_REGISTRY.keys()) + ["openrouter"]))
     custom_names = _get_custom_provider_names()
     if custom_names:
@@ -468,7 +467,7 @@ def _interactive_add() -> None:
     if provider not in PROVIDER_REGISTRY and provider != "openrouter" and not provider.startswith(CUSTOM_POOL_PREFIX):
         raise SystemExit(f"Unknown provider: {provider}")
 
-    # For OAuth-capable providers, ask which type
+    # 对于支持 OAuth 的提供商，询问使用哪种认证类型
     if provider in _OAUTH_CAPABLE_PROVIDERS:
         print(f"\n{provider} supports both API keys and OAuth login.")
         print("  1. API key (paste a key from the provider dashboard)")
@@ -506,7 +505,7 @@ def _interactive_remove() -> None:
         print(f"No credentials for {provider}.")
         return
 
-    # Show entries with indices
+    # 显示带索引的条目列表
     for i, e in enumerate(pool.entries(), 1):
         exhausted = _format_exhausted_status(e)
         print(f"  #{i}  {e.label:25s} {e.auth_type:10s} {e.source}{exhausted} [id:{e.id}]")
@@ -583,5 +582,5 @@ def auth_command(args) -> None:
     if action == "reset":
         auth_reset_command(args)
         return
-    # No subcommand — launch interactive mode
+    # 没有子命令——启动交互模式
     _interactive_auth()

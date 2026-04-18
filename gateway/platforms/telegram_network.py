@@ -1,10 +1,8 @@
-"""Telegram-specific network helpers.
+"""Telegram 网络辅助模块。
 
-Provides a hostname-preserving fallback transport for networks where
-api.telegram.org resolves to an endpoint that is unreachable from the current
-host. The transport keeps the logical request host and TLS SNI as
-api.telegram.org while retrying the TCP connection against one or more fallback
-IPv4 addresses.
+为 api.telegram.org 在当前网络环境中无法直连的场景提供保留主机名的
+备选传输层。该传输层在逻辑层面仍以 api.telegram.org 作为请求主机和
+TLS SNI，但在 TCP 连接层面会尝试使用一个或多个备选 IPv4 地址进行重试。
 """
 
 from __future__ import annotations
@@ -21,9 +19,9 @@ logger = logging.getLogger(__name__)
 
 _TELEGRAM_API_HOST = "api.telegram.org"
 
-# DNS-over-HTTPS providers used to discover Telegram API IPs that may differ
-# from the (potentially unreachable) IP returned by the local system resolver.
-_DOH_TIMEOUT = 4.0  # seconds — bounded so connect() isn't noticeably delayed
+# DoH (DNS-over-HTTPS) 提供商，用于发现与本地系统解析器返回的
+# （可能不可达的）IP 不同的 Telegram API 地址。
+_DOH_TIMEOUT = 4.0  # 秒 — 设置上限以避免 connect() 出现明显延迟
 
 _DOH_PROVIDERS: list[dict] = [
     {
@@ -38,24 +36,23 @@ _DOH_PROVIDERS: list[dict] = [
     },
 ]
 
-# Last-resort IPs when DoH is also blocked.  These are stable Telegram Bot API
-# endpoints in the 149.154.160.0/20 block (same seed used by OpenClaw).
+# 当 DoH 也被屏蔽时的兜底 IP 列表。这些是 149.154.160.0/20 网段内
+# 稳定的 Telegram Bot API 端点。
 _SEED_FALLBACK_IPS: list[str] = ["149.154.167.220"]
 
 
 def _resolve_proxy_url() -> str | None:
-    # Delegate to shared implementation (env vars + macOS system proxy detection)
+    # 委托给共享实现（环境变量 + macOS 系统代理检测）
     from gateway.platforms.base import resolve_proxy_url
     return resolve_proxy_url("TELEGRAM_PROXY")
 
 
 class TelegramFallbackTransport(httpx.AsyncBaseTransport):
-    """Retry Telegram Bot API requests via fallback IPs while preserving TLS/SNI.
+    """通过备选 IP 重试 Telegram Bot API 请求，同时保留 TLS/SNI 不变。
 
-    Requests continue to target https://api.telegram.org/... logically, but on
-    connect failures the underlying TCP connection is retried against a known
-    reachable IP. This is effectively the programmatic equivalent of
-    ``curl --resolve api.telegram.org:443:<ip>``.
+    请求在逻辑上仍然指向 https://api.telegram.org/...，但当连接失败时，
+    底层 TCP 连接会切换到已知可达的 IP 进行重试。这相当于程序化实现了
+    ``curl --resolve api.telegram.org:443:<ip>`` 的效果。
     """
 
     def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
@@ -148,7 +145,7 @@ def parse_fallback_ip_env(value: str | None) -> list[str]:
 
 
 def _resolve_system_dns() -> set[str]:
-    """Return the IPv4 addresses that the OS resolver gives for api.telegram.org."""
+    """返回操作系统 DNS 解析器对 api.telegram.org 解析出的 IPv4 地址集合。"""
     try:
         results = socket.getaddrinfo(_TELEGRAM_API_HOST, 443, socket.AF_INET)
         return {addr[4][0] for addr in results}
@@ -159,7 +156,7 @@ def _resolve_system_dns() -> set[str]:
 async def _query_doh_provider(
     client: httpx.AsyncClient, provider: dict
 ) -> list[str]:
-    """Query one DoH provider and return A-record IPs."""
+    """查询一个 DoH 提供商，返回 A 记录中的 IP 列表。"""
     try:
         resp = await client.get(
             provider["url"], params=provider["params"], headers=provider["headers"]
@@ -168,7 +165,7 @@ async def _query_doh_provider(
         data = resp.json()
         ips: list[str] = []
         for answer in data.get("Answer", []):
-            if answer.get("type") != 1:  # A record
+            if answer.get("type") != 1:  # A 记录
                 continue
             raw = answer.get("data", "").strip()
             try:
@@ -183,19 +180,18 @@ async def _query_doh_provider(
 
 
 async def discover_fallback_ips() -> list[str]:
-    """Auto-discover Telegram API IPs via DNS-over-HTTPS.
+    """通过 DNS-over-HTTPS 自动发现 Telegram API 的 IP 地址。
 
-    Resolves api.telegram.org through Google and Cloudflare DoH, collects all
-    unique IPs, and excludes the system-DNS-resolved IP (which is presumably
-    unreachable on this network).  Falls back to a hardcoded seed list when DoH
-    is also unavailable.
+    通过 Google 和 Cloudflare DoH 解析 api.telegram.org，收集所有去重后的
+    IP 地址，并排除本地系统 DNS 解析出的 IP（该 IP 在当前网络中可能不可达）。
+    当 DoH 同样不可用时，回退到硬编码的种子 IP 列表。
     """
     async with httpx.AsyncClient(timeout=httpx.Timeout(_DOH_TIMEOUT)) as client:
         doh_tasks = [_query_doh_provider(client, p) for p in _DOH_PROVIDERS]
         system_dns_task = asyncio.to_thread(_resolve_system_dns)
         results = await asyncio.gather(system_dns_task, *doh_tasks, return_exceptions=True)
 
-    # results[0] = system DNS IPs (set), results[1:] = DoH IP lists
+    # results[0] = 系统 DNS 解析的 IP 集合 (set)，results[1:] = DoH 返回的 IP 列表
     system_ips: set[str] = results[0] if isinstance(results[0], set) else set()
 
     doh_ips: list[str] = []
@@ -203,7 +199,7 @@ async def discover_fallback_ips() -> list[str]:
         if isinstance(r, list):
             doh_ips.extend(r)
 
-    # Deduplicate preserving order, exclude system-DNS IPs
+    # 去重并保持顺序，排除系统 DNS 解析出的 IP
     seen: set[str] = set()
     candidates: list[str] = []
     for ip in doh_ips:
@@ -211,7 +207,7 @@ async def discover_fallback_ips() -> list[str]:
             seen.add(ip)
             candidates.append(ip)
 
-    # Validate through existing normalization
+    # 通过已有的规范化函数进行校验
     validated = _normalize_fallback_ips(candidates)
 
     if validated:

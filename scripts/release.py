@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Hermes Agent Release Script
+"""Hermes Agent 发布脚本
 
-Generates changelogs and creates GitHub releases with CalVer tags.
+生成变更日志并创建带有 CalVer 标签的 GitHub 发布。
 
-Usage:
-    # Preview changelog (dry run)
+用法:
+    # 预览变更日志（试运行）
     python scripts/release.py
 
-    # Preview with semver bump
+    # 使用语义版本号升级预览
     python scripts/release.py --bump minor
 
-    # Create the release
+    # 创建发布
     python scripts/release.py --bump minor --publish
 
-    # First release (no previous tag)
+    # 首次发布（无先前标签）
     python scripts/release.py --bump minor --publish --first-release
 
-    # Override CalVer date (e.g. for a belated release)
+    # 覆盖 CalVer 日期（例如延迟发布的情况）
     python scripts/release.py --bump minor --publish --date 2026.3.15
 """
 
@@ -34,16 +34,16 @@ VERSION_FILE = REPO_ROOT / "hermes_cli" / "__init__.py"
 PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 
 # ──────────────────────────────────────────────────────────────────────
-# Git email → GitHub username mapping
+# Git 邮箱 → GitHub 用户名映射
 # ──────────────────────────────────────────────────────────────────────
 
-# Auto-extracted from noreply emails + manual overrides
+# 从 noreply 邮箱自动提取 + 手动覆盖
 AUTHOR_MAP = {
-    # teknium (multiple emails)
+    # teknium（多个邮箱地址）
     "teknium1@gmail.com": "teknium1",
     "teknium@nousresearch.com": "teknium1",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
-    # contributors (from noreply pattern)
+    # 贡献者（从 noreply 模式提取）
     "35742124+0xbyt4@users.noreply.github.com": "0xbyt4",
     "82637225+kshitijk4poor@users.noreply.github.com": "kshitijk4poor",
     "kshitijk4poor@users.noreply.github.com": "kshitijk4poor",
@@ -70,7 +70,7 @@ AUTHOR_MAP = {
     "27917469+nosleepcassette@users.noreply.github.com": "nosleepcassette",
     "241404605+MestreY0d4-Uninter@users.noreply.github.com": "MestreY0d4-Uninter",
     "109555139+davetist@users.noreply.github.com": "davetist",
-    # contributors (manual mapping from git names)
+    # 贡献者（从 git 名称手动映射）
     "ahmedsherif95@gmail.com": "asheriif",
     "dmayhem93@gmail.com": "dmahan93",
     "samherring99@gmail.com": "samherring99",
@@ -134,8 +134,8 @@ AUTHOR_MAP = {
     "simon@simonmarcus.org": "simon-marcus",
     "xowiekk@gmail.com": "Xowiek",
     "1243352777@qq.com": "zons-zhaozhy",
-    # ── bulk addition: 75 emails resolved via API, PR salvage bodies, noreply
-    #    crossref, and GH contributor list matching (April 2026 audit) ──
+    # ── 批量添加: 通过 API、PR 内容、noreply 交叉比对和 GH 贡献者列表
+    #    匹配解析了 75 个邮箱（2026 年 4 月审计） ──
     "1115117931@qq.com": "aaronagent",
     "1506751656@qq.com": "hqhq1025",
     "364939526@qq.com": "luyao618",
@@ -236,7 +236,7 @@ AUTHOR_MAP = {
 
 
 def git(*args, cwd=None):
-    """Run a git command and return stdout."""
+    """运行 git 命令并返回 stdout 输出。"""
     result = subprocess.run(
         ["git"] + list(args),
         capture_output=True, text=True,
@@ -249,7 +249,7 @@ def git(*args, cwd=None):
 
 
 def git_result(*args, cwd=None):
-    """Run a git command and return the full CompletedProcess."""
+    """运行 git 命令并返回完整的 CompletedProcess 对象。"""
     return subprocess.run(
         ["git"] + list(args),
         capture_output=True,
@@ -259,7 +259,7 @@ def git_result(*args, cwd=None):
 
 
 def get_last_tag():
-    """Get the most recent CalVer tag."""
+    """获取最近的 CalVer 标签。"""
     tags = git("tag", "--list", "v20*", "--sort=-v:refname")
     if tags:
         return tags.split("\n")[0]
@@ -267,7 +267,7 @@ def get_last_tag():
 
 
 def next_available_tag(base_tag: str) -> tuple[str, str]:
-    """Return a tag/calver pair, suffixing same-day releases when needed."""
+    """返回标签/CalVer 对，同一天多次发布时添加后缀。"""
     if not git("tag", "--list", base_tag):
         return base_tag, base_tag.removeprefix("v")
 
@@ -279,14 +279,14 @@ def next_available_tag(base_tag: str) -> tuple[str, str]:
 
 
 def get_current_version():
-    """Read current semver from __init__.py."""
+    """从 __init__.py 中读取当前语义版本号。"""
     content = VERSION_FILE.read_text()
     match = re.search(r'__version__\s*=\s*"([^"]+)"', content)
     return match.group(1) if match else "0.0.0"
 
 
 def bump_version(current: str, part: str) -> str:
-    """Bump a semver version string."""
+    """升级语义版本号字符串。"""
     parts = current.split(".")
     if len(parts) != 3:
         parts = ["0", "0", "0"]
@@ -308,8 +308,8 @@ def bump_version(current: str, part: str) -> str:
 
 
 def update_version_files(semver: str, calver_date: str):
-    """Update version strings in source files."""
-    # Update __init__.py
+    """更新源文件中的版本号字符串。"""
+    # 更新 __init__.py
     content = VERSION_FILE.read_text()
     content = re.sub(
         r'__version__\s*=\s*"[^"]+"',
@@ -323,7 +323,7 @@ def update_version_files(semver: str, calver_date: str):
     )
     VERSION_FILE.write_text(content)
 
-    # Update pyproject.toml
+    # 更新 pyproject.toml
     pyproject = PYPROJECT_FILE.read_text()
     pyproject = re.sub(
         r'^version\s*=\s*"[^"]+"',
@@ -335,11 +335,11 @@ def update_version_files(semver: str, calver_date: str):
 
 
 def build_release_artifacts(semver: str) -> list[Path]:
-    """Build sdist/wheel artifacts for the current release.
+    """为当前发布构建 sdist/wheel 制品。
 
-    Returns the artifact paths when the local environment has ``python -m build``
-    available. If build tooling is missing or the build fails, returns an empty
-    list and lets the release proceed without attached Python artifacts.
+    当本地环境有 ``python -m build`` 可用时返回制品路径。
+    如果构建工具缺失或构建失败，返回空列表并让发布继续进行，
+    不附带 Python 制品。
     """
     dist_dir = REPO_ROOT / "dist"
     shutil.rmtree(dist_dir, ignore_errors=True)
@@ -370,31 +370,31 @@ def build_release_artifacts(semver: str) -> list[Path]:
 
 
 def resolve_author(name: str, email: str) -> str:
-    """Resolve a git author to a GitHub @mention."""
-    # Try email lookup first
+    """将 git 作者解析为 GitHub @mention。"""
+    # 先尝试邮箱查找
     gh_user = AUTHOR_MAP.get(email)
     if gh_user:
         return f"@{gh_user}"
 
-    # Try noreply pattern
+    # 尝试 noreply 模式
     noreply_match = re.match(r"(\d+)\+(.+)@users\.noreply\.github\.com", email)
     if noreply_match:
         return f"@{noreply_match.group(2)}"
 
-    # Try username@users.noreply.github.com
+    # 尝试 username@users.noreply.github.com 格式
     noreply_match2 = re.match(r"(.+)@users\.noreply\.github\.com", email)
     if noreply_match2:
         return f"@{noreply_match2.group(1)}"
 
-    # Fallback to git name
+    # 回退使用 git 名称
     return name
 
 
 def categorize_commit(subject: str) -> str:
-    """Categorize a commit by its conventional commit prefix."""
+    """按约定式提交前缀对提交进行分类。"""
     subject_lower = subject.lower()
 
-    # Match conventional commit patterns
+    # 匹配约定式提交模式
     patterns = {
         "breaking": [r"^breaking[\s:(]", r"^!:", r"BREAKING CHANGE"],
         "features": [r"^feat[\s:(]", r"^feature[\s:(]", r"^add[\s:(]"],
@@ -413,7 +413,7 @@ def categorize_commit(subject: str) -> str:
             if re.match(regex, subject_lower):
                 return category
 
-    # Heuristic fallbacks
+    # 启发式回退规则
     if any(w in subject_lower for w in ["add ", "new ", "implement", "support "]):
         return "features"
     if any(w in subject_lower for w in ["fix ", "fixed ", "resolve", "patch "]):
@@ -425,26 +425,26 @@ def categorize_commit(subject: str) -> str:
 
 
 def clean_subject(subject: str) -> str:
-    """Clean up a commit subject for display."""
-    # Remove conventional commit prefix
+    """清理提交标题以便显示。"""
+    # 移除约定式提交前缀
     cleaned = re.sub(r"^(feat|fix|docs|chore|refactor|test|perf|ci|build|improve|add|update|cleanup|hotfix|breaking|enhance|optimize|bugfix|bug|feature|tests|deps|bump)[\s:(!]+\s*", "", subject, flags=re.IGNORECASE)
-    # Remove trailing issue refs that are redundant with PR links
+    # 移除与 PR 链接重复的尾部 issue 引用
     cleaned = cleaned.strip()
-    # Capitalize first letter
+    # 首字母大写
     if cleaned:
         cleaned = cleaned[0].upper() + cleaned[1:]
     return cleaned
 
 
 def parse_coauthors(body: str) -> list:
-    """Extract Co-authored-by trailers from a commit message body.
+    """从提交消息正文中提取 Co-authored-by 尾注。
 
-    Returns a list of {'name': ..., 'email': ...} dicts.
-    Filters out AI assistants and bots (Claude, Copilot, Cursor, etc.).
+    返回 {'name': ..., 'email': ...} 字典列表。
+    过滤掉 AI 助手和机器人（Claude、Copilot、Cursor 等）。
     """
     if not body:
         return []
-    # AI/bot emails to ignore in co-author trailers
+    # 需要忽略的 AI/机器人 co-author 尾注中的邮箱
     _ignored_emails = {"noreply@anthropic.com", "noreply@github.com",
                        "cursoragent@cursor.com", "hermes@nousresearch.com"}
     _ignored_names = re.compile(r"^(Claude|Copilot|Cursor Agent|GitHub Actions?|dependabot|renovate)", re.IGNORECASE)
@@ -459,14 +459,14 @@ def parse_coauthors(body: str) -> list:
 
 
 def get_commits(since_tag=None):
-    """Get commits since a tag (or all commits if None)."""
+    """获取指定标签之后的提交记录（如果为 None 则获取所有提交）。"""
     if since_tag:
         range_spec = f"{since_tag}..HEAD"
     else:
         range_spec = "HEAD"
 
-    # Format: hash|author_name|author_email|subject\0body
-    # Using %x00 (null) as separator between subject and body
+    # 格式: hash|author_name|author_email|subject\0body
+    # 使用 %x00（空字节）作为 subject 和 body 之间的分隔符
     log = git(
         "log", range_spec,
         "--format=%H|%an|%ae|%s%x00%b%x00",
@@ -477,13 +477,13 @@ def get_commits(since_tag=None):
         return []
 
     commits = []
-    # Split on double-null to get each commit entry, since body ends with \0
-    # and format ends with \0, each record ends with \0\0 between entries
+    # 按双空字节分割以获取每个提交条目，因为 body 以 \0 结尾
+    # 且格式也以 \0 结尾，所以每条记录之间有 \0\0
     for entry in log.split("\0\0"):
         entry = entry.strip()
         if not entry:
             continue
-        # Split on first null to separate "hash|name|email|subject" from "body"
+        # 按首个空字节分割，将 "hash|name|email|subject" 与 "body" 分开
         if "\0" in entry:
             header, body = entry.split("\0", 1)
             body = body.strip()
@@ -511,7 +511,7 @@ def get_commits(since_tag=None):
 
 
 def get_pr_number(subject: str) -> str:
-    """Extract PR number from commit subject if present."""
+    """从提交标题中提取 PR 编号（如果存在）。"""
     match = re.search(r"#(\d+)", subject)
     if match:
         return match.group(1)
@@ -520,10 +520,10 @@ def get_pr_number(subject: str) -> str:
 
 def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/NousResearch/hermes-agent",
                        prev_tag=None, first_release=False):
-    """Generate markdown changelog from categorized commits."""
+    """从分类后的提交生成 Markdown 变更日志。"""
     lines = []
 
-    # Header
+    # 标题头部
     now = datetime.now()
     date_str = now.strftime("%B %d, %Y")
     lines.append(f"# Hermes Agent v{semver} ({tag_name})")
@@ -536,7 +536,7 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
         lines.append("> for Hermes Agent. See below for everything included in this initial release.")
         lines.append("")
 
-    # Group commits by category
+    # 按类别分组提交
     categories = defaultdict(list)
     all_authors = set()
     teknium_aliases = {"@teknium1"}
@@ -550,7 +550,7 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
             if coauthor not in teknium_aliases:
                 all_authors.add(coauthor)
 
-    # Category display order and emoji
+    # 类别显示顺序和图标
     category_order = [
         ("breaking", "⚠️ Breaking Changes"),
         ("features", "✨ Features"),
@@ -575,7 +575,7 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
             pr_num = get_pr_number(commit["subject"])
             author = commit["github_author"]
 
-            # Build the line
+            # 构建每行内容
             parts = [f"- {subject}"]
             if pr_num:
                 parts.append(f"([#{pr_num}]({repo_url}/pull/{pr_num}))")
@@ -589,9 +589,9 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
 
         lines.append("")
 
-    # Contributors section
+    # 贡献者部分
     if all_authors:
-        # Sort contributors by commit count
+        # 按提交数量排序贡献者
         author_counts = defaultdict(int)
         for commit in commits:
             author = commit["github_author"]
@@ -612,7 +612,7 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
             lines.append(f"- {author} ({count} {commit_word})")
         lines.append("")
 
-    # Full changelog link
+    # 完整变更日志链接
     if prev_tag:
         lines.append(f"**Full Changelog**: [{prev_tag}...{tag_name}]({repo_url}/compare/{prev_tag}...{tag_name})")
     else:
@@ -636,7 +636,7 @@ def main():
                         help="Write changelog to file instead of stdout")
     args = parser.parse_args()
 
-    # Determine CalVer date
+    # 确定 CalVer 日期
     if args.date:
         calver_date = args.date
     else:
@@ -648,21 +648,21 @@ def main():
     if tag_name != base_tag:
         print(f"Note: Tag {base_tag} already exists, using {tag_name}")
 
-    # Determine semver
+    # 确定语义版本号
     current_version = get_current_version()
     if args.bump:
         new_version = bump_version(current_version, args.bump)
     else:
         new_version = current_version
 
-    # Get previous tag
+    # 获取上一个标签
     prev_tag = get_last_tag()
     if not prev_tag and not args.first_release:
         print("No previous tags found. Use --first-release for the initial release.")
         print(f"Would create tag: {tag_name}")
         print(f"Would set version: {new_version}")
 
-    # Get commits
+    # 获取提交记录
     commits = get_commits(since_tag=prev_tag)
     if not commits:
         print("No new commits since last tag.")
@@ -681,7 +681,7 @@ def main():
     print(f"{'='*60}")
     print()
 
-    # Generate changelog
+    # 生成变更日志
     changelog = generate_changelog(
         commits, tag_name, new_version,
         prev_tag=prev_tag,
@@ -699,12 +699,12 @@ def main():
         print("  Publishing release...")
         print(f"{'='*60}")
 
-        # Update version files
+        # 更新版本号文件
         if args.bump:
             update_version_files(new_version, calver_date)
             print(f"  ✓ Updated version files to v{new_version} ({calver_date})")
 
-            # Commit version bump
+            # 提交版本号升级
             add_result = git_result("add", str(VERSION_FILE), str(PYPROJECT_FILE))
             if add_result.returncode != 0:
                 print(f"  ✗ Failed to stage version files: {add_result.stderr.strip()}")
@@ -718,7 +718,7 @@ def main():
                 return
             print(f"  ✓ Committed version bump")
 
-        # Create annotated tag
+        # 创建带注释的标签
         tag_result = git_result(
             "tag", "-a", tag_name, "-m",
             f"Hermes Agent v{new_version} ({calver_date})\n\nWeekly release"
@@ -728,7 +728,7 @@ def main():
             return
         print(f"  ✓ Created tag {tag_name}")
 
-        # Push
+        # 推送到远程仓库
         push_result = git_result("push", "origin", "HEAD", "--tags")
         if push_result.returncode == 0:
             print(f"  ✓ Pushed to origin")
@@ -737,15 +737,15 @@ def main():
             print("    Continue manually after fixing access:")
             print("    git push origin HEAD --tags")
 
-        # Build semver-named Python artifacts so downstream packagers
-        # (e.g. Homebrew) can target them without relying on CalVer tag names.
+        # 构建带语义版本号命名的 Python 制品，以便下游打包工具
+        # （如 Homebrew）可以通过它们来定位，而不依赖 CalVer 标签名。
         artifacts = build_release_artifacts(new_version)
         if artifacts:
             print("  ✓ Built release artifacts:")
             for artifact in artifacts:
                 print(f"    - {artifact.relative_to(REPO_ROOT)}")
 
-        # Create GitHub release
+        # 创建 GitHub 发布
         changelog_file = REPO_ROOT / ".release_notes.md"
         changelog_file.write_text(changelog)
 

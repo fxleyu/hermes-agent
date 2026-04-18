@@ -1,9 +1,9 @@
 """
-Dump command for hermes CLI.
+hermes CLI 的 dump 命令。
 
-Outputs a compact, plain-text summary of the user's Hermes setup
-that can be copy-pasted into Discord/GitHub/Telegram for support context.
-No ANSI colors, no checkmarks — just data.
+输出用户 Hermes 配置的紧凑纯文本摘要，
+可直接复制粘贴到 Discord/GitHub/Telegram 用于技术支持。
+不含 ANSI 颜色和特殊符号 -- 只有数据。
 """
 
 import json
@@ -18,7 +18,7 @@ from hermes_constants import display_hermes_home
 
 
 def _get_git_commit(project_root: Path) -> str:
-    """Return short git commit hash, or '(unknown)'."""
+    """返回简短的 git 提交哈希值，失败则返回 '(unknown)'。"""
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--short=8", "HEAD"],
@@ -33,7 +33,7 @@ def _get_git_commit(project_root: Path) -> str:
 
 
 def _redact(value: str) -> str:
-    """Redact all but first 4 and last 4 chars."""
+    """对敏感值脱敏处理，只保留前 4 位和后 4 位字符。"""
     if not value:
         return ""
     if len(value) < 12:
@@ -42,7 +42,7 @@ def _redact(value: str) -> str:
 
 
 def _gateway_status() -> str:
-    """Return a short gateway status string."""
+    """返回网关状态的简短描述字符串。"""
     if sys.platform.startswith("linux"):
         from hermes_constants import is_container
         if is_container():
@@ -81,7 +81,7 @@ def _gateway_status() -> str:
 
 
 def _count_skills(hermes_home: Path) -> int:
-    """Count installed skills."""
+    """统计已安装的技能数量。"""
     skills_dir = hermes_home / "skills"
     if not skills_dir.is_dir():
         return 0
@@ -92,14 +92,14 @@ def _count_skills(hermes_home: Path) -> int:
 
 
 def _count_mcp_servers(config: dict) -> int:
-    """Count configured MCP servers."""
+    """统计已配置的 MCP 服务器数量。"""
     mcp = config.get("mcp", {})
     servers = mcp.get("servers", {})
     return len(servers)
 
 
 def _cron_summary(hermes_home: Path) -> str:
-    """Return cron jobs summary."""
+    """返回定时任务汇总信息。"""
     jobs_file = hermes_home / "cron" / "jobs.json"
     if not jobs_file.exists():
         return "0"
@@ -114,7 +114,7 @@ def _cron_summary(hermes_home: Path) -> str:
 
 
 def _configured_platforms() -> list[str]:
-    """Return list of configured messaging platform names."""
+    """返回已配置的消息平台名称列表。"""
     checks = {
         "telegram": "TELEGRAM_BOT_TOKEN",
         "discord": "DISCORD_BOT_TOKEN",
@@ -137,14 +137,14 @@ def _configured_platforms() -> list[str]:
 
 
 def _memory_provider(config: dict) -> str:
-    """Return the active memory provider name."""
+    """返回当前激活的记忆提供者名称。"""
     mem = config.get("memory", {})
     provider = mem.get("provider", "")
     return provider if provider else "built-in"
 
 
 def _get_model_and_provider(config: dict) -> tuple[str, str]:
-    """Extract model and provider from config."""
+    """从配置中提取模型名称和提供者信息。"""
     model_cfg = config.get("model", "")
     if isinstance(model_cfg, dict):
         model = model_cfg.get("default") or model_cfg.get("model") or model_cfg.get("name") or "(not set)"
@@ -159,15 +159,15 @@ def _get_model_and_provider(config: dict) -> tuple[str, str]:
 
 
 def _config_overrides(config: dict) -> dict[str, str]:
-    """Find non-default config values worth reporting.
-    
-    Returns a flat dict of dotpath -> value for interesting overrides.
+    """查找值得上报的非默认配置项。
+
+    返回一个扁平字典，键为点分路径（dotpath），值为对应的配置值。
     """
     from hermes_cli.config import DEFAULT_CONFIG
 
     overrides = {}
 
-    # Sections with interesting user-facing overrides
+    # 包含有意义的用户自定义覆盖项的配置段
     interesting_paths = [
         ("agent", "max_turns"),
         ("agent", "gateway_timeout"),
@@ -196,13 +196,13 @@ def _config_overrides(config: dict) -> dict[str, str]:
         if user_val is not None and user_val != default_val:
             overrides[f"{section}.{key}"] = str(user_val)
 
-    # Toolsets (if different from default)
+    # 工具集（如果与默认值不同）
     default_toolsets = DEFAULT_CONFIG.get("toolsets", [])
     user_toolsets = config.get("toolsets", [])
     if user_toolsets != default_toolsets:
         overrides["toolsets"] = str(user_toolsets)
 
-    # Fallback providers
+    # 备用提供者列表
     fallbacks = config.get("fallback_providers", [])
     if fallbacks:
         overrides["fallback_providers"] = str(fallbacks)
@@ -211,10 +211,10 @@ def _config_overrides(config: dict) -> dict[str, str]:
 
 
 def run_dump(args):
-    """Output a compact, copy-pasteable setup summary."""
+    """输出一份紧凑的、可直接复制粘贴的配置摘要。"""
     show_keys = getattr(args, "show_keys", False)
 
-    # Load env from .env file so key checks work
+    # 从 .env 文件加载环境变量以便后续检查 API 密钥
     from dotenv import load_dotenv
     env_path = get_env_path()
     if env_path.exists():
@@ -222,7 +222,7 @@ def run_dump(args):
             load_dotenv(env_path, encoding="utf-8")
         except UnicodeDecodeError:
             load_dotenv(env_path, encoding="latin-1")
-    # Also try project .env as dev fallback
+    # 同时尝试加载项目根目录的 .env 作为开发环境的备用
     load_dotenv(get_project_root() / ".env", override=False, encoding="utf-8")
 
     project_root = get_project_root()
@@ -243,25 +243,25 @@ def run_dump(args):
 
     model, provider = _get_model_and_provider(config)
 
-    # Profile
+    # 当前使用的配置文件（Profile）
     try:
         from hermes_cli.profiles import get_active_profile_name
         profile = get_active_profile_name() or "(default)"
     except Exception:
         profile = "(default)"
 
-    # Terminal backend
+    # 终端后端
     terminal_cfg = config.get("terminal", {})
     backend = terminal_cfg.get("backend", "local")
 
-    # OpenAI SDK version
+    # OpenAI SDK 版本
     try:
         import openai
         openai_ver = openai.__version__
     except ImportError:
         openai_ver = "not installed"
 
-    # OS info
+    # 操作系统信息
     os_info = f"{platform.system()} {platform.release()} {platform.machine()}"
 
     lines = []
@@ -280,7 +280,7 @@ def run_dump(args):
     lines.append(f"provider:         {provider}")
     lines.append(f"terminal:         {backend}")
 
-    # API keys
+    # API 密钥状态
     lines.append("")
     lines.append("api_keys:")
     api_keys = [
@@ -316,7 +316,7 @@ def run_dump(args):
             display = "set" if val else "not set"
         lines.append(f"  {label:<20} {display}")
 
-    # Features summary
+    # 功能汇总
     lines.append("")
     lines.append("features:")
 
@@ -331,7 +331,7 @@ def run_dump(args):
     lines.append(f"  cron_jobs:          {_cron_summary(hermes_home)}")
     lines.append(f"  skills:             {_count_skills(hermes_home)}")
 
-    # Config overrides (non-default values)
+    # 非默认配置覆盖项
     overrides = _config_overrides(config)
     if overrides:
         lines.append("")

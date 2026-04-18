@@ -1,13 +1,13 @@
 """
-Skills configuration for Hermes Agent.
-`hermes skills` enters this module.
+Hermes Agent 的技能配置模块。
+`hermes skills` 命令进入此模块。
 
-Toggle individual skills or categories on/off, globally or per-platform.
-Config stored in ~/.hermes/config.yaml under:
+切换单个技能或类别的启用/禁用状态，可全局或按平台设置。
+配置存储在 ~/.hermes/config.yaml 中：
 
   skills:
-    disabled: [skill-a, skill-b]          # global disabled list
-    platform_disabled:                    # per-platform overrides
+    disabled: [skill-a, skill-b]          # 全局禁用列表
+    platform_disabled:                    # 按平台覆盖
       telegram: [skill-c]
       cli: []
 """
@@ -17,19 +17,20 @@ from hermes_cli.config import load_config, save_config
 from hermes_cli.colors import Colors, color
 from hermes_cli.platforms import PLATFORMS as _PLATFORMS
 
-# Backward-compatible view: {key: label_string} so existing code that
-# iterates ``PLATFORMS.items()`` or calls ``PLATFORMS.get(key)`` keeps
-# working without changes to every call site.
+# 向后兼容的视图：{key: label_string}，使得遍历
+# ``PLATFORMS.items()`` 或调用 ``PLATFORMS.get(key)`` 的
+# 现有代码无需修改即可继续工作。
 PLATFORMS = {k: info.label for k, info in _PLATFORMS.items() if k != "api_server"}
 
-# ─── Config Helpers ───────────────────────────────────────────────────────────
+# ─── 配置辅助函数 ───────────────────────────────────────────────────────────
 
 def get_disabled_skills(config: dict, platform: Optional[str] = None) -> Set[str]:
-    """Return disabled skill names. Platform-specific list falls back to global."""
+    """返回已禁用的技能名称集合。按平台查找时回退到全局列表。"""
     skills_cfg = config.get("skills", {})
     global_disabled = set(skills_cfg.get("disabled", []))
     if platform is None:
         return global_disabled
+    # 尝试获取平台特定的禁用列表，不存在则回退到全局
     platform_disabled = skills_cfg.get("platform_disabled", {}).get(platform)
     if platform_disabled is None:
         return global_disabled
@@ -37,20 +38,22 @@ def get_disabled_skills(config: dict, platform: Optional[str] = None) -> Set[str
 
 
 def save_disabled_skills(config: dict, disabled: Set[str], platform: Optional[str] = None):
-    """Persist disabled skill names to config."""
+    """将已禁用的技能名称持久化到配置中。"""
     config.setdefault("skills", {})
     if platform is None:
+        # 保存全局禁用列表
         config["skills"]["disabled"] = sorted(disabled)
     else:
+        # 保存平台特定的禁用列表
         config["skills"].setdefault("platform_disabled", {})
         config["skills"]["platform_disabled"][platform] = sorted(disabled)
     save_config(config)
 
 
-# ─── Skill Discovery ─────────────────────────────────────────────────────────
+# ─── 技能发现 ─────────────────────────────────────────────────────────
 
 def _list_all_skills() -> List[dict]:
-    """Return all installed skills (ignoring disabled state)."""
+    """返回所有已安装的技能（忽略禁用状态）。"""
     try:
         from tools.skills_tool import _find_all_skills
         return _find_all_skills(skip_disabled=True)
@@ -59,14 +62,14 @@ def _list_all_skills() -> List[dict]:
 
 
 def _get_categories(skills: List[dict]) -> List[str]:
-    """Return sorted unique category names (None -> 'uncategorized')."""
+    """返回排序后的唯一类别名称（None 映射为 'uncategorized'）。"""
     return sorted({s["category"] or "uncategorized" for s in skills})
 
 
-# ─── Platform Selection ──────────────────────────────────────────────────────
+# ─── 平台选择 ──────────────────────────────────────────────────────
 
 def _select_platform() -> Optional[str]:
-    """Ask user which platform to configure, or global."""
+    """询问用户要配置哪个平台，或选择全局配置。"""
     options = [("global", "All platforms (global default)")] + list(PLATFORMS.items())
     print()
     print(color("  Configure skills for:", Colors.BOLD))
@@ -78,7 +81,7 @@ def _select_platform() -> Optional[str]:
     except (KeyboardInterrupt, EOFError):
         return None
     if not raw:
-        return None  # global
+        return None  # 默认选择全局
     try:
         idx = int(raw) - 1
         if 0 <= idx < len(options):
@@ -89,15 +92,15 @@ def _select_platform() -> Optional[str]:
     return None
 
 
-# ─── Category Toggle ─────────────────────────────────────────────────────────
+# ─── 按类别切换 ─────────────────────────────────────────────────────────
 
 def _toggle_by_category(skills: List[dict], disabled: Set[str]) -> Set[str]:
-    """Toggle all skills in a category at once."""
+    """按类别一次性切换该类别下所有技能的启用/禁用状态。"""
     from hermes_cli.curses_ui import curses_checklist
 
     categories = _get_categories(skills)
     cat_labels = []
-    # A category is "enabled" (checked) when NOT all its skills are disabled
+    # 当某个类别中并非所有技能都被禁用时，该类别视为"已启用"（选中）
     pre_selected = set()
     for i, cat in enumerate(categories):
         cat_skills = [s["name"] for s in skills if (s["category"] or "uncategorized") == cat]
@@ -110,20 +113,21 @@ def _toggle_by_category(skills: List[dict], disabled: Set[str]) -> Set[str]:
         cat_labels, pre_selected, cancel_returns=pre_selected,
     )
 
+    # 根据用户的选择更新禁用集合
     new_disabled = set(disabled)
     for i, cat in enumerate(categories):
         cat_skills = {s["name"] for s in skills if (s["category"] or "uncategorized") == cat}
         if i in chosen:
-            new_disabled -= cat_skills  # category enabled → remove from disabled
+            new_disabled -= cat_skills  # 类别被启用 → 从禁用列表中移除
         else:
-            new_disabled |= cat_skills  # category disabled → add to disabled
+            new_disabled |= cat_skills  # 类别被禁用 → 添加到禁用列表
     return new_disabled
 
 
-# ─── Entry Point ──────────────────────────────────────────────────────────────
+# ─── 入口点 ──────────────────────────────────────────────────────────
 
 def skills_command(args=None):
-    """Entry point for `hermes skills`."""
+    """`hermes skills` 命令的入口点。"""
     from hermes_cli.curses_ui import curses_checklist
 
     config = load_config()
@@ -133,11 +137,11 @@ def skills_command(args=None):
         print(color("  No skills installed.", Colors.DIM))
         return
 
-    # Step 1: Select platform
+    # 第 1 步：选择平台
     platform = _select_platform()
     platform_label = PLATFORMS.get(platform, "All platforms") if platform else "All platforms"
 
-    # Step 2: Select mode — individual or by category
+    # 第 2 步：选择模式 —— 按单个技能或按类别
     print()
     print(color(f"  Configure for: {platform_label}", Colors.DIM))
     print()
@@ -154,18 +158,18 @@ def skills_command(args=None):
     if mode == "2":
         new_disabled = _toggle_by_category(skills, disabled)
     else:
-        # Build labels and map indices → skill names
+        # 构建标签列表，并将索引映射到技能名称
         labels = [
             f"{s['name']}  ({s['category'] or 'uncategorized'})  —  {s['description'][:55]}"
             for s in skills
         ]
-        # "selected" = enabled (not disabled) — matches the [✓] convention
+        # "已选中" = 已启用（不在禁用列表中）—— 与 [✓] 约定一致
         pre_selected = {i for i, s in enumerate(skills) if s["name"] not in disabled}
         chosen = curses_checklist(
             f"Skills for {platform_label}",
             labels, pre_selected, cancel_returns=pre_selected,
         )
-        # Anything NOT chosen is disabled
+        # 未被选中的技能即为禁用的技能
         new_disabled = {skills[i]["name"] for i in range(len(skills)) if i not in chosen}
 
     if new_disabled == disabled:

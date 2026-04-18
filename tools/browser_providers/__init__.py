@@ -1,6 +1,6 @@
-"""Cloud browser provider abstraction.
+"""云端浏览器提供者抽象层。
 
-Import the ABC so callers can do::
+导入抽象基类，方便调用方使用::
 
     from tools.browser_providers import CloudBrowserProvider
 """

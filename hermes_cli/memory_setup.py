@@ -1,8 +1,8 @@
-"""hermes memory setup|status — configure memory provider plugins.
+"""hermes memory setup|status -- 配置记忆提供者插件。
 
-Auto-detects installed memory providers via the plugin system.
-Interactive curses-based UI for provider selection, then walks through
-the provider's config schema. Writes config to config.yaml + .env.
+自动检测通过插件系统安装的记忆提供者。
+使用基于 curses 的交互式 UI 进行提供者选择，然后引导完成
+提供者的配置参数设置。将配置写入 config.yaml 和 .env 文件。
 """
 
 from __future__ import annotations
@@ -16,17 +16,17 @@ from hermes_constants import get_hermes_home
 
 
 # ---------------------------------------------------------------------------
-# Curses-based interactive picker (same pattern as hermes tools)
+# 基于 curses 的交互式选择器（与 hermes tools 相同的模式）
 # ---------------------------------------------------------------------------
 
 def _curses_select(title: str, items: list[tuple[str, str]], default: int = 0) -> int:
-    """Interactive single-select with arrow keys.
+    """使用方向键进行交互式单选。
 
-    items: list of (label, description) tuples.
-    Returns selected index, or default on escape/quit.
+    items: (label, description) 元组列表。
+    返回选中的索引，按 Esc/退出时返回默认值。
     """
     from hermes_cli.curses_ui import curses_radiolist
-    # Format (label, desc) tuples into display strings
+    # 将 (label, desc) 元组格式化为显示字符串
     display_items = [
         f"{label}  {desc}" if desc else label
         for label, desc in items
@@ -35,7 +35,7 @@ def _curses_select(title: str, items: list[tuple[str, str]], default: int = 0) -
 
 
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:
-    """Prompt for a value with optional default and secret masking."""
+    """提示用户输入一个值，支持可选的默认值和密码遮掩。"""
     suffix = f" [{default}]" if default else ""
     if secret:
         sys.stdout.write(f"  {label}{suffix}: ")
@@ -52,11 +52,11 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 
 
 # ---------------------------------------------------------------------------
-# Provider discovery
+# 提供者发现
 # ---------------------------------------------------------------------------
 
 def _install_dependencies(provider_name: str) -> None:
-    """Install pip dependencies declared in plugin.yaml."""
+    """安装 plugin.yaml 中声明的 pip 依赖项。"""
     import subprocess
     from plugins.memory import find_provider_dir
 
@@ -78,7 +78,7 @@ def _install_dependencies(provider_name: str) -> None:
     if not pip_deps:
         return
 
-    # pip name → import name mapping for packages where they differ
+    # pip 包名到 import 名称的映射（用于包名与模块名不一致的情况）
     _IMPORT_NAMES = {
         "honcho-ai": "honcho",
         "mem0ai": "mem0",
@@ -86,7 +86,7 @@ def _install_dependencies(provider_name: str) -> None:
         "hindsight-all": "hindsight",
     }
 
-    # Check which packages are missing
+    # 检查哪些包尚未安装
     missing = []
     for dep in pip_deps:
         import_name = _IMPORT_NAMES.get(dep, dep.replace("-", "_").split("[")[0])
@@ -125,7 +125,7 @@ def _install_dependencies(provider_name: str) -> None:
         print(f"  ⚠ Install failed: {e}")
         print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
 
-    # Also show external dependencies (non-pip) if any
+    # 同时显示外部依赖（非 pip 依赖），如果有的话
     ext_deps = meta.get("external_dependencies", [])
     for dep in ext_deps:
         dep_name = dep.get("name", "")
@@ -143,9 +143,9 @@ def _install_dependencies(provider_name: str) -> None:
 
 
 def _get_available_providers() -> list:
-    """Discover memory providers from plugins/memory/.
+    """从 plugins/memory/ 目录发现可用的记忆提供者。
 
-    Returns list of (name, description, provider_instance) tuples.
+    返回 (name, description, provider_instance) 元组列表。
     """
     try:
         from plugins.memory import discover_memory_providers, load_memory_provider
@@ -179,11 +179,11 @@ def _get_available_providers() -> list:
 
 
 # ---------------------------------------------------------------------------
-# Setup wizard
+# 配置向导
 # ---------------------------------------------------------------------------
 
 def cmd_setup_provider(provider_name: str) -> None:
-    """Run memory setup for a specific provider, skipping the picker."""
+    """为指定的提供者运行记忆配置，跳过选择器。"""
     from hermes_cli.config import load_config, save_config
 
     providers = _get_available_providers()
@@ -211,7 +211,7 @@ def cmd_setup_provider(provider_name: str) -> None:
         provider.post_setup(hermes_home, config)
         return
 
-    # Fallback: generic schema-based setup (same as cmd_setup)
+    # 回退：通用的基于 schema 的配置（与 cmd_setup 相同）
     config["memory"]["provider"] = name
     save_config(config)
     print(f"\n  Memory provider: {name}")
@@ -219,7 +219,7 @@ def cmd_setup_provider(provider_name: str) -> None:
 
 
 def cmd_setup(args) -> None:
-    """Interactive memory provider setup wizard."""
+    """交互式记忆提供者配置向导。"""
     from hermes_cli.config import load_config, save_config
 
     providers = _get_available_providers()
@@ -229,7 +229,7 @@ def cmd_setup(args) -> None:
         print("  Install a plugin to ~/.hermes/plugins/ and try again.\n")
         return
 
-    # Build picker items
+    # 构建选择器项目列表
     items = []
     for name, desc, _ in providers:
         items.append((name, f"— {desc}"))
@@ -242,7 +242,7 @@ def cmd_setup(args) -> None:
     if not isinstance(config.get("memory"), dict):
         config["memory"] = {}
 
-    # Built-in only
+    # 仅使用内置记忆
     if selected >= len(providers) or selected < 0:
         config["memory"]["provider"] = ""
         save_config(config)
@@ -252,11 +252,11 @@ def cmd_setup(args) -> None:
 
     name, _, provider = providers[selected]
 
-    # Install pip dependencies if declared in plugin.yaml
+    # 如果 plugin.yaml 中声明了 pip 依赖则安装
     _install_dependencies(name)
 
-    # If the provider has a post_setup hook, delegate entirely to it.
-    # The hook handles its own config, connection test, and activation.
+    # 如果提供者有 post_setup 钩子，则完全委托给该钩子。
+    # 钩子自行处理配置、连接测试和激活。
     if hasattr(provider, "post_setup"):
         hermes_home = str(get_hermes_home())
         provider.post_setup(hermes_home, config)
@@ -278,7 +278,7 @@ def cmd_setup(args) -> None:
             key = field["key"]
             desc = field.get("description", key)
             default = field.get("default")
-            # Dynamic default: look up default from another field's value
+            # 动态默认值：从另一个字段的值中查找默认值
             default_from = field.get("default_from")
             if default_from and isinstance(default_from, dict):
                 ref_field = default_from.get("field", "")
@@ -291,14 +291,14 @@ def cmd_setup(args) -> None:
             env_var = field.get("env_var")
             url = field.get("url")
 
-            # Skip fields whose "when" condition doesn't match
+            # 跳过 "when" 条件不匹配的字段
             when = field.get("when")
             if when and isinstance(when, dict):
                 if not all(provider_config.get(k) == v for k, v in when.items()):
                     continue
 
             if choices and not is_secret:
-                # Use curses picker for choice fields
+                # 对选择类字段使用 curses 选择器
                 choice_items = [(c, "") for c in choices]
                 current = provider_config.get(key, default)
                 current_idx = 0
@@ -307,7 +307,7 @@ def cmd_setup(args) -> None:
                 sel = _curses_select(f"  {desc}", choice_items, default=current_idx)
                 provider_config[key] = choices[sel]
             elif is_secret:
-                # Prompt for secret
+                # 提示输入密钥
                 existing = os.environ.get(env_var, "") if env_var else ""
                 if existing:
                     masked = f"...{existing[-4:]}" if len(existing) > 4 else "set"
@@ -320,21 +320,21 @@ def cmd_setup(args) -> None:
                 if val and env_var:
                     env_writes[env_var] = val
             else:
-                # Regular text prompt
+                # 普通文本输入提示
                 current = provider_config.get(key)
                 effective_default = current or default
                 val = _prompt(desc, default=str(effective_default) if effective_default else None)
                 if val:
                     provider_config[key] = val
-                    # Also write to .env if this field has an env_var
+                    # 如果该字段有对应的环境变量，也写入 .env
                     if env_var and env_var not in env_writes:
                         env_writes[env_var] = val
 
-    # Write activation key to config.yaml
+    # 将激活键写入 config.yaml
     config["memory"]["provider"] = name
     save_config(config)
 
-    # Write non-secret config to provider's native location
+    # 将非密钥配置写入提供者的原生存储位置
     hermes_home = str(get_hermes_home())
     if provider_config and hasattr(provider, "save_config"):
         try:
@@ -342,7 +342,7 @@ def cmd_setup(args) -> None:
         except Exception as e:
             print(f"  Failed to write provider config: {e}")
 
-    # Write secrets to .env
+    # 将密钥写入 .env 文件
     if env_writes:
         _write_env_vars(env_path, env_writes)
 
@@ -356,7 +356,7 @@ def cmd_setup(args) -> None:
 
 
 def _write_env_vars(env_path: Path, env_writes: dict) -> None:
-    """Append or update env vars in .env file."""
+    """在 .env 文件中追加或更新环境变量。"""
     env_path.parent.mkdir(parents=True, exist_ok=True)
 
     existing_lines = []
@@ -381,11 +381,11 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Status
+# 状态查看
 # ---------------------------------------------------------------------------
 
 def cmd_status(args) -> None:
-    """Show current memory provider config."""
+    """显示当前记忆提供者的配置信息。"""
     from hermes_cli.config import load_config
 
     config = load_config()
@@ -414,7 +414,7 @@ def cmd_status(args) -> None:
                     else:
                         print(f"  Status:    not available ✗")
                         schema = p.get_config_schema() if hasattr(p, "get_config_schema") else []
-                        # Check all fields that have env_var (both secret and non-secret)
+                        # 检查所有有 env_var 的字段（包括密钥和非密钥）
                         required_fields = [f for f in schema if f.get("env_var")]
                         if required_fields:
                             print(f"  Missing:")
@@ -443,11 +443,11 @@ def cmd_status(args) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Router
+# 路由分发
 # ---------------------------------------------------------------------------
 
 def memory_command(args) -> None:
-    """Route memory subcommands."""
+    """路由分发 memory 子命令。"""
     sub = getattr(args, "memory_command", None)
     if sub == "setup":
         cmd_setup(args)

@@ -1,21 +1,21 @@
-"""Add a new slide to an unpacked PPTX directory.
+"""向解压后的 PPTX 目录添加新幻灯片。
 
-Usage: python add_slide.py <unpacked_dir> <source>
+用法: python add_slide.py <unpacked_dir> <source>
 
-The source can be:
-  - A slide file (e.g., slide2.xml) - duplicates the slide
-  - A layout file (e.g., slideLayout2.xml) - creates from layout
+source 可以是:
+  - 幻灯片文件 (例如 slide2.xml) - 复制该幻灯片
+  - 布局文件 (例如 slideLayout2.xml) - 根据布局创建
 
-Examples:
+示例:
     python add_slide.py unpacked/ slide2.xml
-    # Duplicates slide2, creates slide5.xml
+    # 复制 slide2，创建 slide5.xml
 
     python add_slide.py unpacked/ slideLayout2.xml
-    # Creates slide5.xml from slideLayout2.xml
+    # 根据 slideLayout2.xml 创建 slide5.xml
 
-To see available layouts: ls unpacked/ppt/slideLayouts/
+查看可用布局: ls unpacked/ppt/slideLayouts/
 
-Prints the <p:sldId> element to add to presentation.xml.
+打印需要添加到 presentation.xml 的 <p:sldId> 元素。
 """
 
 import re

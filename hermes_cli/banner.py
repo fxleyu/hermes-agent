@@ -1,6 +1,6 @@
-"""Welcome banner, ASCII art, skills summary, and update check for the CLI.
+"""CLI 的欢迎横幅、ASCII 艺术字、技能摘要和更新检查。
 
-Pure display functions with no HermesCLI state dependency.
+纯展示函数，不依赖 HermesCLI 的状态。
 """
 
 import json
@@ -24,26 +24,26 @@ logger = logging.getLogger(__name__)
 
 
 # =========================================================================
-# ANSI building blocks for conversation display
+# 用于对话显示的 ANSI 构建模块
 # =========================================================================
 
-_GOLD = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold
+_GOLD = "\033[1;38;2;255;215;0m"  # 真彩色 #FFD700 粗体
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
 _RST = "\033[0m"
 
 
 def cprint(text: str):
-    """Print ANSI-colored text through prompt_toolkit's renderer."""
+    """通过 prompt_toolkit 的渲染器打印 ANSI 彩色文本。"""
     _pt_print(_PT_ANSI(text))
 
 
 # =========================================================================
-# Skin-aware color helpers
+# 皮肤感知的颜色辅助函数
 # =========================================================================
 
 def _skin_color(key: str, fallback: str) -> str:
-    """Get a color from the active skin, or return fallback."""
+    """从当前活跃皮肤中获取颜色，若失败则返回回退值。"""
     try:
         from hermes_cli.skin_engine import get_active_skin
         return get_active_skin().get_color(key, fallback)
@@ -52,7 +52,7 @@ def _skin_color(key: str, fallback: str) -> str:
 
 
 def _skin_branding(key: str, fallback: str) -> str:
-    """Get a branding string from the active skin, or return fallback."""
+    """从当前活跃皮肤中获取品牌字符串，若失败则返回回退值。"""
     try:
         from hermes_cli.skin_engine import get_active_skin
         return get_active_skin().get_branding(key, fallback)
@@ -61,7 +61,7 @@ def _skin_branding(key: str, fallback: str) -> str:
 
 
 # =========================================================================
-# ASCII Art & Branding
+# ASCII 艺术字与品牌标识
 # =========================================================================
 
 from hermes_cli import __version__ as VERSION, __release_date__ as RELEASE_DATE
@@ -92,19 +92,19 @@ HERMES_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀�
 
 
 # =========================================================================
-# Skills scanning
+# 技能扫描
 # =========================================================================
 
 def get_available_skills() -> Dict[str, List[str]]:
-    """Return skills grouped by category, filtered by platform and disabled state.
+    """返回按类别分组的技能，已按平台和禁用状态过滤。
 
-    Delegates to ``_find_all_skills()`` from ``tools/skills_tool`` which already
-    handles platform gating (``platforms:`` frontmatter) and respects the
-    user's ``skills.disabled`` config list.
+    委托给 ``tools/skills_tool`` 中的 ``_find_all_skills()``，
+    该函数已处理平台限制（``platforms:`` 前置元数据）并遵循
+    用户的 ``skills.disabled`` 配置列表。
     """
     try:
         from tools.skills_tool import _find_all_skills
-        all_skills = _find_all_skills()  # already filtered
+        all_skills = _find_all_skills()  # 已过滤
     except Exception:
         return {}
 
@@ -116,31 +116,31 @@ def get_available_skills() -> Dict[str, List[str]]:
 
 
 # =========================================================================
-# Update check
+# 更新检查
 # =========================================================================
 
-# Cache update check results for 6 hours to avoid repeated git fetches
+# 缓存更新检查结果 6 小时，避免重复执行 git fetch
 _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
 
 
 def check_for_updates() -> Optional[int]:
-    """Check how many commits behind origin/main the local repo is.
+    """检查本地仓库落后 origin/main 多少个提交。
 
-    Does a ``git fetch`` at most once every 6 hours (cached to
-    ``~/.hermes/.update_check``).  Returns the number of commits behind,
-    or ``None`` if the check fails or isn't applicable.
+    最多每 6 小时执行一次 ``git fetch``（缓存到
+    ``~/.hermes/.update_check``）。返回落后的提交数，
+    若检查失败或不适用则返回 ``None``。
     """
     hermes_home = get_hermes_home()
     repo_dir = hermes_home / "hermes-agent"
     cache_file = hermes_home / ".update_check"
 
-    # Must be a git repo — fall back to project root for dev installs
+    # 必须是 git 仓库 — 开发安装时回退到项目根目录
     if not (repo_dir / ".git").exists():
         repo_dir = Path(__file__).parent.parent.resolve()
     if not (repo_dir / ".git").exists():
         return None
 
-    # Read cache
+    # 读取缓存
     now = time.time()
     try:
         if cache_file.exists():
@@ -150,7 +150,7 @@ def check_for_updates() -> Optional[int]:
     except Exception:
         pass
 
-    # Fetch latest refs (fast — only downloads ref metadata, no files)
+    # 拉取最新引用（快速 — 仅下载引用元数据，不下载文件）
     try:
         subprocess.run(
             ["git", "fetch", "origin", "--quiet"],
@@ -158,9 +158,9 @@ def check_for_updates() -> Optional[int]:
             cwd=str(repo_dir),
         )
     except Exception:
-        pass  # Offline or timeout — use stale refs, that's fine
+        pass  # 离线或超时 — 使用旧引用即可
 
-    # Count commits behind
+    # 计算落后的提交数
     try:
         result = subprocess.run(
             ["git", "rev-list", "--count", "HEAD..origin/main"],
@@ -174,7 +174,7 @@ def check_for_updates() -> Optional[int]:
     except Exception:
         behind = None
 
-    # Write cache
+    # 写入缓存
     try:
         cache_file.write_text(json.dumps({"ts": now, "behind": behind}))
     except Exception:
@@ -184,7 +184,7 @@ def check_for_updates() -> Optional[int]:
 
 
 def _resolve_repo_dir() -> Optional[Path]:
-    """Return the active Hermes git checkout, or None if this isn't a git install."""
+    """返回当前活跃的 Hermes git 检出目录，若不是 git 安装则返回 None。"""
     hermes_home = get_hermes_home()
     repo_dir = hermes_home / "hermes-agent"
     if not (repo_dir / ".git").exists():
@@ -193,7 +193,7 @@ def _resolve_repo_dir() -> Optional[Path]:
 
 
 def _git_short_hash(repo_dir: Path, rev: str) -> Optional[str]:
-    """Resolve a git revision to an 8-character short hash."""
+    """将 git 版本号解析为 8 字符的短哈希值。"""
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--short=8", rev],
@@ -211,7 +211,7 @@ def _git_short_hash(repo_dir: Path, rev: str) -> Optional[str]:
 
 
 def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
-    """Return upstream/local git hashes for the startup banner."""
+    """返回用于启动横幅的上游/本地 git 哈希值。"""
     repo_dir = repo_dir or _resolve_repo_dir()
     if repo_dir is None:
         return None
@@ -239,7 +239,7 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
 
 
 def format_banner_version_label() -> str:
-    """Return the version label shown in the startup banner title."""
+    """返回启动横幅标题中显示的版本标签。"""
     base = f"Hermes Agent v{VERSION} ({RELEASE_DATE})"
     state = get_git_banner_state()
     if not state:
@@ -257,7 +257,7 @@ def format_banner_version_label() -> str:
 
 
 # =========================================================================
-# Non-blocking update check
+# 非阻塞更新检查
 # =========================================================================
 
 _update_result: Optional[int] = None
@@ -265,7 +265,7 @@ _update_check_done = threading.Event()
 
 
 def prefetch_update_check():
-    """Kick off update check in a background daemon thread."""
+    """在后台守护线程中启动更新检查。"""
     def _run():
         global _update_result
         _update_result = check_for_updates()
@@ -275,17 +275,17 @@ def prefetch_update_check():
 
 
 def get_update_result(timeout: float = 0.5) -> Optional[int]:
-    """Get result of prefetched check. Returns None if not ready."""
+    """获取预取检查的结果。若尚未就绪则返回 None。"""
     _update_check_done.wait(timeout=timeout)
     return _update_result
 
 
 # =========================================================================
-# Welcome banner
+# 欢迎横幅
 # =========================================================================
 
 def _format_context_length(tokens: int) -> str:
-    """Format a token count for display (e.g. 128000 → '128K', 1048576 → '1M')."""
+    """格式化 token 数量用于显示（例如 128000 -> '128K'，1048576 -> '1M'）。"""
     if tokens >= 1_000_000:
         val = tokens / 1_000_000
         rounded = round(val)
@@ -302,7 +302,7 @@ def _format_context_length(tokens: int) -> str:
 
 
 def _display_toolset_name(toolset_name: str) -> str:
-    """Normalize internal/legacy toolset identifiers for banner display."""
+    """规范化内部/遗留工具集标识符用于横幅显示。"""
     if not toolset_name:
         return "unknown"
     return (
@@ -318,17 +318,17 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                          session_id: str = None,
                          get_toolset_for_tool=None,
                          context_length: int = None):
-    """Build and print a welcome banner with caduceus on left and info on right.
+    """构建并打印欢迎横幅，左侧为双蛇杖图案，右侧为信息面板。
 
-    Args:
-        console: Rich Console instance.
-        model: Current model name.
-        cwd: Current working directory.
-        tools: List of tool definitions.
-        enabled_toolsets: List of enabled toolset names.
-        session_id: Session identifier.
-        get_toolset_for_tool: Callable to map tool name -> toolset name.
-        context_length: Model's context window size in tokens.
+    参数:
+        console: Rich Console 实例。
+        model: 当前模型名称。
+        cwd: 当前工作目录。
+        tools: 工具定义列表。
+        enabled_toolsets: 已启用的工具集名称列表。
+        session_id: 会话标识符。
+        get_toolset_for_tool: 将工具名映射到工具集名的可调用对象。
+        context_length: 模型的上下文窗口大小（token 数）。
     """
     from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
     if get_toolset_for_tool is None:
@@ -339,9 +339,8 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
 
     _, unavailable_toolsets = check_tool_availability(quiet=True)
     disabled_tools = set()
-    # Tools whose toolset has a check_fn are lazy-initialized (e.g. honcho,
-    # homeassistant) — they show as unavailable at banner time because the
-    # check hasn't run yet, but they aren't misconfigured.
+    # 拥有 check_fn 的工具集是延迟初始化的（例如 honcho、homeassistant）
+    # —— 它们在横幅显示时显示为不可用，因为检查尚未运行，但并非配置错误。
     lazy_tools = set()
     for item in unavailable_toolsets:
         toolset_name = item.get("name", "")
@@ -356,13 +355,13 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     layout_table.add_column("left", justify="center")
     layout_table.add_column("right", justify="left")
 
-    # Resolve skin colors once for the entire banner
+    # 一次性解析皮肤颜色，供整个横幅使用
     accent = _skin_color("banner_accent", "#FFBF00")
     dim = _skin_color("banner_dim", "#B8860B")
     text = _skin_color("banner_text", "#FFF8DC")
     session_color = _skin_color("session_border", "#8B8682")
 
-    # Use skin's custom caduceus art if provided
+    # 如果皮肤提供了自定义双蛇杖图案则使用它
     try:
         from hermes_cli.skin_engine import get_active_skin
         _bskin = get_active_skin()
@@ -442,7 +441,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     if remaining_toolsets > 0:
         right_lines.append(f"[dim {dim}](and {remaining_toolsets} more toolsets...)[/]")
 
-    # MCP Servers section (only if configured)
+    # MCP 服务器区域（仅在已配置时显示）
     try:
         from tools.mcp_tool import get_mcp_status
         mcp_status = get_mcp_status()
@@ -489,18 +488,18 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     if mcp_connected:
         summary_parts.append(f"{mcp_connected} MCP servers")
     summary_parts.append("/help for commands")
-    # Show active profile name when not 'default'
+    # 当活跃配置文件不是 'default' 时显示名称
     try:
         from hermes_cli.profiles import get_active_profile_name
         _profile_name = get_active_profile_name()
         if _profile_name and _profile_name != "default":
             right_lines.append(f"[bold {accent}]Profile:[/] [{text}]{_profile_name}[/]")
     except Exception:
-        pass  # Never break the banner over a profiles.py bug
+        pass  # 绝不因 profiles.py 的 bug 而破坏横幅显示
 
     right_lines.append(f"[dim {dim}]{' · '.join(summary_parts)}[/]")
 
-    # Update check — use prefetched result if available
+    # 更新检查 — 使用预取结果（如果可用）
     try:
         behind = get_update_result(timeout=0.5)
         if behind and behind > 0:
@@ -511,7 +510,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                 f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to update[/]"
             )
     except Exception:
-        pass  # Never break the banner over an update check
+        pass  # 绝不因更新检查而破坏横幅显示
 
     right_content = "\n".join(right_lines)
     layout_table.add_row(left_content, right_content)

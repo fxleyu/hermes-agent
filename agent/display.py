@@ -1,7 +1,7 @@
-"""CLI presentation -- spinner, kawaii faces, tool preview formatting.
+"""CLI 展示层 —— 加载动画、可爱表情、工具预览格式化。
 
-Pure display functions and classes with no AIAgent dependency.
-Used by AIAgent._execute_tool_calls for CLI feedback.
+纯展示函数和类，不依赖 AIAgent。
+由 AIAgent._execute_tool_calls 用于 CLI 反馈。
 """
 
 import logging
@@ -15,7 +15,7 @@ from pathlib import Path
 
 from utils import safe_json_loads
 
-# ANSI escape codes for coloring tool failure indicators
+# 用于工具失败指示器着色的 ANSI 转义码
 _RED = "\033[31m"
 _RESET = "\033[0m"
 
@@ -23,19 +23,19 @@ logger = logging.getLogger(__name__)
 
 _ANSI_RESET = "\033[0m"
 
-# Diff colors — resolved lazily from the skin engine so they adapt
-# to light/dark themes.  Falls back to sensible defaults on import
-# failure.  We cache after first resolution for performance.
+# diff 颜色 —— 从皮肤引擎延迟解析，以适应
+# 浅色/深色主题。导入失败时回退到合理的默认值。
+# 首次解析后缓存以提升性能。
 _diff_colors_cached: dict[str, str] | None = None
 
 
 def _diff_ansi() -> dict[str, str]:
-    """Return ANSI escapes for diff display, resolved from the active skin."""
+    """返回用于 diff 显示的 ANSI 转义码，从当前皮肤解析。"""
     global _diff_colors_cached
     if _diff_colors_cached is not None:
         return _diff_colors_cached
 
-    # Defaults that work on dark terminals
+    # 深色终端的默认值
     dim = "\033[38;2;150;150;150m"
     file_c = "\033[38;2;180;160;255m"
     hunk = "\033[38;2;120;120;140m"
@@ -57,12 +57,12 @@ def _diff_ansi() -> dict[str, str]:
         dim = _hex_fg("banner_dim", (150, 150, 150))
         file_c = _hex_fg("session_label", (180, 160, 255))
         hunk = _hex_fg("session_border", (120, 120, 140))
-        # minus/plus use background colors — derive from ui_error/ui_ok
+        # 减号/加号使用背景色 —— 从 ui_error/ui_ok 派生
         err_h = skin.get_color("ui_error", "#ef5350")
         ok_h = skin.get_color("ui_ok", "#4caf50")
         if err_h and len(err_h) == 7:
             er, eg, eb = int(err_h[1:3], 16), int(err_h[3:5], 16), int(err_h[5:7], 16)
-            # Use a dark tinted version as background
+            # 使用暗色调版本作为背景
             minus = f"\033[38;2;255;255;255;48;2;{max(er//2,20)};{max(eg//4,10)};{max(eb//4,10)}m"
         if ok_h and len(ok_h) == 7:
             or_, og, ob = int(ok_h[1:3], 16), int(ok_h[3:5], 16), int(ok_h[5:7], 16)
@@ -77,7 +77,7 @@ def _diff_ansi() -> dict[str, str]:
     return _diff_colors_cached
 
 
-# Module-level helpers — each call resolves from the active skin lazily.
+# 模块级辅助函数 —— 每次调用时从当前皮肤延迟解析。
 def _diff_dim():   return _diff_ansi()["dim"]
 def _diff_file():  return _diff_ansi()["file"]
 def _diff_hunk():  return _diff_ansi()["hunk"]
@@ -89,34 +89,34 @@ _MAX_INLINE_DIFF_LINES = 80
 
 @dataclass
 class LocalEditSnapshot:
-    """Pre-tool filesystem snapshot used to render diffs locally after writes."""
+    """工具执行前的文件系统快照，用于在写入后渲染 diff。"""
     paths: list[Path] = field(default_factory=list)
     before: dict[str, str | None] = field(default_factory=dict)
 
 # =========================================================================
-# Configurable tool preview length (0 = no limit)
-# Set once at startup by CLI or gateway from display.tool_preview_length config.
+# 可配置的工具预览长度（0 = 无限制）
+# 由 CLI 或网关在启动时从 display.tool_preview_length 配置项设置一次。
 # =========================================================================
-_tool_preview_max_len: int = 0  # 0 = unlimited
+_tool_preview_max_len: int = 0  # 0 = 无限制
 
 
 def set_tool_preview_max_len(n: int) -> None:
-    """Set the global max length for tool call previews. 0 = no limit."""
+    """设置工具调用预览的全局最大长度。0 = 无限制。"""
     global _tool_preview_max_len
     _tool_preview_max_len = max(int(n), 0) if n else 0
 
 
 def get_tool_preview_max_len() -> int:
-    """Return the configured max preview length (0 = unlimited)."""
+    """返回配置的最大预览长度（0 = 无限制）。"""
     return _tool_preview_max_len
 
 
 # =========================================================================
-# Skin-aware helpers (lazy import to avoid circular deps)
+# 皮肤感知的辅助函数（延迟导入以避免循环依赖）
 # =========================================================================
 
 def _get_skin():
-    """Get the active skin config, or None if not available."""
+    """获取当前活跃的皮肤配置，如果不可用则返回 None。"""
     try:
         from hermes_cli.skin_engine import get_active_skin
         return get_active_skin()
@@ -125,7 +125,7 @@ def _get_skin():
 
 
 def get_skin_tool_prefix() -> str:
-    """Get tool output prefix character from active skin."""
+    """从当前皮肤获取工具输出前缀字符。"""
     skin = _get_skin()
     if skin:
         return skin.tool_prefix
@@ -133,20 +133,20 @@ def get_skin_tool_prefix() -> str:
 
 
 def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
-    """Get the display emoji for a tool.
+    """获取工具的显示 emoji。
 
-    Resolution order:
-    1. Active skin's ``tool_emojis`` overrides (if a skin is loaded)
-    2. Tool registry's per-tool ``emoji`` field
-    3. *default* fallback
+    解析顺序：
+    1. 当前皮肤的 ``tool_emojis`` 覆盖（如果已加载皮肤）
+    2. 工具注册表的 ``emoji`` 字段
+    3. *default* 兜底值
     """
-    # 1. Skin override
+    # 1. 皮肤覆盖
     skin = _get_skin()
     if skin and skin.tool_emojis:
         override = skin.tool_emojis.get(tool_name)
         if override:
             return override
-    # 2. Registry default
+    # 2. 注册表默认值
     try:
         from tools.registry import registry
         emoji = registry.get_emoji(tool_name, default="")
@@ -154,24 +154,24 @@ def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
             return emoji
     except Exception:
         pass
-    # 3. Hardcoded fallback
+    # 3. 硬编码兜底
     return default
 
 
 # =========================================================================
-# Tool preview (one-line summary of a tool call's primary argument)
+# 工具预览（工具调用主参数的单行摘要）
 # =========================================================================
 
 def _oneline(text: str) -> str:
-    """Collapse whitespace (including newlines) to single spaces."""
+    """将空白字符（包括换行符）折叠为单个空格。"""
     return " ".join(text.split())
 
 
 def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
-    """Build a short preview of a tool call's primary argument for display.
+    """构建工具调用主参数的短预览文本用于显示。
 
-    *max_len* controls truncation.  ``None`` (default) defers to the global
-    ``_tool_preview_max_len`` set via config; ``0`` means unlimited.
+    *max_len* 控制截断。``None``（默认）遵从通过配置设置的全局
+    ``_tool_preview_max_len``；``0`` 表示无限制。
     """
     if max_len is None:
         max_len = _tool_preview_max_len
@@ -275,11 +275,11 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
 
 
 # =========================================================================
-# Inline diff previews for write actions
+# 写入操作的内联 diff 预览
 # =========================================================================
 
 def _resolved_path(path: str) -> Path:
-    """Resolve a possibly-relative filesystem path against the current cwd."""
+    """将可能的相对文件路径按当前工作目录解析。"""
     candidate = Path(os.path.expanduser(path))
     if candidate.is_absolute():
         return candidate
@@ -287,7 +287,7 @@ def _resolved_path(path: str) -> Path:
 
 
 def _snapshot_text(path: Path) -> str | None:
-    """Return UTF-8 file content, or None for missing/unreadable files."""
+    """返回 UTF-8 文件内容，如果文件缺失/不可读则返回 None。"""
     try:
         return path.read_text(encoding="utf-8")
     except (FileNotFoundError, IsADirectoryError, UnicodeDecodeError, OSError):
@@ -295,7 +295,7 @@ def _snapshot_text(path: Path) -> str | None:
 
 
 def _display_diff_path(path: Path) -> str:
-    """Prefer cwd-relative paths in diffs when available."""
+    """在 diff 中尽可能使用相对于 cwd 的路径。"""
     try:
         return str(path.resolve().relative_to(Path.cwd().resolve()))
     except Exception:
@@ -303,7 +303,7 @@ def _display_diff_path(path: Path) -> str:
 
 
 def _resolve_skill_manage_paths(args: dict) -> list[Path]:
-    """Resolve skill_manage write targets to filesystem paths."""
+    """将 skill_manage 写入目标解析为文件系统路径。"""
     action = args.get("action")
     name = args.get("name")
     if not action or not name:
@@ -333,7 +333,7 @@ def _resolve_skill_manage_paths(args: dict) -> list[Path]:
 
 
 def _resolve_local_edit_paths(tool_name: str, function_args: dict | None) -> list[Path]:
-    """Resolve local filesystem targets for write-capable tools."""
+    """解析具有写入能力的工具的本地文件系统目标。"""
     if not isinstance(function_args, dict):
         return []
 
@@ -352,7 +352,7 @@ def _resolve_local_edit_paths(tool_name: str, function_args: dict | None) -> lis
 
 
 def capture_local_edit_snapshot(tool_name: str, function_args: dict | None) -> LocalEditSnapshot | None:
-    """Capture before-state for local write previews."""
+    """捕获本地写入预览的文件执行前状态。"""
     paths = _resolve_local_edit_paths(tool_name, function_args)
     if not paths:
         return None
@@ -364,7 +364,7 @@ def capture_local_edit_snapshot(tool_name: str, function_args: dict | None) -> L
 
 
 def _result_succeeded(result: str | None) -> bool:
-    """Conservatively detect whether a tool result represents success."""
+    """保守地检测工具结果是否表示成功。"""
     if not result:
         return False
     data = safe_json_loads(result)
@@ -380,7 +380,7 @@ def _result_succeeded(result: str | None) -> bool:
 
 
 def _diff_from_snapshot(snapshot: LocalEditSnapshot | None) -> str | None:
-    """Generate unified diff text from a stored before-state and current files."""
+    """从存储的执行前状态和当前文件生成 unified diff 文本。"""
     if not snapshot:
         return None
 
@@ -415,7 +415,7 @@ def extract_edit_diff(
     function_args: dict | None = None,
     snapshot: LocalEditSnapshot | None = None,
 ) -> str | None:
-    """Extract a unified diff from a file-edit tool result."""
+    """从文件编辑工具结果中提取 unified diff。"""
     if tool_name == "patch" and result:
         data = safe_json_loads(result)
         if isinstance(data, dict):
@@ -431,7 +431,7 @@ def extract_edit_diff(
 
 
 def _emit_inline_diff(diff_text: str, print_fn) -> bool:
-    """Emit rendered diff text through the CLI's prompt_toolkit-safe printer."""
+    """通过 CLI 的 prompt_toolkit 安全打印器输出渲染后的 diff 文本。"""
     if print_fn is None or not diff_text:
         return False
     try:
@@ -444,7 +444,7 @@ def _emit_inline_diff(diff_text: str, print_fn) -> bool:
 
 
 def _render_inline_unified_diff(diff: str) -> list[str]:
-    """Render unified diff lines in Hermes' inline transcript style."""
+    """以 Hermes 内联转录样式渲染 unified diff 行。"""
     rendered: list[str] = []
     from_file = None
     to_file = None
@@ -477,7 +477,7 @@ def _render_inline_unified_diff(diff: str) -> list[str]:
 
 
 def _split_unified_diff_sections(diff: str) -> list[str]:
-    """Split a unified diff into per-file sections."""
+    """将 unified diff 按文件拆分为多个部分。"""
     sections: list[list[str]] = []
     current: list[str] = []
 
@@ -500,7 +500,7 @@ def _summarize_rendered_diff_sections(
     max_files: int = _MAX_INLINE_DIFF_FILES,
     max_lines: int = _MAX_INLINE_DIFF_LINES,
 ) -> list[str]:
-    """Render diff sections while capping file count and total line count."""
+    """渲染 diff 段落，同时限制文件数量和总行数。"""
     sections = _split_unified_diff_sections(diff)
     rendered: list[str] = []
     omitted_files = 0
@@ -547,7 +547,7 @@ def render_edit_diff_with_delta(
     snapshot: LocalEditSnapshot | None = None,
     print_fn=None,
 ) -> bool:
-    """Render an edit diff inline without taking over the terminal UI."""
+    """内联渲染编辑 diff，不接管终端 UI。"""
     diff = extract_edit_diff(
         tool_name,
         result,
@@ -565,11 +565,11 @@ def render_edit_diff_with_delta(
 
 
 # =========================================================================
-# KawaiiSpinner
+# 可爱加载动画 (KawaiiSpinner)
 # =========================================================================
 
 class KawaiiSpinner:
-    """Animated spinner with kawaii faces for CLI feedback during tool execution."""
+    """带有可爱表情的动画加载器，用于工具执行期间的 CLI 反馈。"""
 
     SPINNERS = {
         'dots': ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
@@ -602,7 +602,7 @@ class KawaiiSpinner:
 
     @classmethod
     def get_waiting_faces(cls) -> list:
-        """Return waiting faces from the active skin, falling back to KAWAII_WAITING."""
+        """返回当前皮肤的等待表情，回退到 KAWAII_WAITING。"""
         try:
             skin = _get_skin()
             if skin:
@@ -615,7 +615,7 @@ class KawaiiSpinner:
 
     @classmethod
     def get_thinking_faces(cls) -> list:
-        """Return thinking faces from the active skin, falling back to KAWAII_THINKING."""
+        """返回当前皮肤的思考表情，回退到 KAWAII_THINKING。"""
         try:
             skin = _get_skin()
             if skin:
@@ -628,7 +628,7 @@ class KawaiiSpinner:
 
     @classmethod
     def get_thinking_verbs(cls) -> list:
-        """Return thinking verbs from the active skin, falling back to THINKING_VERBS."""
+        """返回当前皮肤的思考动词，回退到 THINKING_VERBS。"""
         try:
             skin = _get_skin()
             if skin:
@@ -647,19 +647,18 @@ class KawaiiSpinner:
         self.frame_idx = 0
         self.start_time = None
         self.last_line_len = 0
-        # Optional callable to route all output through (e.g. a no-op for silent
-        # background agents).  When set, bypasses self._out entirely so that
-        # agents with _print_fn overridden remain fully silent.
+        # 可选的输出回调函数（例如：静默后台代理使用空操作函数）。
+        # 设置后会完全绕过 self._out，使得覆盖了 _print_fn 的代理保持完全静默。
         self._print_fn = print_fn
-        # Capture stdout NOW, before any redirect_stdout(devnull) from
-        # child agents can replace sys.stdout with a black hole.
+        # 在此处捕获 stdout，在子代理的 redirect_stdout(devnull) 将 sys.stdout
+        # 替换为黑洞之前保存引用。
         self._out = sys.stdout
 
     def _write(self, text: str, end: str = '\n', flush: bool = False):
-        """Write to the stdout captured at spinner creation time.
+        """写入到 spinner 创建时捕获的 stdout。
 
-        If a print_fn was supplied at construction, all output is routed through
-        it instead — allowing callers to silence the spinner with a no-op lambda.
+        如果构造时提供了 print_fn，所有输出将通过它路由——
+        允许调用方通过传入空操作 lambda 来静默 spinner。
         """
         if self._print_fn is not None:
             try:
@@ -676,21 +675,21 @@ class KawaiiSpinner:
 
     @property
     def _is_tty(self) -> bool:
-        """Check if output is a real terminal, safe against closed streams."""
+        """检查输出是否为真实终端，安全处理已关闭的流。"""
         try:
             return hasattr(self._out, 'isatty') and self._out.isatty()
         except (ValueError, OSError):
             return False
 
     def _is_patch_stdout_proxy(self) -> bool:
-        """Return True when stdout is prompt_toolkit's StdoutProxy.
+        """当 stdout 是 prompt_toolkit 的 StdoutProxy 时返回 True。
 
-        patch_stdout wraps sys.stdout in a StdoutProxy that queues writes and
-        injects newlines around each flush().  The \\r overwrite never lands on
-        the correct line — each spinner frame ends up on its own line.
+        patch_stdout 将 sys.stdout 包装在 StdoutProxy 中，该代理会队列化写入
+        并在每次 flush() 前后注入换行符。\\r 覆写永远无法落在正确的行上——
+        每个 spinner 帧都会出现在单独的一行上。
 
-        The CLI already drives a TUI widget (_spinner_text) for spinner display,
-        so KawaiiSpinner's \\r-based animation is redundant under StdoutProxy.
+        CLI 已经通过 TUI 控件（_spinner_text）驱动 spinner 显示，
+        因此 KawaiiSpinner 基于 \\r 的动画在 StdoutProxy 下是多余的。
         """
         try:
             from prompt_toolkit.patch_stdout import StdoutProxy
@@ -699,26 +698,26 @@ class KawaiiSpinner:
             return False
 
     def _animate(self):
-        # When stdout is not a real terminal (e.g. Docker, systemd, pipe),
-        # skip the animation entirely — it creates massive log bloat.
-        # Just log the start once and let stop() log the completion.
+        # 当 stdout 不是真实终端时（例如 Docker、systemd、管道），
+        # 完全跳过动画——否则会产生大量日志膨胀。
+        # 只在开始时记录一次日志，让 stop() 记录完成日志。
         if not self._is_tty:
             self._write(f"  [tool] {self.message}", flush=True)
             while self.running:
                 time.sleep(0.5)
             return
 
-        # When running inside prompt_toolkit's patch_stdout context the CLI
-        # renders spinner state via a dedicated TUI widget (_spinner_text).
-        # Driving a \r-based animation here too causes visual overdraw: the
-        # StdoutProxy injects newlines around each flush, so every frame lands
-        # on a new line and overwrites the status bar.
+        # 当在 prompt_toolkit 的 patch_stdout 上下文中运行时，CLI
+        # 通过专用 TUI 控件（_spinner_text）渲染 spinner 状态。
+        # 在此处同时驱动基于 \r 的动画会导致视觉覆盖：
+        # StdoutProxy 在每次 flush 前后注入换行符，导致每一帧
+        # 都落在新行上并覆盖状态栏。
         if self._is_patch_stdout_proxy():
             while self.running:
                 time.sleep(0.1)
             return
 
-        # Cache skin wings at start (avoid per-frame imports)
+        # 在开始时缓存皮肤翅膀装饰（避免每帧导入）
         skin = _get_skin()
         wings = skin.get_spinner_wings() if skin else []
 
@@ -751,20 +750,20 @@ class KawaiiSpinner:
         self.message = new_message
 
     def print_above(self, text: str):
-        """Print a line above the spinner without disrupting animation.
+        """在 spinner 上方打印一行文本，不干扰动画。
 
-        Clears the current spinner line, prints the text, and lets the
-        next animation tick redraw the spinner on the line below.
-        Thread-safe: uses the captured stdout reference (self._out).
-        Works inside redirect_stdout(devnull) because _write bypasses
-        sys.stdout and writes to the stdout captured at spinner creation.
+        清除当前 spinner 行，打印文本，让下一次动画 tick
+        在下方行重新绘制 spinner。
+        线程安全：使用捕获的 stdout 引用（self._out）。
+        在 redirect_stdout(devnull) 内部也能工作，因为 _write 绕过
+        sys.stdout 并写入 spinner 创建时捕获的 stdout。
         """
         if not self.running:
             self._write(f"  {text}", flush=True)
             return
-        # Clear spinner line with spaces (not \033[K) to avoid garbled escape
-        # codes when prompt_toolkit's patch_stdout is active — same approach
-        # as stop(). Then print text; spinner redraws on next tick.
+        # 用空格清除 spinner 行（而不是 \033[K），以避免在
+        # prompt_toolkit 的 patch_stdout 激活时出现乱码转义码——
+        # 与 stop() 使用相同的方法。然后打印文本；spinner 在下一 tick 重绘。
         blanks = ' ' * max(self.last_line_len + 5, 40)
         self._write(f"\r{blanks}\r  {text}", flush=True)
 
@@ -775,8 +774,8 @@ class KawaiiSpinner:
 
         is_tty = self._is_tty
         if is_tty:
-            # Clear the spinner line with spaces instead of \033[K to avoid
-            # garbled escape codes when prompt_toolkit's patch_stdout is active.
+            # 用空格清除 spinner 行，而不是 \033[K，以避免在
+            # prompt_toolkit 的 patch_stdout 激活时出现乱码转义码。
             blanks = ' ' * max(self.last_line_len + 5, 40)
             self._write(f"\r{blanks}\r", end='', flush=True)
         if final_message:
@@ -796,15 +795,15 @@ class KawaiiSpinner:
 
 
 # =========================================================================
-# Cute tool message (completion line that replaces the spinner)
+# 可爱的工具消息（替换 spinner 的完成行）
 # =========================================================================
 
 def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
-    """Inspect a tool result string for signs of failure.
+    """检查工具结果字符串中是否存在失败迹象。
 
-    Returns ``(is_failure, suffix)`` where *suffix* is an informational tag
-    like ``" [exit 1]"`` for terminal failures, or ``" [error]"`` for generic
-    failures.  On success, returns ``(False, "")``.
+    返回 ``(is_failure, suffix)``，其中 *suffix* 是信息标签，
+    例如终端失败的 ``" [exit 1]"``，或通用失败的 ``" [error]"``。
+    成功时返回 ``(False, "")``。
     """
     if result is None:
         return False, ""
@@ -817,14 +816,14 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
                 return True, f" [exit {exit_code}]"
         return False, ""
 
-    # Memory-specific: distinguish "full" from real errors
+    # 内存工具特殊处理：区分"已满"和真实错误
     if tool_name == "memory":
         data = safe_json_loads(result)
         if isinstance(data, dict):
             if data.get("success") is False and "exceed the limit" in data.get("error", ""):
                 return True, " [full]"
 
-    # Generic heuristic for non-terminal tools
+    # 非终端工具的通用启发式检测
     lower = result[:500].lower()
     if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
         return True, " [error]"
@@ -835,12 +834,12 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
 def get_cute_tool_message(
     tool_name: str, args: dict, duration: float, result: str | None = None,
 ) -> str:
-    """Generate a formatted tool completion line for CLI quiet mode.
+    """生成 CLI 静默模式下的格式化工具完成行。
 
-    Format: ``| {emoji} {verb:9} {detail}  {duration}``
+    格式: ``| {emoji} {verb:9} {detail}  {duration}``
 
-    When *result* is provided the line is checked for failure indicators.
-    Failed tool calls get a red prefix and an informational suffix.
+    当提供了 *result* 时，会检查该行是否存在失败指示符。
+    失败的工具调用会获得红色前缀和信息性后缀。
     """
     dur = f"{duration:.1f}s"
     is_failure, failure_suffix = _detect_tool_failure(tool_name, result)
@@ -849,17 +848,17 @@ def get_cute_tool_message(
     def _trunc(s, n=40):
         s = str(s)
         if _tool_preview_max_len == 0:
-            return s  # no limit
+            return s  # 无限制
         return (s[:n-3] + "...") if len(s) > n else s
 
     def _path(p, n=35):
         p = str(p)
         if _tool_preview_max_len == 0:
-            return p  # no limit
+            return p  # 无限制
         return ("..." + p[-(n-3):]) if len(p) > n else p
 
     def _wrap(line: str) -> str:
-        """Apply skin tool prefix and failure suffix."""
+        """应用皮肤工具前缀和失败后缀。"""
         if skin_prefix != "┊":
             line = line.replace("┊", skin_prefix, 1)
         if not is_failure:
@@ -990,7 +989,7 @@ def get_cute_tool_message(
 
 
 # =========================================================================
-# Honcho session line (one-liner with clickable OSC 8 hyperlink)
+# Honcho 会话行（带可点击 OSC 8 超链接的单行显示）
 # =========================================================================
 
 

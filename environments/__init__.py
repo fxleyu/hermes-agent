@@ -1,21 +1,20 @@
 """
-Hermes-Agent Atropos Environments
+Hermes-Agent Atropos 环境模块
 
-Provides a layered integration between hermes-agent's tool-calling capabilities
-and the Atropos RL training framework.
+提供 hermes-agent 的工具调用能力与 Atropos 强化学习训练框架之间的分层集成。
 
-Core layers:
-    - agent_loop: Reusable multi-turn agent loop with standard OpenAI-spec tool calling
-    - tool_context: Per-rollout tool access handle for reward/verification functions
-    - hermes_base_env: Abstract base environment (BaseEnv subclass) for Atropos
-    - tool_call_parsers: Client-side tool call parser registry for Phase 2 (VLLM /generate)
+核心层：
+    - agent_loop: 可复用的多轮智能体循环，使用标准 OpenAI 规范的工具调用
+    - tool_context: 每次 rollout 的工具访问句柄，供奖励/验证函数使用
+    - hermes_base_env: Atropos 的抽象基础环境（BaseEnv 子类）
+    - tool_call_parsers: 客户端工具调用解析器注册表，用于第二阶段（VLLM /generate）
 
-Concrete environments:
-    - terminal_test_env/: Simple file-creation tasks for testing the stack
-    - hermes_swe_env/: SWE-bench style tasks with Modal sandboxes
+具体环境：
+    - terminal_test_env/: 用于测试栈的简单文件创建任务
+    - hermes_swe_env/: 使用 Modal 沙箱的 SWE-bench 风格任务
 
-Benchmarks (eval-only):
-    - benchmarks/terminalbench_2/: Terminal-Bench 2.0 evaluation
+基准测试（仅评估）：
+    - benchmarks/terminalbench_2/: Terminal-Bench 2.0 评估
 """
 
 try:
@@ -23,8 +22,8 @@ try:
     from environments.tool_context import ToolContext
     from environments.hermes_base_env import HermesAgentBaseEnv, HermesAgentEnvConfig
 except ImportError:
-    # atroposlib not installed — environments are unavailable but
-    # submodules like tool_call_parsers can still be imported directly.
+    # atroposlib 未安装 — 环境模块不可用，但
+    # 子模块（如 tool_call_parsers）仍可直接导入。
     pass
 
 __all__ = [

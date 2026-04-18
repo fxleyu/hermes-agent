@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 """
-Upload an .excalidraw file to excalidraw.com and print a shareable URL.
+将 .excalidraw 文件上传到 excalidraw.com 并打印可分享的 URL。
 
-No account required. The diagram is encrypted client-side (AES-GCM) before
-upload -- the encryption key is embedded in the URL fragment, so the server
-never sees plaintext.
+无需账号。图表在上传前会在客户端进行 AES-GCM 加密——加密密钥嵌入在 URL 片段中，
+因此服务器永远不会看到明文内容。
 
-Requirements:
+依赖:
     pip install cryptography
 
-Usage:
+用法:
     python upload.py <path-to-file.excalidraw>
 
-Example:
+示例:
     python upload.py ~/diagrams/architecture.excalidraw
-    # prints: https://excalidraw.com/#json=abc123,encryptionKeyHere
+    # 输出: https://excalidraw.com/#json=abc123,encryptionKeyHere
 """
 
 import json
@@ -32,18 +31,18 @@ except ImportError:
     print("Install it with: pip install cryptography")
     sys.exit(1)
 
-# Excalidraw public upload endpoint (no auth needed)
+# Excalidraw 公开上传端点（无需认证）
 UPLOAD_URL = "https://json.excalidraw.com/api/v2/post/"
 
 
 def concat_buffers(*buffers: bytes) -> bytes:
     """
-    Build the Excalidraw v2 concat-buffers binary format.
+    构建 Excalidraw v2 concat-buffers 二进制格式。
 
-    Layout: [version=1 (4B big-endian)] then for each buffer:
-            [length (4B big-endian)] [data bytes]
+    布局: [版本号=1 (4字节大端序)] 然后对每个缓冲区:
+           [长度 (4字节大端序)] [数据字节]
     """
-    parts = [struct.pack(">I", 1)]  # version = 1
+    parts = [struct.pack(">I", 1)]  # 版本号 = 1
     for buf in buffers:
         parts.append(struct.pack(">I", len(buf)))
         parts.append(buf)
@@ -52,39 +51,39 @@ def concat_buffers(*buffers: bytes) -> bytes:
 
 def upload(excalidraw_json: str) -> str:
     """
-    Encrypt and upload Excalidraw JSON to excalidraw.com.
+    加密并上传 Excalidraw JSON 到 excalidraw.com。
 
-    Args:
-        excalidraw_json: The full .excalidraw file content as a string.
+    参数:
+        excalidraw_json: 完整的 .excalidraw 文件内容字符串。
 
-    Returns:
-        Shareable URL string.
+    返回:
+        可分享的 URL 字符串。
     """
-    # 1. Inner payload: concat_buffers(file_metadata, data)
+    # 1. 内部载荷: concat_buffers(文件元数据, 数据)
     file_metadata = json.dumps({}).encode("utf-8")
     data_bytes = excalidraw_json.encode("utf-8")
     inner_payload = concat_buffers(file_metadata, data_bytes)
 
-    # 2. Compress with zlib
+    # 2. 使用 zlib 压缩
     compressed = zlib.compress(inner_payload)
 
-    # 3. AES-GCM 128-bit encrypt
-    raw_key = os.urandom(16)   # 128-bit key
-    iv = os.urandom(12)        # 12-byte nonce
+    # 3. AES-GCM 128位加密
+    raw_key = os.urandom(16)   # 128位密钥
+    iv = os.urandom(12)        # 12字节随机数（nonce）
     aesgcm = AESGCM(raw_key)
     encrypted = aesgcm.encrypt(iv, compressed, None)
 
-    # 4. Encoding metadata
+    # 4. 编码元数据
     encoding_meta = json.dumps({
         "version": 2,
         "compression": "pako@1",
         "encryption": "AES-GCM",
     }).encode("utf-8")
 
-    # 5. Outer payload: concat_buffers(encoding_meta, iv, encrypted)
+    # 5. 外部载荷: concat_buffers(编码元数据, iv, 密文)
     payload = concat_buffers(encoding_meta, iv, encrypted)
 
-    # 6. Upload
+    # 6. 上传到服务器
     req = urllib.request.Request(UPLOAD_URL, data=payload, method="POST")
     with urllib.request.urlopen(req, timeout=30) as resp:
         if resp.status != 200:
@@ -95,7 +94,7 @@ def upload(excalidraw_json: str) -> str:
     if not file_id:
         raise RuntimeError(f"Upload returned no file ID. Response: {result}")
 
-    # 7. Key as base64url (JWK 'k' format, no padding)
+    # 7. 将密钥转换为 base64url 格式（JWK 'k' 格式，无填充）
     key_b64 = base64.urlsafe_b64encode(raw_key).rstrip(b"=").decode("ascii")
 
     return f"https://excalidraw.com/#json={file_id},{key_b64}"
@@ -115,7 +114,7 @@ def main():
     with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # Basic validation: should be valid JSON with an "elements" key
+    # 基本验证: 应为包含 "elements" 键的有效 JSON
     try:
         doc = json.loads(content)
     except json.JSONDecodeError as e:

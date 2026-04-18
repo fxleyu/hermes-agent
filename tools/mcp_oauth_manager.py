@@ -1,35 +1,33 @@
 #!/usr/bin/env python3
-"""Central manager for per-server MCP OAuth state.
+"""每服务器 MCP OAuth 状态的中央管理器。
 
-One instance shared across the process. Holds per-server OAuth provider
-instances and coordinates:
+整个进程共享一个实例。持有每服务器的 OAuth 提供者实例并协调：
 
-- **Cross-process token reload** via mtime-based disk watch. When an external
-  process (e.g. a user cron job) refreshes tokens on disk, the next auth flow
-  picks them up without requiring a process restart.
-- **401 deduplication** via in-flight futures. When N concurrent tool calls
-  all hit 401 with the same access_token, only one recovery attempt fires;
-  the rest await the same result.
-- **Reconnect signalling** for long-lived MCP sessions. The manager itself
-  does not drive reconnection — the `MCPServerTask` in `mcp_tool.py` does —
-  but the manager is the single source of truth that decides when reconnect
-  is warranted.
+- **跨进程令牌重新加载**：通过基于 mtime 的磁盘监视。当外部进程
+  （例如用户的 cron 任务）在磁盘上刷新令牌时，下次认证流程会自动
+  获取它们，无需重启进程。
+- **401 去重**：通过进行中的 future。当 N 个并发工具调用都使用
+  相同的 access_token 命中 401 时，只有一次恢复尝试会触发；
+  其余调用等待同一个结果。
+- **重连信号**：用于长期运行的 MCP 会话。管理器本身不驱动重连——
+  `mcp_tool.py` 中的 `MCPServerTask` 负责——但管理器是决定何时
+  需要重连的唯一真实来源。
 
-Replaces what used to be scattered across eight call sites in `mcp_oauth.py`,
-`mcp_tool.py`, and `hermes_cli/mcp_config.py`. This module is the ONLY place
-that instantiates the MCP SDK's `OAuthClientProvider` — all other code paths
-go through `get_manager()`.
+替代了之前分散在 `mcp_oauth.py`、`mcp_tool.py` 和
+`hermes_cli/mcp_config.py` 八个调用点中的代码。本模块是唯一
+实例化 MCP SDK 的 `OAuthClientProvider` 的地方——所有其他代码
+路径都通过 `get_manager()`。
 
-Design reference:
+设计参考：
 
-- Claude Code's ``invalidateOAuthCacheIfDiskChanged``
-  (``claude-code/src/utils/auth.ts:1320``, CC-1096 / GH#24317). Identical
-  external-refresh staleness bug class.
-- Codex's ``refresh_oauth_if_needed`` / ``persist_if_needed``
-  (``codex-rs/rmcp-client/src/rmcp_client.rs:805``). We lean on the MCP SDK's
-  lazy refresh rather than calling refresh before every op, because one
-  ``stat()`` per tool call is cheaper than an ``await`` + potential refresh
-  round-trip, and the SDK's in-memory expiry path is already correct.
+- Claude Code 的 ``invalidateOAuthCacheIfDiskChanged``
+  (``claude-code/src/utils/auth.ts:1320``，CC-1096 / GH#24317)。
+  相同的外部刷新过期 bug 类别。
+- Codex 的 ``refresh_oauth_if_needed`` / ``persist_if_needed``
+  (``codex-rs/rmcp-client/src/rmcp_client.rs:805``)。我们依赖
+  MCP SDK 的延迟刷新，而非在每次操作前调用刷新，因为每次工具调用
+  一个 ``stat()`` 比一次 ``await`` + 潜在的刷新往返更便宜，
+  而且 SDK 的内存过期路径已经是正确的。
 """
 
 from __future__ import annotations
@@ -44,28 +42,28 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Per-server entry
+# 每服务器条目
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class _ProviderEntry:
-    """Per-server OAuth state tracked by the manager.
+    """管理器跟踪的每服务器 OAuth 状态。
 
-    Fields:
-        server_url: The MCP server URL used to build the provider. Tracked
-            so we can discard a cached provider if the URL changes.
-        oauth_config: Optional dict from ``mcp_servers.<name>.oauth``.
-        provider: The ``httpx.Auth``-compatible provider wrapping the MCP
-            SDK. None until first use.
-        last_mtime_ns: Last-seen ``st_mtime_ns`` of the on-disk tokens file.
-            Zero if never read. Used by :meth:`MCPOAuthManager.invalidate_if_disk_changed`
-            to detect external refreshes.
-        lock: Serialises concurrent access to this entry's state. Bound to
-            whichever asyncio loop first awaits it (the MCP event loop).
-        pending_401: In-flight 401-handler futures keyed by the failed
-            access_token, for deduplicating thundering-herd 401s. Mirrors
-            Claude Code's ``pending401Handlers`` map.
+    字段:
+        server_url: 用于构建提供者的 MCP 服务器 URL。跟踪此字段
+            以便在 URL 变化时丢弃缓存的提供者。
+        oauth_config: 来自 ``mcp_servers.<name>.oauth`` 的可选字典。
+        provider: 包装 MCP SDK 的兼容 ``httpx.Auth`` 的提供者。
+            首次使用前为 None。
+        last_mtime_ns: 磁盘令牌文件最后看到的 ``st_mtime_ns``。
+            未读取时为零。由 :meth:`MCPOAuthManager.invalidate_if_disk_changed`
+            用于检测外部刷新。
+        lock: 串行化对此条目状态的并发访问。绑定到首次等待它的
+            asyncio 循环（MCP 事件循环）。
+        pending_401: 以失败的 access_token 为键的进行中 401 处理器
+            future，用于去重雷群效应 401。镜像 Claude Code 的
+            ``pending401Handlers`` 映射。
     """
 
     server_url: str
@@ -77,15 +75,15 @@ class _ProviderEntry:
 
 
 # ---------------------------------------------------------------------------
-# HermesMCPOAuthProvider — OAuthClientProvider subclass with disk-watch
+# HermesMCPOAuthProvider — 带磁盘监视的 OAuthClientProvider 子类
 # ---------------------------------------------------------------------------
 
 
 def _make_hermes_provider_class() -> Optional[type]:
-    """Lazy-import the SDK base class and return our subclass.
+    """延迟导入 SDK 基类并返回我们的子类。
 
-    Wrapped in a function so this module imports cleanly even when the
-    MCP SDK's OAuth module is unavailable (e.g. older mcp versions).
+    包装在函数中，以便即使 MCP SDK 的 OAuth 模块不可用
+    （例如旧版 mcp），本模块也能正常导入。
     """
     try:
         from mcp.client.auth.oauth2 import OAuthClientProvider
@@ -93,18 +91,17 @@ def _make_hermes_provider_class() -> Optional[type]:
         return None
 
     class HermesMCPOAuthProvider(OAuthClientProvider):
-        """OAuthClientProvider with pre-flow disk-mtime reload.
+        """带预流程磁盘 mtime 重载的 OAuthClientProvider。
 
-        Before every ``async_auth_flow`` invocation, asks the manager to
-        check whether the tokens file on disk has been modified externally.
-        If so, the manager resets ``_initialized`` so the next flow
-        re-reads from storage.
+        在每次 ``async_auth_flow`` 调用之前，请求管理器检查磁盘上的
+        令牌文件是否被外部修改。如果是，管理器会重置 ``_initialized``，
+        使下次流程从存储重新读取。
 
-        This makes external-process refreshes (cron, another CLI instance)
-        visible to the running MCP session without requiring a restart.
+        这使得外部进程刷新（cron、另一个 CLI 实例）对正在运行的
+        MCP 会话可见，无需重启。
 
-        Reference: Claude Code's ``invalidateOAuthCacheIfDiskChanged``
-        (``src/utils/auth.ts:1320``, CC-1096 / GH#24317).
+        参考：Claude Code 的 ``invalidateOAuthCacheIfDiskChanged``
+        (``src/utils/auth.ts:1320``，CC-1096 / GH#24317)。
         """
 
         def __init__(self, *args: Any, server_name: str = "", **kwargs: Any):
@@ -112,9 +109,9 @@ def _make_hermes_provider_class() -> Optional[type]:
             self._hermes_server_name = server_name
 
         async def async_auth_flow(self, request):  # type: ignore[override]
-            # Pre-flow hook: ask the manager to refresh from disk if needed.
-            # Any failure here is non-fatal — we just log and proceed with
-            # whatever state the SDK already has.
+            # 预流程钩子：请求管理器在需要时从磁盘刷新。
+            # 此处的任何失败都是非致命的——只记录日志并继续使用
+            # SDK 已有的状态。
             try:
                 await get_manager().invalidate_if_disk_changed(
                     self._hermes_server_name
@@ -125,35 +122,35 @@ def _make_hermes_provider_class() -> Optional[type]:
                     self._hermes_server_name, exc,
                 )
 
-            # Delegate to the SDK's auth flow
+            # 委托给 SDK 的认证流程
             async for item in super().async_auth_flow(request):
                 yield item
 
     return HermesMCPOAuthProvider
 
 
-# Cached at import time. Tested and used by :class:`MCPOAuthManager`.
+# 在导入时缓存。由 :class:`MCPOAuthManager` 测试和使用。
 _HERMES_PROVIDER_CLS: Optional[type] = _make_hermes_provider_class()
 
 
 # ---------------------------------------------------------------------------
-# Manager
+# 管理器
 # ---------------------------------------------------------------------------
 
 
 class MCPOAuthManager:
-    """Single source of truth for per-server MCP OAuth state.
+    """每服务器 MCP OAuth 状态的唯一真实来源。
 
-    Thread-safe: the ``_entries`` dict is guarded by ``_entries_lock`` for
-    get-or-create semantics. Per-entry state is guarded by the entry's own
-    ``asyncio.Lock`` (used from the MCP event loop thread).
+    线程安全：``_entries`` 字典由 ``_entries_lock`` 保护以实现
+    获取或创建语义。每个条目的状态由条目自己的 ``asyncio.Lock`` 保护
+    （从 MCP 事件循环线程使用）。
     """
 
     def __init__(self) -> None:
         self._entries: dict[str, _ProviderEntry] = {}
         self._entries_lock = threading.Lock()
 
-    # -- Provider construction / caching -------------------------------------
+    # -- 提供者构造/缓存 -------------------------------------
 
     def get_or_build_provider(
         self,
@@ -161,13 +158,13 @@ class MCPOAuthManager:
         server_url: str,
         oauth_config: Optional[dict],
     ) -> Optional[Any]:
-        """Return a cached OAuth provider for ``server_name`` or build one.
+        """返回 ``server_name`` 的缓存 OAuth 提供者，或构建一个新的。
 
-        Idempotent: repeat calls with the same name return the same instance.
-        If ``server_url`` changes for a given name, the cached entry is
-        discarded and a fresh provider is built.
+        幂等：使用相同名称的重复调用返回相同实例。
+        如果某个名称的 ``server_url`` 发生变化，缓存的条目会被
+        丢弃并构建新的提供者。
 
-        Returns None if the MCP SDK's OAuth support is unavailable.
+        如果 MCP SDK 的 OAuth 支持不可用，返回 None。
         """
         with self._entries_lock:
             entry = self._entries.get(server_name)
@@ -195,14 +192,14 @@ class MCPOAuthManager:
         server_name: str,
         entry: _ProviderEntry,
     ) -> Optional[Any]:
-        """Build the underlying OAuth provider.
+        """构建底层 OAuth 提供者。
 
-        Constructs :class:`HermesMCPOAuthProvider` directly using the helpers
-        extracted from ``tools.mcp_oauth``. The subclass injects a pre-flow
-        disk-watch hook so external token refreshes (cron, other CLI
-        instances) are visible to running MCP sessions.
+        使用从 ``tools.mcp_oauth`` 提取的辅助函数直接构造
+        :class:`HermesMCPOAuthProvider`。子类注入了一个预流程
+        磁盘监视钩子，使外部令牌刷新（cron、其他 CLI 实例）
+        对运行中的 MCP 会话可见。
 
-        Returns None if the MCP SDK's OAuth support is unavailable.
+        如果 MCP SDK 的 OAuth 支持不可用，返回 None。
         """
         if _HERMES_PROVIDER_CLS is None:
             logger.warning(
@@ -210,7 +207,7 @@ class MCPOAuthManager:
             )
             return None
 
-        # Local imports avoid circular deps at module import time.
+        # 局部导入避免模块导入时的循环依赖。
         from tools.mcp_oauth import (
             HermesTokenStorage,
             _OAUTH_AVAILABLE,
@@ -252,10 +249,10 @@ class MCPOAuthManager:
         )
 
     def remove(self, server_name: str) -> None:
-        """Evict the provider from cache AND delete tokens from disk.
+        """从缓存中驱逐提供者并从磁盘删除令牌。
 
-        Called by ``hermes mcp remove <name>`` and (indirectly) by
-        ``hermes mcp login <name>`` during forced re-auth.
+        由 ``hermes mcp remove <name>`` 和（间接地）
+        ``hermes mcp login <name>`` 在强制重新认证时调用。
         """
         with self._entries_lock:
             self._entries.pop(server_name, None)
@@ -267,16 +264,15 @@ class MCPOAuthManager:
             server_name,
         )
 
-    # -- Disk watch ----------------------------------------------------------
+    # -- 磁盘监视 ----------------------------------------------------------
 
     async def invalidate_if_disk_changed(self, server_name: str) -> bool:
-        """If the tokens file on disk has a newer mtime than last-seen, force
-        the MCP SDK provider to reload its in-memory state.
+        """如果磁盘上的令牌文件的 mtime 比最后看到的新，则强制
+        MCP SDK 提供者重新加载其内存状态。
 
-        Returns True if the cache was invalidated (mtime differed). This is
-        the core fix for the external-refresh workflow: a cron job writes
-        fresh tokens to disk, and on the next tool call the running MCP
-        session picks them up without a restart.
+        如果缓存被无效化（mtime 不同），返回 True。这是外部刷新
+        工作流的核心修复：cron 任务将新令牌写入磁盘，在下次工具调用时
+        运行中的 MCP 会话会自动获取它们，无需重启。
         """
         from tools.mcp_oauth import _get_token_dir, _safe_filename
 
@@ -294,9 +290,9 @@ class MCPOAuthManager:
             if mtime_ns != entry.last_mtime_ns:
                 old = entry.last_mtime_ns
                 entry.last_mtime_ns = mtime_ns
-                # Force the SDK's OAuthClientProvider to reload from storage
-                # on its next auth flow. `_initialized` is private API but
-                # stable across the MCP SDK versions we pin (>=1.26.0).
+                # 强制 SDK 的 OAuthClientProvider 在下次认证流程中
+                # 从存储重新加载。`_initialized` 是私有 API，但在我们
+                # 固定的 MCP SDK 版本（>=1.26.0）中是稳定的。
                 if hasattr(entry.provider, "_initialized"):
                     entry.provider._initialized = False  # noqa: SLF001
                 logger.info(
@@ -307,25 +303,23 @@ class MCPOAuthManager:
                 return True
             return False
 
-    # -- 401 handler (dedup'd) -----------------------------------------------
+    # -- 401 处理器（去重） -----------------------------------------------
 
     async def handle_401(
         self,
         server_name: str,
         failed_access_token: Optional[str] = None,
     ) -> bool:
-        """Handle a 401 from a tool call, deduplicated across concurrent callers.
+        """处理工具调用的 401 响应，在并发调用者之间去重。
 
-        Returns:
-            True  if a (possibly new) access token is now available — caller
-                  should trigger a reconnect and retry the operation.
-            False if no recovery path exists — caller should surface a
-                  ``needs_reauth`` error to the model so it stops hallucinating
-                  manual refresh attempts.
+        返回:
+            True  表示现在有（可能是新的）access token 可用——调用方
+                  应触发重连并重试操作。
+            False 表示没有恢复路径——调用方应向模型呈现 ``needs_reauth``
+                  错误，使其停止幻想手动刷新尝试。
 
-        Thundering-herd protection: if N concurrent tool calls hit 401 with
-        the same ``failed_access_token``, only one recovery attempt fires.
-        Others await the same future.
+        雷群保护：如果 N 个并发工具调用使用相同的 ``failed_access_token``
+        命中 401，只有一次恢复尝试会触发。其他调用等待同一个 future。
         """
         entry = self._entries.get(server_name)
         if entry is None or entry.provider is None:
@@ -342,7 +336,7 @@ class MCPOAuthManager:
 
                 async def _do_handle() -> None:
                     try:
-                        # Step 1: Did disk change? Picks up external refresh.
+                        # 步骤 1：磁盘是否有变化？获取外部刷新的令牌。
                         disk_changed = await self.invalidate_if_disk_changed(
                             server_name
                         )
@@ -351,9 +345,9 @@ class MCPOAuthManager:
                                 pending.set_result(True)
                             return
 
-                        # Step 2: No disk change — if the SDK can refresh
-                        # in-place, let the caller retry. The SDK's httpx.Auth
-                        # flow will issue the refresh on the next request.
+                        # 步骤 2：磁盘无变化——如果 SDK 可以就地刷新，
+                        # 让调用方重试。SDK 的 httpx.Auth 流程会在下次
+                        # 请求时发起刷新。
                         provider = entry.provider
                         ctx = getattr(provider, "context", None)
                         can_refresh = False
@@ -389,7 +383,7 @@ class MCPOAuthManager:
 
 
 # ---------------------------------------------------------------------------
-# Module-level singleton
+# 模块级单例
 # ---------------------------------------------------------------------------
 
 
@@ -398,7 +392,7 @@ _MANAGER_LOCK = threading.Lock()
 
 
 def get_manager() -> MCPOAuthManager:
-    """Return the process-wide :class:`MCPOAuthManager` singleton."""
+    """返回进程范围的 :class:`MCPOAuthManager` 单例。"""
     global _MANAGER
     with _MANAGER_LOCK:
         if _MANAGER is None:
@@ -407,7 +401,7 @@ def get_manager() -> MCPOAuthManager:
 
 
 def reset_manager_for_tests() -> None:
-    """Test-only helper: drop the singleton so fixtures start clean."""
+    """仅供测试的辅助函数：丢弃单例以便测试夹具从干净状态开始。"""
     global _MANAGER
     with _MANAGER_LOCK:
         _MANAGER = None

@@ -1,38 +1,38 @@
 """
-WebResearchEnv — RL Environment for Multi-Step Web Research
+WebResearchEnv — 多步网页研究的强化学习环境
 ============================================================
 
-Trains models to do accurate, efficient, multi-source web research.
+训练模型进行准确、高效的多源网页研究。
 
-Reward signals:
-  - Answer correctness  (LLM judge, 0.0–1.0)
-  - Source diversity    (used ≥2 distinct domains)
-  - Efficiency          (penalizes excessive tool calls)
-  - Tool usage          (bonus for actually using web tools)
+奖励信号：
+  - 答案正确性  （LLM 评判，0.0–1.0）
+  - 来源多样性  （使用了 >=2 个不同域名）
+  - 效率        （惩罚过多的工具调用）
+  - 工具使用    （实际使用网页工具的奖励）
 
-Dataset: FRAMES benchmark (Google, 2024) — multi-hop factual questions
+数据集：FRAMES 基准（Google，2024）— 多跳事实性问题
   HuggingFace: google/frames-benchmark
-  Fallback:    built-in sample questions (no HF token needed)
+  回退方案:    内置示例问题（无需 HF token）
 
-Usage:
-    # Phase 1 (OpenAI-compatible server)
+用法：
+    # 第一阶段（OpenAI 兼容服务器）
     python environments/web_research_env.py serve \\
         --openai.base_url http://localhost:8000/v1 \\
         --openai.model_name YourModel \\
         --openai.server_type openai
 
-    # Process mode (offline data generation)
+    # Process 模式（离线数据生成）
     python environments/web_research_env.py process \\
         --env.data_path_to_save_groups data/web_research.jsonl
 
-    # Standalone eval
+    # 独立评估
     python environments/web_research_env.py evaluate \\
         --openai.base_url http://localhost:8000/v1 \\
         --openai.model_name YourModel
 
-Built by: github.com/jackx707
-Inspired by: GroceryMind — production Hermes agent doing live web research
-             across German grocery stores (firecrawl + hermes-agent)
+构建者：github.com/jackx707
+灵感来源：GroceryMind — 生产环境中的 Hermes 智能体，跨德国杂货店
+             进行实时网页研究（firecrawl + hermes-agent）
 """
 
 from __future__ import annotations
@@ -50,13 +50,13 @@ from urllib.parse import urlparse
 
 from pydantic import Field
 
-# Ensure hermes-agent root is on path
+# 确保 hermes-agent 根目录在路径中
 _repo_root = Path(__file__).resolve().parent.parent
 if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
 
 # ---------------------------------------------------------------------------
-# Optional HuggingFace datasets import
+# 可选的 HuggingFace datasets 导入
 # ---------------------------------------------------------------------------
 try:
     from datasets import load_dataset
@@ -75,8 +75,8 @@ from environments.tool_context import ToolContext
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Fallback sample dataset (used when HuggingFace is unavailable)
-# Multi-hop questions requiring real web search to answer.
+# 回退示例数据集（HuggingFace 不可用时使用）
+# 需要真实网页搜索才能回答的多跳问题。
 # ---------------------------------------------------------------------------
 SAMPLE_QUESTIONS = [
     {
@@ -143,13 +143,13 @@ SAMPLE_QUESTIONS = [
 
 
 # ---------------------------------------------------------------------------
-# Configuration
+# 配置
 # ---------------------------------------------------------------------------
 
 class WebResearchEnvConfig(HermesAgentEnvConfig):
-    """Configuration for the web research RL environment."""
+    """网页研究强化学习环境的配置。"""
 
-    # Reward weights
+    # 奖励权重
     correctness_weight: float = Field(
         default=0.6,
         description="Weight for answer correctness in reward (LLM judge score).",
@@ -167,7 +167,7 @@ class WebResearchEnvConfig(HermesAgentEnvConfig):
         description="Bonus reward for citing ≥2 distinct domains.",
     )
 
-    # Efficiency thresholds
+    # 效率阈值
     efficient_max_calls: int = Field(
         default=5,
         description="Maximum tool calls before efficiency penalty begins.",
@@ -177,51 +177,43 @@ class WebResearchEnvConfig(HermesAgentEnvConfig):
         description="Tool call count where efficiency penalty steepens.",
     )
 
-    # Eval
-    eval_size: int = Field(
-        default=20,
-        description="Number of held-out items for evaluation.",
-    )
+    # 评估
     eval_split_ratio: float = Field(
         default=0.1,
         description="Fraction of dataset to hold out for evaluation (0.0–1.0).",
     )
 
-    # Dataset
-    dataset_name: str = Field(
-        default="google/frames-benchmark",
-        description="HuggingFace dataset name for research questions.",
-    )
+    # 数据集
 
 
 # ---------------------------------------------------------------------------
-# Environment
+# 环境
 # ---------------------------------------------------------------------------
 
 class WebResearchEnv(HermesAgentBaseEnv):
     """
-    RL environment for training multi-step web research skills.
+    用于训练多步网页研究技能的强化学习环境。
 
-    The model is given a factual question requiring 2-3 hops of web research
-    and must use web_search / web_extract tools to find and synthesize the answer.
+    模型被给予一个需要 2-3 跳网页研究的事实性问题，
+    必须使用 web_search / web_extract 工具来查找和综合答案。
 
-    Reward is multi-signal:
-      60% — answer correctness (LLM judge)
-      20% — tool usage (did the model actually search the web?)
-      20% — efficiency (penalizes >5 tool calls)
+    奖励是多信号的：
+      60% — 答案正确性（LLM 评判）
+      20% — 工具使用（模型是否实际搜索了网页？）
+      20% — 效率（惩罚 >5 次工具调用）
 
-    Bonus +0.1 for source diversity (≥2 distinct domains cited).
+    来源多样性奖励 +0.1（引用了 >=2 个不同域名）。
     """
 
     name = "web-research"
     env_config_cls = WebResearchEnvConfig
 
-    # Default toolsets for this environment — web + file for saving notes
+    # 此环境的默认工具集 — 网页 + 文件（用于保存笔记）
     default_toolsets = ["web", "file"]
 
     @classmethod
     def config_init(cls) -> Tuple[WebResearchEnvConfig, List[APIServerConfig]]:
-        """Default configuration for the web research environment."""
+        """网页研究环境的默认配置。"""
         env_config = WebResearchEnvConfig(
             enabled_toolsets=["web", "file"],
             max_agent_turns=15,
@@ -256,7 +248,7 @@ class WebResearchEnv(HermesAgentBaseEnv):
         self._eval_items: list[dict] = []
         self._index: int = 0
 
-        # Metrics tracking for wandb
+        # 指标跟踪用于 wandb
         self._reward_buffer: list[float] = []
         self._correctness_buffer: list[float] = []
         self._tool_usage_buffer: list[float] = []
@@ -264,11 +256,11 @@ class WebResearchEnv(HermesAgentBaseEnv):
         self._diversity_buffer: list[float] = []
 
     # ------------------------------------------------------------------
-    # 1. Setup — load dataset
+    # 1. 设置 — 加载数据集
     # ------------------------------------------------------------------
 
     async def setup(self) -> None:
-        """Load the FRAMES benchmark or fall back to built-in samples."""
+        """加载 FRAMES 基准或回退到内置示例。"""
         if HF_AVAILABLE:
             try:
                 logger.info("Loading FRAMES benchmark from HuggingFace...")
@@ -282,7 +274,7 @@ class WebResearchEnv(HermesAgentBaseEnv):
                     }
                     for row in ds
                 ]
-                # Hold out for eval
+                # 保留用于评估
                 eval_size = max(
                     self.config.eval_size,
                     int(len(self._items) * self.config.eval_split_ratio),
@@ -298,7 +290,7 @@ class WebResearchEnv(HermesAgentBaseEnv):
             except Exception as e:
                 logger.warning(f"Could not load FRAMES from HuggingFace: {e}. Using built-in samples.")
 
-        # Fallback
+        # 回退方案
         random.shuffle(SAMPLE_QUESTIONS)
         split = max(1, len(SAMPLE_QUESTIONS) * 8 // 10)
         self._items = SAMPLE_QUESTIONS[:split]
@@ -309,11 +301,11 @@ class WebResearchEnv(HermesAgentBaseEnv):
         )
 
     # ------------------------------------------------------------------
-    # 2. get_next_item — return the next question
+    # 2. get_next_item — 返回下一个问题
     # ------------------------------------------------------------------
 
     async def get_next_item(self) -> dict:
-        """Return the next item, cycling through the dataset."""
+        """返回下一条数据，循环遍历数据集。"""
         if not self._items:
             raise RuntimeError("Dataset is empty. Did you call setup()?")
         item = self._items[self._index % len(self._items)]
@@ -321,11 +313,11 @@ class WebResearchEnv(HermesAgentBaseEnv):
         return item
 
     # ------------------------------------------------------------------
-    # 3. format_prompt — build the user-facing prompt
+    # 3. format_prompt — 构建面向用户的提示
     # ------------------------------------------------------------------
 
     def format_prompt(self, item: dict) -> str:
-        """Format the research question as a task prompt."""
+        """将研究问题格式化为任务提示。"""
         return (
             f"Research the following question thoroughly using web search. "
             f"You MUST search the web to find current, accurate information — "
@@ -339,7 +331,7 @@ class WebResearchEnv(HermesAgentBaseEnv):
         )
 
     # ------------------------------------------------------------------
-    # 4. compute_reward — multi-signal scoring
+    # 4. compute_reward — 多信号评分
     # ------------------------------------------------------------------
 
     async def compute_reward(
@@ -349,20 +341,20 @@ class WebResearchEnv(HermesAgentBaseEnv):
         ctx: ToolContext,
     ) -> float:
         """
-        Multi-signal reward function:
+        多信号奖励函数：
 
-          correctness_weight * correctness  — LLM judge comparing answer to ground truth
-          tool_usage_weight  * tool_used    — binary: did the model use web tools?
-          efficiency_weight  * efficiency   — penalizes wasteful tool usage
-          + diversity_bonus                 — source diversity (≥2 distinct domains)
+          correctness_weight * correctness  — LLM 评判将答案与标准答案比较
+          tool_usage_weight  * tool_used    — 二值：模型是否使用了网页工具？
+          efficiency_weight  * efficiency   — 惩罚浪费的工具使用
+          + diversity_bonus                 — 来源多样性（>=2 个不同域名）
         """
-        # Extract final response from messages (last assistant message with content)
+        # 从消息中提取最终回复（最后一条有内容的助手消息）
         final_response = ""
         tools_used: list[str] = []
         for msg in reversed(result.messages):
             if msg.get("role") == "assistant" and msg.get("content") and not final_response:
                 final_response = msg["content"]
-            # Collect tool names from tool call messages
+            # 从工具调用消息中收集工具名称
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
                 for tc in msg["tool_calls"]:
                     fn = tc.get("function", {}) if isinstance(tc, dict) else {}
@@ -373,18 +365,18 @@ class WebResearchEnv(HermesAgentBaseEnv):
 
         cfg = self.config
 
-        # ---- Signal 1: Answer correctness (LLM judge) ----------------
+        # ---- 信号 1：答案正确性（LLM 评判） ----------------
         correctness = await self._llm_judge(
             question=item["question"],
             expected=item["answer"],
             model_answer=final_response,
         )
 
-        # ---- Signal 2: Web tool usage --------------------------------
+        # ---- 信号 2：网页工具使用 --------------------------------
         web_tools = {"web_search", "web_extract", "search", "firecrawl"}
         tool_used = 1.0 if any(t in web_tools for t in tools_used) else 0.0
 
-        # ---- Signal 3: Efficiency ------------------------------------
+        # ---- 信号 3：效率 ------------------------------------
         if tool_call_count <= cfg.efficient_max_calls:
             efficiency = 1.0
         elif tool_call_count <= cfg.heavy_penalty_calls:
@@ -392,20 +384,20 @@ class WebResearchEnv(HermesAgentBaseEnv):
         else:
             efficiency = max(0.0, 1.0 - (tool_call_count - cfg.efficient_max_calls) * 0.12)
 
-        # ---- Bonus: Source diversity ---------------------------------
+        # ---- 奖励：来源多样性 ---------------------------------
         domains = self._extract_domains(final_response)
         diversity = cfg.diversity_bonus if len(domains) >= 2 else 0.0
 
-        # ---- Combine ------------------------------------------------
+        # ---- 综合 ------------------------------------------------
         reward = (
             cfg.correctness_weight * correctness
             + cfg.tool_usage_weight * tool_used
             + cfg.efficiency_weight * efficiency
             + diversity
         )
-        reward = min(1.0, max(0.0, reward))  # clamp to [0, 1]
+        reward = min(1.0, max(0.0, reward))  # 限制在 [0, 1] 范围内
 
-        # Track for wandb
+        # 跟踪用于 wandb
         self._reward_buffer.append(reward)
         self._correctness_buffer.append(correctness)
         self._tool_usage_buffer.append(tool_used)
@@ -421,15 +413,15 @@ class WebResearchEnv(HermesAgentBaseEnv):
         return reward
 
     # ------------------------------------------------------------------
-    # 5. evaluate — run on held-out eval split
+    # 5. evaluate — 在保留的评估集上运行
     # ------------------------------------------------------------------
 
     async def evaluate(self, *args, **kwargs) -> None:
-        """Run evaluation on the held-out split using the full agent loop with tools.
+        """使用带工具的完整智能体循环在保留的评估集上运行评估。
 
-        Each eval item runs through the same agent loop as training —
-        the model can use web_search, web_extract, etc. to research answers.
-        This measures actual agentic research capability, not just knowledge.
+        每个评估条目都通过与训练相同的智能体循环 —
+        模型可以使用 web_search、web_extract 等来研究答案。
+        这衡量的是实际的智能体研究能力，而非仅仅是知识。
         """
         import time
         import uuid
@@ -448,7 +440,7 @@ class WebResearchEnv(HermesAgentBaseEnv):
         start_time = time.time()
         samples = []
 
-        # Resolve tools once for all eval items
+        # 为所有评估条目一次性解析工具
         tools, valid_names = self._resolve_tools_for_group()
 
         for i, item in enumerate(eval_items):
@@ -456,27 +448,27 @@ class WebResearchEnv(HermesAgentBaseEnv):
             logger.info(f"Eval [{i+1}/{len(eval_items)}]: {item['question'][:80]}...")
 
             try:
-                # Build messages
+                # 构建消息
                 messages: List[Dict[str, Any]] = []
                 if self.config.system_prompt:
                     messages.append({"role": "system", "content": self.config.system_prompt})
                 messages.append({"role": "user", "content": self.format_prompt(item)})
 
-                # Run the full agent loop with tools
+                # 运行带工具的完整智能体循环
                 agent = HermesAgentLoop(
                     server=self.server,
                     tool_schemas=tools,
                     valid_tool_names=valid_names,
                     max_turns=self.config.max_agent_turns,
                     task_id=task_id,
-                    temperature=0.0,  # Deterministic for eval
+                    temperature=0.0,  # 评估时使用确定性采样
                     max_tokens=self.config.max_token_length,
                     extra_body=self.config.extra_body,
                     budget_config=self.config.build_budget_config(),
                 )
                 result = await agent.run(messages)
 
-                # Extract final response and tool usage from messages
+                # 从消息中提取最终回复和工具使用情况
                 final_response = ""
                 tool_call_count = 0
                 for msg in reversed(result.messages):
@@ -485,10 +477,9 @@ class WebResearchEnv(HermesAgentBaseEnv):
                     if msg.get("role") == "assistant" and msg.get("tool_calls"):
                         tool_call_count += len(msg["tool_calls"])
 
-                # Compute reward (includes LLM judge for correctness)
-                # Temporarily save buffer lengths so we can extract the
-                # correctness score without calling judge twice, and avoid
-                # polluting training metric buffers with eval data.
+                # 计算奖励（包括正确性的 LLM 评判）
+                # 临时保存缓冲区长度，以便提取正确性分数而不需要
+                # 重复调用评判器，并避免用评估数据污染训练指标缓冲区。
                 buf_len = len(self._correctness_buffer)
                 ctx = ToolContext(task_id)
                 try:
@@ -496,14 +487,14 @@ class WebResearchEnv(HermesAgentBaseEnv):
                 finally:
                     ctx.cleanup()
 
-                # Extract correctness from the buffer (compute_reward appended it)
-                # then remove eval entries from training buffers
+                # 从缓冲区提取正确性（compute_reward 已追加）
+                # 然后从训练缓冲区中移除评估条目
                 correctness = (
                     self._correctness_buffer[buf_len]
                     if len(self._correctness_buffer) > buf_len
                     else 0.0
                 )
-                # Roll back buffers to avoid polluting training metrics
+                # 回滚缓冲区以避免污染训练指标
                 for buf in (
                     self._reward_buffer, self._correctness_buffer,
                     self._tool_usage_buffer, self._efficiency_buffer,
@@ -541,7 +532,7 @@ class WebResearchEnv(HermesAgentBaseEnv):
 
         end_time = time.time()
 
-        # Compute aggregate metrics
+        # 计算聚合指标
         correctness_scores = [s["correctness"] for s in samples]
         rewards = [s["reward"] for s in samples]
         tool_counts = [s["tool_calls"] for s in samples]
@@ -569,11 +560,11 @@ class WebResearchEnv(HermesAgentBaseEnv):
         )
 
     # ------------------------------------------------------------------
-    # 6. wandb_log — custom metrics
+    # 6. wandb_log — 自定义指标
     # ------------------------------------------------------------------
 
     async def wandb_log(self, wandb_metrics: Optional[Dict] = None) -> None:
-        """Log reward breakdown metrics to wandb."""
+        """将奖励分解指标记录到 wandb。"""
         if wandb_metrics is None:
             wandb_metrics = {}
 
@@ -586,7 +577,7 @@ class WebResearchEnv(HermesAgentBaseEnv):
             wandb_metrics["train/mean_diversity"] = sum(self._diversity_buffer) / n
             wandb_metrics["train/total_rollouts"] = n
 
-            # Accuracy buckets
+            # 准确率分桶
             wandb_metrics["train/correct_rate"] = (
                 sum(1 for c in self._correctness_buffer if c >= 0.7) / n
             )
@@ -594,7 +585,7 @@ class WebResearchEnv(HermesAgentBaseEnv):
                 sum(1 for t in self._tool_usage_buffer if t > 0) / n
             )
 
-            # Clear buffers
+            # 清除缓冲区
             self._reward_buffer.clear()
             self._correctness_buffer.clear()
             self._tool_usage_buffer.clear()
@@ -604,7 +595,7 @@ class WebResearchEnv(HermesAgentBaseEnv):
         await super().wandb_log(wandb_metrics)
 
     # ------------------------------------------------------------------
-    # Private helpers
+    # 私有辅助方法
     # ------------------------------------------------------------------
 
     async def _llm_judge(
@@ -614,8 +605,8 @@ class WebResearchEnv(HermesAgentBaseEnv):
         model_answer: str,
     ) -> float:
         """
-        Use the server's LLM to judge answer correctness.
-        Falls back to keyword heuristic if LLM call fails.
+        使用服务器的 LLM 评判答案正确性。
+        如果 LLM 调用失败则回退到关键词启发式方法。
         """
         if not model_answer or not model_answer.strip():
             return 0.0
@@ -654,7 +645,7 @@ class WebResearchEnv(HermesAgentBaseEnv):
 
     @staticmethod
     def _parse_judge_json(text: str) -> Optional[float]:
-        """Extract the score float from LLM judge JSON response."""
+        """从 LLM 评判的 JSON 响应中提取分数浮点值。"""
         try:
             clean = re.sub(r"```(?:json)?|```", "", text).strip()
             data = json.loads(clean)
@@ -671,7 +662,7 @@ class WebResearchEnv(HermesAgentBaseEnv):
 
     @staticmethod
     def _heuristic_score(expected: str, model_answer: str) -> float:
-        """Lightweight keyword overlap score as fallback."""
+        """轻量级关键词重叠评分，作为回退方案。"""
         stopwords = {
             "the", "a", "an", "is", "are", "was", "were", "of", "in", "on",
             "at", "to", "for", "with", "and", "or", "but", "it", "its",
@@ -697,7 +688,7 @@ class WebResearchEnv(HermesAgentBaseEnv):
 
     @staticmethod
     def _extract_domains(text: str) -> set:
-        """Extract unique domains from URLs cited in the response."""
+        """从回复中引用的 URL 中提取唯一域名。"""
         urls = re.findall(r'https?://[^\s\)>\]"\']+', text)
         domains = set()
         for url in urls:
@@ -712,7 +703,7 @@ class WebResearchEnv(HermesAgentBaseEnv):
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# 入口点
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":

@@ -1,20 +1,20 @@
-"""``hermes logs`` — view and filter Hermes log files.
+"""``hermes logs`` —— 查看和筛选 Hermes 日志文件。
 
-Supports tailing, following, session filtering, level filtering,
-component filtering, and relative time ranges.  All log files live
-under ``~/.hermes/logs/``.
+支持尾部查看、实时跟踪、会话过滤、级别过滤、
+组件过滤和相对时间范围。所有日志文件位于
+``~/.hermes/logs/`` 下。
 
-Usage examples::
+使用示例::
 
-    hermes logs                    # last 50 lines of agent.log
-    hermes logs -f                 # follow agent.log in real time
-    hermes logs errors             # last 50 lines of errors.log
-    hermes logs gateway -n 100    # last 100 lines of gateway.log
-    hermes logs --level WARNING    # only WARNING+ lines
-    hermes logs --session abc123   # filter by session ID substring
-    hermes logs --component tools  # only tool-related lines
-    hermes logs --since 1h         # lines from the last hour
-    hermes logs --since 30m -f     # follow, starting 30 min ago
+    hermes logs                    # 查看 agent.log 的最后 50 行
+    hermes logs -f                 # 实时跟踪 agent.log
+    hermes logs errors             # 查看 errors.log 的最后 50 行
+    hermes logs gateway -n 100    # 查看 gateway.log 的最后 100 行
+    hermes logs --level WARNING    # 仅显示 WARNING 及以上级别的行
+    hermes logs --session abc123   # 按会话 ID 子串过滤
+    hermes logs --component tools  # 仅显示工具相关的行
+    hermes logs --since 1h         # 最近一小时的行
+    hermes logs --since 30m -f     # 从 30 分钟前开始实时跟踪
 """
 
 import re
@@ -26,55 +26,58 @@ from typing import Optional, Sequence
 
 from hermes_constants import get_hermes_home, display_hermes_home
 
-# Known log files (name → filename)
+# 已知的日志文件（名称 → 文件名）
 LOG_FILES = {
     "agent": "agent.log",
     "errors": "errors.log",
     "gateway": "gateway.log",
 }
 
-# Log line timestamp regex — matches "2026-04-05 22:35:00,123" or
-# "2026-04-05 22:35:00" at the start of a line.
+# 日志行时间戳正则 —— 匹配行首的 "2026-04-05 22:35:00,123" 或
+# "2026-04-05 22:35:00" 格式
 _TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})")
 
-# Level extraction — matches " INFO ", " WARNING ", " ERROR ", " DEBUG ", " CRITICAL "
+# 日志级别提取 —— 匹配 " INFO "、" WARNING "、" ERROR "、" DEBUG "、" CRITICAL "
 _LEVEL_RE = re.compile(r"\s(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s")
 
-# Logger name extraction — after level and optional session tag, the next
-# non-space token before ":" is the logger name.
-# Matches: "INFO gateway.run:" or "INFO [sess_abc] tools.terminal_tool:"
+# 日志器名称提取 —— 在级别和可选的会话标签之后，冒号之前的
+# 非空白 token 就是日志器名称。
+# 匹配示例: "INFO gateway.run:" 或 "INFO [sess_abc] tools.terminal_tool:"
 _LOGGER_NAME_RE = re.compile(
-    r"\s(?:DEBUG|INFO|WARNING|ERROR|CRITICAL)"  # level
-    r"(?:\s+\[.*?\])?"                           # optional session tag
-    r"\s+(\S+):"                                 # logger name
+    r"\s(?:DEBUG|INFO|WARNING|ERROR|CRITICAL)"  # 日志级别
+    r"(?:\s+\[.*?\])?"                           # 可选的会话标签
+    r"\s+(\S+):"                                 # 日志器名称
 )
 
-# Level ordering for >= filtering
+# 日志级别排序，用于 >= 过滤比较
 _LEVEL_ORDER = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3, "CRITICAL": 4}
 
 
 def _parse_since(since_str: str) -> Optional[datetime]:
-    """Parse a relative time string like '1h', '30m', '2d' into a datetime cutoff.
+    """将相对时间字符串（如 '1h'、'30m'、'2d'）解析为时间截止点。
 
-    Returns None if the string can't be parsed.
+    如果字符串无法解析，返回 None。
     """
     since_str = since_str.strip().lower()
+    # 匹配数字+时间单位的格式（s=秒, m=分, h=时, d=天）
     match = re.match(r"^(\d+)\s*([smhd])$", since_str)
     if not match:
         return None
     value = int(match.group(1))
     unit = match.group(2)
+    # 根据单位创建对应的时间增量
     delta = {
         "s": timedelta(seconds=value),
         "m": timedelta(minutes=value),
         "h": timedelta(hours=value),
         "d": timedelta(days=value),
     }[unit]
+    # 返回当前时间减去时间增量，即截止时间点
     return datetime.now() - delta
 
 
 def _parse_line_timestamp(line: str) -> Optional[datetime]:
-    """Extract timestamp from a log line. Returns None if not parseable."""
+    """从日志行中提取时间戳。无法解析时返回 None。"""
     m = _TS_RE.match(line)
     if not m:
         return None
@@ -85,19 +88,19 @@ def _parse_line_timestamp(line: str) -> Optional[datetime]:
 
 
 def _extract_level(line: str) -> Optional[str]:
-    """Extract the log level from a line."""
+    """从日志行中提取日志级别。"""
     m = _LEVEL_RE.search(line)
     return m.group(1) if m else None
 
 
 def _extract_logger_name(line: str) -> Optional[str]:
-    """Extract the logger name from a log line."""
+    """从日志行中提取日志器名称。"""
     m = _LOGGER_NAME_RE.search(line)
     return m.group(1) if m else None
 
 
 def _line_matches_component(line: str, prefixes: Sequence[str]) -> bool:
-    """Check if a log line's logger name starts with any of *prefixes*."""
+    """检查日志行的日志器名称是否以给定的任意前缀开头。"""
     name = _extract_logger_name(line)
     if name is None:
         return False
@@ -112,22 +115,26 @@ def _matches_filters(
     since: Optional[datetime] = None,
     component_prefixes: Optional[Sequence[str]] = None,
 ) -> bool:
-    """Check if a log line passes all active filters."""
+    """检查日志行是否通过所有激活的过滤条件。"""
+    # 时间过滤：如果行的时间戳早于截止时间，则不匹配
     if since is not None:
         ts = _parse_line_timestamp(line)
         if ts is not None and ts < since:
             return False
 
+    # 级别过滤：如果行的级别低于最低级别要求，则不匹配
     if min_level is not None:
         level = _extract_level(line)
         if level is not None:
             if _LEVEL_ORDER.get(level, 0) < _LEVEL_ORDER.get(min_level, 0):
                 return False
 
+    # 会话过滤：如果行中不包含会话 ID 子串，则不匹配
     if session_filter is not None:
         if session_filter not in line:
             return False
 
+    # 组件过滤：如果行的日志器名称不匹配任何组件前缀，则不匹配
     if component_prefixes is not None:
         if not _line_matches_component(line, component_prefixes):
             return False
@@ -145,24 +152,24 @@ def tail_log(
     since: Optional[str] = None,
     component: Optional[str] = None,
 ) -> None:
-    """Read and display log lines, optionally following in real time.
+    """读取并显示日志行，可选择实时跟踪。
 
-    Parameters
+    参数
     ----------
     log_name
-        Which log to read: ``"agent"``, ``"errors"``, ``"gateway"``.
+        要读取的日志文件: ``"agent"``、``"errors"``、``"gateway"``。
     num_lines
-        Number of recent lines to show (before follow starts).
+        要显示的最近行数（在开始跟踪之前）。
     follow
-        If True, keep watching for new lines (Ctrl+C to stop).
+        如果为 True，持续监控新行（按 Ctrl+C 停止）。
     level
-        Minimum log level to show (e.g. ``"WARNING"``).
+        要显示的最低日志级别（例如 ``"WARNING"``）。
     session
-        Session ID substring to filter on.
+        用于过滤的会话 ID 子串。
     since
-        Relative time string (e.g. ``"1h"``, ``"30m"``).
+        相对时间字符串（例如 ``"1h"``、``"30m"``）。
     component
-        Component name to filter by (e.g. ``"gateway"``, ``"tools"``).
+        用于过滤的组件名称（例如 ``"gateway"``、``"tools"``）。
     """
     filename = LOG_FILES.get(log_name)
     if filename is None:
@@ -175,7 +182,7 @@ def tail_log(
         print(f"(Logs are created when Hermes runs — try 'hermes chat' first)")
         sys.exit(1)
 
-    # Parse --since into a datetime cutoff
+    # 将 --since 参数解析为时间截止点
     since_dt = None
     if since:
         since_dt = _parse_since(since)
@@ -183,12 +190,13 @@ def tail_log(
             print(f"Invalid --since value: {since!r}. Use format like '1h', '30m', '2d'.")
             sys.exit(1)
 
+    # 验证并标准化日志级别参数
     min_level = level.upper() if level else None
     if min_level and min_level not in _LEVEL_ORDER:
         print(f"Invalid --level: {level!r}. Use DEBUG, INFO, WARNING, ERROR, or CRITICAL.")
         sys.exit(1)
 
-    # Resolve component to logger name prefixes
+    # 将组件名称解析为日志器名称前缀列表
     component_prefixes = None
     if component:
         from hermes_logging import COMPONENT_PREFIXES
@@ -199,6 +207,7 @@ def tail_log(
             sys.exit(1)
         component_prefixes = COMPONENT_PREFIXES[component_lower]
 
+    # 判断是否有任何过滤条件被激活
     has_filters = (
         min_level is not None
         or session is not None
@@ -206,7 +215,7 @@ def tail_log(
         or component_prefixes is not None
     )
 
-    # Read and display the tail
+    # 读取并显示尾部日志
     try:
         lines = _read_tail(log_path, num_lines, has_filters=has_filters,
                            min_level=min_level, session_filter=session,
@@ -215,7 +224,7 @@ def tail_log(
         print(f"Permission denied: {log_path}")
         sys.exit(1)
 
-    # Print header
+    # 打印头部信息（包含过滤条件描述）
     filter_parts = []
     if min_level:
         filter_parts.append(f"level>={min_level}")
@@ -238,7 +247,7 @@ def tail_log(
     if not follow:
         return
 
-    # Follow mode — poll for new content
+    # 跟踪模式 —— 轮询新内容
     try:
         _follow_log(log_path, min_level=min_level, session_filter=session,
                      since=since_dt, component_prefixes=component_prefixes)
@@ -256,13 +265,13 @@ def _read_tail(
     since: Optional[datetime] = None,
     component_prefixes: Optional[Sequence[str]] = None,
 ) -> list:
-    """Read the last *num_lines* matching lines from a log file.
+    """从日志文件中读取最后 *num_lines* 条匹配的行。
 
-    When filters are active, we read more raw lines to find enough matches.
+    当有过滤条件时，会读取更多原始行以确保过滤后有足够的匹配结果。
     """
     if has_filters:
-        # Read more lines to ensure we get enough after filtering.
-        # For large files, read last 10K lines and filter down.
+        # 有过滤条件时读取更多行，确保过滤后有足够的结果。
+        # 对于大文件，读取最后 10K 行然后过滤。
         raw_lines = _read_last_n_lines(path, max(num_lines * 20, 2000))
         filtered = [
             l for l in raw_lines
@@ -276,23 +285,23 @@ def _read_tail(
 
 
 def _read_last_n_lines(path: Path, n: int) -> list:
-    """Efficiently read the last N lines from a file.
+    """高效地读取文件的最后 N 行。
 
-    For files under 1MB, reads the whole file (fast, simple).
-    For larger files, reads chunks from the end.
+    对于 1MB 以下的文件，直接读取整个文件（简单快速）。
+    对于更大的文件，从文件末尾分块读取。
     """
     try:
         size = path.stat().st_size
         if size == 0:
             return []
 
-        # For files up to 1MB, just read the whole thing — simple and correct.
+        # 对于 1MB 以内的文件，直接读取整个文件——简单且正确。
         if size <= 1_048_576:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 all_lines = f.readlines()
             return all_lines[-n:]
 
-        # For large files, read chunks from the end.
+        # 对于大文件，从末尾分块读取。
         with open(path, "rb") as f:
             chunk_size = 8192
             lines = []
@@ -305,15 +314,15 @@ def _read_last_n_lines(path: Path, n: int) -> list:
                 chunk = f.read(read_size)
                 chunk_lines = chunk.split(b"\n")
                 if lines:
-                    # Merge the last partial line of the new chunk with the
-                    # first partial line of what we already have.
+                    # 将新块的最后一个不完整行与已有内容的第一个不完整行合并
                     lines[0] = chunk_lines[-1] + lines[0]
                     lines = chunk_lines[:-1] + lines
                 else:
                     lines = chunk_lines
+                # 逐步增大块大小以提高效率，最大 64KB
                 chunk_size = min(chunk_size * 2, 65536)
 
-            # Decode and return last N non-empty lines.
+            # 解码并返回最后 N 行非空行
             decoded = []
             for raw in lines:
                 if not raw.strip():
@@ -325,7 +334,7 @@ def _read_last_n_lines(path: Path, n: int) -> list:
             return decoded[-n:]
 
     except Exception:
-        # Fallback: read entire file
+        # 兜底方案：读取整个文件
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             all_lines = f.readlines()
         return all_lines[-n:]
@@ -339,9 +348,9 @@ def _follow_log(
     since: Optional[datetime] = None,
     component_prefixes: Optional[Sequence[str]] = None,
 ) -> None:
-    """Poll a log file for new content and print matching lines."""
+    """轮询日志文件的新内容并打印匹配的行。"""
     with open(path, "r", encoding="utf-8", errors="replace") as f:
-        # Seek to end
+        # 定位到文件末尾
         f.seek(0, 2)
         while True:
             line = f.readline()
@@ -352,11 +361,12 @@ def _follow_log(
                     print(line, end="")
                     sys.stdout.flush()
             else:
+                # 没有新内容时短暂等待后重试
                 time.sleep(0.3)
 
 
 def list_logs() -> None:
-    """Print available log files with sizes."""
+    """打印可用的日志文件及其大小。"""
     log_dir = get_hermes_home() / "logs"
     if not log_dir.exists():
         print(f"No logs directory at {display_hermes_home()}/logs/")
@@ -368,12 +378,14 @@ def list_logs() -> None:
         if entry.is_file() and entry.suffix == ".log":
             size = entry.stat().st_size
             mtime = datetime.fromtimestamp(entry.stat().st_mtime)
+            # 将文件大小格式化为人类可读的形式
             if size < 1024:
                 size_str = f"{size}B"
             elif size < 1024 * 1024:
                 size_str = f"{size / 1024:.1f}KB"
             else:
                 size_str = f"{size / (1024 * 1024):.1f}MB"
+            # 计算文件修改时间距今的时间差并格式化
             age = datetime.now() - mtime
             if age.total_seconds() < 60:
                 age_str = "just now"

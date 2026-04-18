@@ -1,4 +1,4 @@
-"""Helpers for Nous subscription managed-tool capabilities."""
+"""Nous 订阅托管工具能力的辅助工具。"""
 
 from __future__ import annotations
 
@@ -162,7 +162,7 @@ def _resolve_browser_feature_state(
     direct_firecrawl: bool,
     managed_browser_available: bool,
 ) -> tuple[str, bool, bool, bool]:
-    """Resolve browser availability using the same precedence as runtime."""
+    """使用与运行时相同的优先级解析浏览器可用性。"""
     if direct_camofox:
         return "camofox", True, bool(browser_tool_enabled), False
 
@@ -258,9 +258,8 @@ def get_nous_subscription_features(
         terminal_cfg.get("modal_mode")
     )
 
-    # use_gateway flags — when True, the user explicitly opted into the
-    # Tool Gateway via `hermes model`, so direct credentials should NOT
-    # prevent gateway routing.
+    # use_gateway 标志——当为 True 时，用户通过 `hermes model` 显式选择了
+    # 工具网关，因此直连凭证不应阻止网关路由。
     web_use_gateway = bool(web_cfg.get("use_gateway"))
     tts_use_gateway = bool(tts_cfg.get("use_gateway"))
     browser_use_gateway = bool(browser_cfg.get("use_gateway"))
@@ -279,7 +278,7 @@ def get_nous_subscription_features(
     direct_browser_use = bool(get_env_value("BROWSER_USE_API_KEY"))
     direct_modal = has_direct_modal_credentials()
 
-    # When use_gateway is set, suppress direct credentials for managed detection
+    # 当 use_gateway 设置时，抑制直连凭证以进行托管检测
     if web_use_gateway:
         direct_firecrawl = False
         direct_exa = False
@@ -527,7 +526,7 @@ def apply_nous_managed_defaults(
 
 
 # ---------------------------------------------------------------------------
-# Tool Gateway offer — single Y/n prompt after model selection
+# 工具网关提供——模型选择后的单次 Y/n 提示
 # ---------------------------------------------------------------------------
 
 _GATEWAY_TOOL_LABELS = {
@@ -539,7 +538,7 @@ _GATEWAY_TOOL_LABELS = {
 
 
 def _get_gateway_direct_credentials() -> Dict[str, bool]:
-    """Return a dict of tool_key -> has_direct_credentials."""
+    """返回 tool_key -> 是否有直连凭证 的字典。"""
     return {
         "web": bool(
             get_env_value("FIRECRAWL_API_KEY")
@@ -573,14 +572,14 @@ _ALL_GATEWAY_KEYS = ("web", "image_gen", "tts", "browser")
 def get_gateway_eligible_tools(
     config: Optional[Dict[str, object]] = None,
 ) -> tuple[list[str], list[str], list[str]]:
-    """Return (unconfigured, has_direct, already_managed) tool key lists.
+    """返回 (unconfigured, has_direct, already_managed) 工具键列表。
 
-    - unconfigured: tools with no direct credentials (easy switch)
-    - has_direct: tools where the user has their own API keys
-    - already_managed: tools already routed through the gateway
+    - unconfigured: 没有直连凭证的工具（易于切换）
+    - has_direct: 用户拥有自己 API 密钥的工具
+    - already_managed: 已通过网关路由的工具
 
-    All lists are empty when the user is not a paid Nous subscriber or
-    is not using Nous as their provider.
+    当用户不是付费 Nous 订阅者或未使用 Nous 作为提供商时，
+    所有列表均为空。
     """
     if not managed_nous_tools_enabled():
         return [], [], []
@@ -589,17 +588,16 @@ def get_gateway_eligible_tools(
         from hermes_cli.config import load_config
         config = load_config() or {}
 
-    # Quick provider check without the heavy get_nous_subscription_features call
+    # 快速提供商检查，无需调用耗时的 get_nous_subscription_features
     model_cfg = config.get("model")
     if not isinstance(model_cfg, dict) or str(model_cfg.get("provider") or "").strip().lower() != "nous":
         return [], [], []
 
     direct = _get_gateway_direct_credentials()
 
-    # Check which tools the user has explicitly opted into the gateway for.
-    # This is distinct from managed_by_nous which fires implicitly when
-    # no direct keys exist — we only skip the prompt for tools where
-    # use_gateway was explicitly set.
+    # 检查用户明确选择使用网关的工具。
+    # 这与 managed_by_nous 不同，后者在没有直连密钥时隐式触发——
+    # 我们只对显式设置了 use_gateway 的工具跳过提示。
     opted_in = {
         "web": bool((config.get("web") if isinstance(config.get("web"), dict) else {}).get("use_gateway")),
         "image_gen": bool((config.get("image_gen") if isinstance(config.get("image_gen"), dict) else {}).get("use_gateway")),
@@ -624,12 +622,12 @@ def apply_gateway_defaults(
     config: Dict[str, object],
     tool_keys: list[str],
 ) -> set[str]:
-    """Apply Tool Gateway config for the given tool keys.
+    """为给定的工具键应用工具网关配置。
 
-    Sets ``use_gateway: true`` in each tool's config section so the
-    runtime prefers the gateway even when direct API keys are present.
+    在每个工具的配置段中设置 ``use_gateway: true``，使运行时
+    即使存在直连 API 密钥也优先使用网关。
 
-    Returns the set of tools that were actually changed.
+    返回实际被更改的工具集合。
     """
     changed: set[str] = set()
 
@@ -675,13 +673,13 @@ def apply_gateway_defaults(
 
 
 def prompt_enable_tool_gateway(config: Dict[str, object]) -> set[str]:
-    """If eligible tools exist, prompt the user to enable the Tool Gateway.
+    """如果有符合条件的工具，提示用户启用工具网关。
 
-    Uses prompt_choice() with a description parameter so the curses TUI
-    shows the tool context alongside the choices.
+    使用带 description 参数的 prompt_choice()，以便 curses TUI
+    在选项旁显示工具上下文。
 
-    Returns the set of tools that were enabled, or empty set if the user
-    declined or no tools were eligible.
+    返回被启用的工具集合，如果用户拒绝或没有符合条件的工具
+    则返回空集合。
     """
     unconfigured, has_direct, already_managed = get_gateway_eligible_tools(config)
     if not unconfigured and not has_direct:
@@ -692,7 +690,7 @@ def prompt_enable_tool_gateway(config: Dict[str, object]) -> set[str]:
     except Exception:
         return set()
 
-    # Build description lines showing full status of all gateway tools
+    # 构建显示所有网关工具完整状态的描述行
     desc_parts: list[str] = [
         "",
         "  The Tool Gateway gives you access to web search, image generation,",
@@ -710,7 +708,7 @@ def prompt_enable_tool_gateway(config: Dict[str, object]) -> set[str]:
         for k in has_direct:
             desc_parts.append(f"  ○ {_GATEWAY_TOOL_LABELS[k]} — using {_GATEWAY_DIRECT_LABELS[k]}")
 
-    # Build short choice labels — detail is in the description above
+    # 构建简短的选项标签——详情在上面的描述中
     choices: list[str] = []
     choice_keys: list[str] = []  # maps choice index -> action
 
@@ -739,8 +737,8 @@ def prompt_enable_tool_gateway(config: Dict[str, object]) -> set[str]:
         choice_keys.append("skip")
 
     description = "\n".join(desc_parts) if desc_parts else None
-    # Default to "Enable" when user has no direct keys (new user),
-    # default to "Skip" when they have existing keys to preserve.
+    # 当用户没有直连密钥时默认选择 "Enable"（新用户），
+    # 当有现有密钥时默认选择 "Skip" 以保留。
     default_idx = 0 if not has_direct else len(choices) - 1
 
     try:
@@ -758,8 +756,8 @@ def prompt_enable_tool_gateway(config: Dict[str, object]) -> set[str]:
         return set()
 
     if action == "all":
-        # Apply to switchable tools + ensure already-managed tools also
-        # have use_gateway persisted in config for consistency.
+        # 应用到可切换的工具 + 确保已托管的工具也在配置中
+        # 持久化了 use_gateway 以保持一致性。
         to_apply = list(_ALL_GATEWAY_KEYS)
     else:
         to_apply = unconfigured
@@ -768,7 +766,7 @@ def prompt_enable_tool_gateway(config: Dict[str, object]) -> set[str]:
     if changed:
         from hermes_cli.config import save_config
         save_config(config)
-        # Only report the tools that actually switched (not already-managed ones)
+        # 仅报告实际切换的工具（不含已托管的）
         newly_switched = changed - set(already_managed)
         for key in sorted(newly_switched):
             label = _GATEWAY_TOOL_LABELS.get(key, key)

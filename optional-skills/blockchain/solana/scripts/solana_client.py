@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Solana Blockchain CLI Tool for Hermes Agent
+Solana 区块链 CLI 工具（Hermes Agent 专用）
 --------------------------------------------
-Queries the Solana JSON-RPC API and CoinGecko for enriched on-chain data.
-Uses only Python standard library — no external packages required.
+通过 Solana JSON-RPC API 和 CoinGecko 查询丰富的链上数据。
+仅使用 Python 标准库，无需安装额外依赖包。
 
-Usage:
+用法:
   python3 solana_client.py stats
   python3 solana_client.py wallet   <address> [--limit N] [--all] [--no-prices]
   python3 solana_client.py tx       <signature>
@@ -15,8 +15,8 @@ Usage:
   python3 solana_client.py whales   [--min-sol N]
   python3 solana_client.py price    <mint_address_or_symbol>
 
-Environment:
-  SOLANA_RPC_URL  Override the default RPC endpoint (default: mainnet-beta public)
+环境变量:
+  SOLANA_RPC_URL  覆盖默认的 RPC 端点（默认值: mainnet-beta 公共节点）
 """
 
 import argparse
@@ -35,8 +35,8 @@ RPC_URL = os.environ.get(
 
 LAMPORTS_PER_SOL = 1_000_000_000
 
-# Well-known Solana token names — avoids API calls for common tokens.
-# Maps mint address → (symbol, name).
+# 已知的 Solana 代币名称 — 避免对常见代币发起 API 调用。
+# 将铸币地址映射到 (符号, 名称)。
 KNOWN_TOKENS: Dict[str, tuple] = {
     "So11111111111111111111111111111111111111112":  ("SOL",   "Solana"),
     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": ("USDC",  "USD Coin"),
@@ -63,16 +63,16 @@ KNOWN_TOKENS: Dict[str, tuple] = {
     "A8C3xuqscfmyLrte3VwJvtPHXvcSN3FjDbUaSMAkQrCS": ("PENGU", "Pudgy Penguins"),
 }
 
-# Reverse lookup: symbol → mint (for the `price` command).
+# 反向查找: 符号 → 铸币地址（用于 `price` 命令）。
 _SYMBOL_TO_MINT = {v[0].upper(): k for k, v in KNOWN_TOKENS.items()}
 
 
 # ---------------------------------------------------------------------------
-# HTTP / RPC helpers
+# HTTP / RPC 辅助函数
 # ---------------------------------------------------------------------------
 
 def _http_get_json(url: str, timeout: int = 10, retries: int = 2) -> Any:
-    """GET JSON from a URL with retry on 429 rate-limit. Returns parsed JSON or None."""
+    """通过 GET 请求获取 JSON 数据，遇到 429 限流时自动重试。返回解析后的 JSON 或 None。"""
     for attempt in range(retries + 1):
         req = urllib.request.Request(
             url, headers={"Accept": "application/json", "User-Agent": "HermesAgent/1.0"},
@@ -91,7 +91,7 @@ def _http_get_json(url: str, timeout: int = 10, retries: int = 2) -> Any:
 
 
 def _rpc_call(method: str, params: list = None, retries: int = 2) -> Any:
-    """Send a JSON-RPC request with retry on 429 rate-limit."""
+    """发送 JSON-RPC 请求，遇到 429 限流时自动重试。"""
     payload = json.dumps({
         "jsonrpc": "2.0", "id": 1,
         "method": method, "params": params or [],
@@ -107,7 +107,7 @@ def _rpc_call(method: str, params: list = None, retries: int = 2) -> Any:
                 body = json.load(resp)
             if "error" in body:
                 err = body["error"]
-                # Rate-limit: retry after delay
+                # 限流: 延迟后重试
                 if isinstance(err, dict) and err.get("code") == 429:
                     if attempt < retries:
                         time.sleep(1.5 * (attempt + 1))
@@ -124,12 +124,12 @@ def _rpc_call(method: str, params: list = None, retries: int = 2) -> Any:
     return None
 
 
-# Keep backward compat — the rest of the code uses `rpc()`.
+# 保持向后兼容 — 其余代码使用 `rpc()`。
 rpc = _rpc_call
 
 
 def rpc_batch(calls: list) -> list:
-    """Send a batch of JSON-RPC requests (with retry on 429)."""
+    """发送批量 JSON-RPC 请求（遇到 429 时自动重试）。"""
     payload = json.dumps([
         {"jsonrpc": "2.0", "id": i, "method": c["method"], "params": c.get("params", [])}
         for i, c in enumerate(calls)
@@ -162,22 +162,22 @@ def print_json(obj: Any) -> None:
 
 
 def _short_mint(mint: str) -> str:
-    """Abbreviate a mint address for display: first 4 + last 4."""
+    """缩写铸币地址用于显示: 前 4 位 + 后 4 位。"""
     if len(mint) <= 12:
         return mint
     return f"{mint[:4]}...{mint[-4:]}"
 
 
 # ---------------------------------------------------------------------------
-# Price & token name helpers (CoinGecko — free, no API key)
+# 价格与代币名称辅助函数（CoinGecko — 免费，无需 API 密钥）
 # ---------------------------------------------------------------------------
 
 def fetch_prices(mints: List[str], max_lookups: int = 20) -> Dict[str, float]:
-    """Fetch USD prices for mint addresses via CoinGecko (one per request).
+    """通过 CoinGecko 获取铸币地址的 USD 价格（逐个请求）。
 
-    CoinGecko free tier doesn't support batch Solana token lookups,
-    so we do individual calls — capped at *max_lookups* to stay within
-    rate limits. Returns {mint: usd_price}.
+    CoinGecko 免费版不支持批量查询 Solana 代币价格，
+    因此逐个发起请求 — 限制为 *max_lookups* 次以遵守
+    速率限制。返回 {铸币地址: USD 价格}。
     """
     prices: Dict[str, float] = {}
     for i, mint in enumerate(mints[:max_lookups]):
@@ -191,14 +191,14 @@ def fetch_prices(mints: List[str], max_lookups: int = 20) -> Dict[str, float]:
                 if isinstance(info, dict) and "usd" in info:
                     prices[mint] = info["usd"]
                     break
-        # Pause between calls to respect CoinGecko free-tier rate-limits
+        # 在请求之间暂停以遵守 CoinGecko 免费版速率限制
         if i < len(mints[:max_lookups]) - 1:
             time.sleep(1.0)
     return prices
 
 
 def fetch_sol_price() -> Optional[float]:
-    """Fetch current SOL price in USD via CoinGecko."""
+    """通过 CoinGecko 获取当前 SOL 的 USD 价格。"""
     data = _http_get_json(
         "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd"
     )
@@ -208,9 +208,9 @@ def fetch_sol_price() -> Optional[float]:
 
 
 def resolve_token_name(mint: str) -> Optional[Dict[str, str]]:
-    """Look up token name and symbol from CoinGecko by mint address.
+    """通过 CoinGecko 根据铸币地址查找代币名称和符号。
 
-    Returns {"name": ..., "symbol": ...} or None.
+    返回 {"name": ..., "symbol": ...} 或 None。
     """
     if mint in KNOWN_TOKENS:
         sym, name = KNOWN_TOKENS[mint]
@@ -223,18 +223,18 @@ def resolve_token_name(mint: str) -> Optional[Dict[str, str]]:
 
 
 def _token_label(mint: str) -> str:
-    """Return a human-readable label for a mint: symbol if known, else abbreviated address."""
+    """返回铸币地址的人类可读标签: 如果已知则返回符号，否则返回缩写地址。"""
     if mint in KNOWN_TOKENS:
         return KNOWN_TOKENS[mint][0]
     return _short_mint(mint)
 
 
 # ---------------------------------------------------------------------------
-# 1. Network Stats
+# 1. 网络状态
 # ---------------------------------------------------------------------------
 
 def cmd_stats(_args):
-    """Live Solana network: slot, epoch, TPS, supply, version, SOL price."""
+    """Solana 网络实时数据: 槽位、纪元、TPS、供应量、版本、SOL 价格。"""
     results = rpc_batch([
         {"method": "getSlot"},
         {"method": "getEpochInfo"},
@@ -278,21 +278,21 @@ def cmd_stats(_args):
 
 
 # ---------------------------------------------------------------------------
-# 2. Wallet Info (enhanced with prices, sorting, filtering)
+# 2. 钱包信息（带价格、排序、过滤增强版）
 # ---------------------------------------------------------------------------
 
 def cmd_wallet(args):
-    """SOL balance + SPL token holdings with USD values."""
+    """SOL 余额 + SPL 代币持仓及 USD 估值。"""
     address = args.address
     show_all = getattr(args, "all", False)
     limit = getattr(args, "limit", 20) or 20
     skip_prices = getattr(args, "no_prices", False)
 
-    # Fetch SOL balance
+    # 获取 SOL 余额
     balance_result = rpc("getBalance", [address])
     sol_balance = lamports_to_sol(balance_result["value"])
 
-    # Fetch all SPL token accounts
+    # 获取所有 SPL 代币账户
     token_result = rpc("getTokenAccountsByOwner", [
         address,
         {"programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"},
@@ -311,24 +311,24 @@ def cmd_wallet(args):
                 "decimals": ta["decimals"],
             })
 
-    # Separate NFTs (amount=1, decimals=0) from fungible tokens
+    # 将 NFT（数量=1，精度=0）与同质化代币分离
     nfts = [t for t in raw_tokens if t["decimals"] == 0 and t["amount"] == 1]
     fungible = [t for t in raw_tokens if not (t["decimals"] == 0 and t["amount"] == 1)]
 
-    # Fetch prices for fungible tokens (cap lookups to avoid API abuse)
+    # 获取同质化代币的价格（限制查询次数以避免滥用 API）
     sol_price = None
     prices: Dict[str, float] = {}
     if not skip_prices and fungible:
         sol_price = fetch_sol_price()
-        # Prioritize known tokens, then a small sample of unknowns.
-        # CoinGecko free tier = 1 request per mint, so we cap lookups.
+        # 优先查询已知代币，然后查询少量未知代币。
+        # CoinGecko 免费版 = 每个铸币地址 1 次请求，因此限制查询次数。
         known_mints = [t["mint"] for t in fungible if t["mint"] in KNOWN_TOKENS]
         other_mints = [t["mint"] for t in fungible if t["mint"] not in KNOWN_TOKENS][:15]
         mints_to_price = known_mints + other_mints
         if mints_to_price:
             prices = fetch_prices(mints_to_price, max_lookups=30)
 
-    # Enrich tokens with labels and USD values
+    # 为代币添加标签和 USD 估值
     enriched = []
     dust_count = 0
     dust_value = 0.0
@@ -338,7 +338,7 @@ def cmd_wallet(args):
         usd_price = prices.get(mint)
         usd_value = round(usd_price * t["amount"], 2) if usd_price else None
 
-        # Filter dust (< $0.01) unless --all
+        # 过滤灰尘代币（< $0.01），除非指定了 --all
         if not show_all and usd_value is not None and usd_value < 0.01:
             dust_count += 1
             dust_value += usd_value
@@ -350,15 +350,15 @@ def cmd_wallet(args):
             entry["value_usd"] = usd_value
         enriched.append(entry)
 
-    # Sort: tokens with known USD value first (highest→lowest), then unknowns
+    # 排序: 有 USD 价值的代币优先（从高到低），未知价值的在后
     enriched.sort(key=lambda x: (x.get("value_usd") is not None, x.get("value_usd") or 0), reverse=True)
 
-    # Apply limit unless --all
+    # 应用数量限制，除非指定了 --all
     total_tokens = len(enriched)
     if not show_all and len(enriched) > limit:
         enriched = enriched[:limit]
 
-    # Compute portfolio total
+    # 计算投资组合总价值
     total_usd = sum(t.get("value_usd", 0) for t in enriched)
     sol_value_usd = round(sol_price * sol_balance, 2) if sol_price else None
     if sol_value_usd:
@@ -390,11 +390,11 @@ def cmd_wallet(args):
 
 
 # ---------------------------------------------------------------------------
-# 3. Transaction Details
+# 3. 交易详情
 # ---------------------------------------------------------------------------
 
 def cmd_tx(args):
-    """Full transaction details by signature."""
+    """根据签名获取完整交易详情。"""
     result = rpc("getTransaction", [
         args.signature,
         {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0},
@@ -427,7 +427,7 @@ def cmd_tx(args):
         if prog:
             programs.append(prog)
 
-    # Add USD value for SOL changes
+    # 为 SOL 余额变动添加 USD 价值
     sol_price = fetch_sol_price()
     if sol_price and balance_changes:
         for bc in balance_changes:
@@ -445,11 +445,11 @@ def cmd_tx(args):
 
 
 # ---------------------------------------------------------------------------
-# 4. Token Info (enhanced with name + price)
+# 4. 代币信息（含名称 + 价格增强）
 # ---------------------------------------------------------------------------
 
 def cmd_token(args):
-    """SPL token metadata, supply, decimals, price, top holders."""
+    """SPL 代币元数据、供应量、精度、价格和前五大持有者。"""
     mint = args.mint
 
     mint_info = rpc("getAccountInfo", [mint, {"encoding": "jsonParsed"}])
@@ -472,7 +472,7 @@ def cmd_token(args):
             "percent": pct,
         })
 
-    # Resolve name + price
+    # 解析代币名称 + 获取价格
     token_meta = resolve_token_name(mint)
     price_data = fetch_prices([mint])
 
@@ -493,11 +493,11 @@ def cmd_token(args):
 
 
 # ---------------------------------------------------------------------------
-# 5. Recent Activity
+# 5. 近期活动
 # ---------------------------------------------------------------------------
 
 def cmd_activity(args):
-    """Recent transaction signatures for an address."""
+    """获取指定地址的近期交易签名。"""
     limit  = min(args.limit, 25)
     result = rpc("getSignaturesForAddress", [args.address, {"limit": limit}])
 
@@ -515,11 +515,11 @@ def cmd_activity(args):
 
 
 # ---------------------------------------------------------------------------
-# 6. NFT Portfolio
+# 6. NFT 投资组合
 # ---------------------------------------------------------------------------
 
 def cmd_nft(args):
-    """NFTs owned by a wallet (amount=1 && decimals=0 heuristic)."""
+    """钱包持有的 NFT（基于 amount=1 且 decimals=0 的启发式判断）。"""
     result = rpc("getTokenAccountsByOwner", [
         args.address,
         {"programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"},
@@ -542,11 +542,11 @@ def cmd_nft(args):
 
 
 # ---------------------------------------------------------------------------
-# 7. Whale Detector (enhanced with USD values)
+# 7. 巨鲸检测器（含 USD 估值增强）
 # ---------------------------------------------------------------------------
 
 def cmd_whales(args):
-    """Scan the latest block for large SOL transfers."""
+    """扫描最新区块中的大额 SOL 转账。"""
     min_lamports = int(args.min_sol * LAMPORTS_PER_SOL)
 
     slot  = rpc("getSlot")
@@ -608,20 +608,20 @@ def cmd_whales(args):
 
 
 # ---------------------------------------------------------------------------
-# 8. Price Lookup
+# 8. 价格查询
 # ---------------------------------------------------------------------------
 
 def cmd_price(args):
-    """Quick price lookup for a token by mint address or known symbol."""
+    """通过铸币地址或已知符号快速查询代币价格。"""
     query = args.token
 
-    # Check if it's a known symbol
+    # 检查是否为已知符号
     mint = _SYMBOL_TO_MINT.get(query.upper(), query)
 
-    # Try to resolve name
+    # 尝试解析代币名称
     token_meta = resolve_token_name(mint)
 
-    # Fetch price
+    # 获取价格
     prices = fetch_prices([mint])
 
     out = {"query": query, "mint": mint}
@@ -637,13 +637,13 @@ def cmd_price(args):
 
 
 # ---------------------------------------------------------------------------
-# CLI
+# 命令行接口
 # ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
         prog="solana_client.py",
-        description="Solana blockchain query tool for Hermes Agent",
+        description="Solana 区块链查询工具（Hermes Agent 专用）",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

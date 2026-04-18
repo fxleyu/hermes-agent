@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-nutrition_search.py — Search USDA FoodData Central for nutrition info.
+nutrition_search.py — 搜索 USDA FoodData Central 营养数据库。
 
-Usage:
+用法:
   python3 nutrition_search.py "chicken breast"
   python3 nutrition_search.py "rice" "eggs" "broccoli"
   echo -e "oats\\nbanana\\nwhey protein" | python3 nutrition_search.py -
 
-Reads USDA_API_KEY from environment, falls back to DEMO_KEY.
-No external dependencies.
+从环境变量读取 USDA_API_KEY，未设置时回退到 DEMO_KEY。
+无需外部依赖。
 """
 import sys
 import os
@@ -75,7 +75,7 @@ def main():
                 display(food)
                 print()
         if len(queries) > 1:
-            time.sleep(1)  # respect rate limits
+            time.sleep(1)  # 遵守速率限制
 
     if API_KEY == "DEMO_KEY":
         print("\nTip: using DEMO_KEY (30 req/hr). Set USDA_API_KEY for 1000 req/hr.")

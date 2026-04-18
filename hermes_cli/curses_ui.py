@@ -1,8 +1,8 @@
-"""Shared curses-based UI components for Hermes CLI.
+"""Hermes CLI 的共享 curses 界面组件。
 
-Used by `hermes tools` and `hermes skills` for interactive checklists.
-Provides a curses multi-select with keyboard navigation, plus a
-text-based numbered fallback for terminals without curses support.
+被 `hermes tools` 和 `hermes skills` 用于交互式复选列表。
+提供带键盘导航的 curses 多选界面，以及用于不支持 curses
+的终端的基于文本的编号回退方案。
 """
 import sys
 from typing import Callable, List, Optional, Set
@@ -11,17 +11,17 @@ from hermes_cli.colors import Colors, color
 
 
 def flush_stdin() -> None:
-    """Flush any stray bytes from the stdin input buffer.
+    """清空 stdin 输入缓冲区中的杂散字节。
 
-    Must be called after ``curses.wrapper()`` (or any terminal-mode library
-    like simple_term_menu) returns, **before** the next ``input()`` /
-    ``getpass.getpass()`` call.  ``curses.endwin()`` restores the terminal
-    but does NOT drain the OS input buffer — leftover escape-sequence bytes
-    (from arrow keys, terminal mode-switch responses, or rapid keypresses)
-    remain buffered and silently get consumed by the next ``input()`` call,
-    corrupting user data (e.g. writing ``^[^[`` into .env files).
+    必须在 ``curses.wrapper()``（或任何终端模式库如
+    simple_term_menu）返回后、下一次 ``input()`` /
+    ``getpass.getpass()`` 调用之前调用。``curses.endwin()``
+    恢复了终端，但不会排空操作系统输入缓冲区 —— 遗留的
+    转义序列字节（来自方向键、终端模式切换响应或快速按键）
+    仍然被缓冲，并会被下一次 ``input()`` 调用静默消费，
+    导致用户数据损坏（例如向 .env 文件写入 ``^[^[``）。
 
-    On non-TTY stdin (piped, redirected) or Windows, this is a no-op.
+    在非 TTY stdin（管道、重定向）或 Windows 上，此操作为空操作。
     """
     try:
         if not sys.stdin.isatty():
@@ -40,22 +40,21 @@ def curses_checklist(
     cancel_returns: Set[int] | None = None,
     status_fn: Optional[Callable[[Set[int]], str]] = None,
 ) -> Set[int]:
-    """Curses multi-select checklist. Returns set of selected indices.
+    """curses 多选复选列表。返回已选索引的集合。
 
-    Args:
-        title: Header line displayed above the checklist.
-        items: Display labels for each row.
-        selected: Indices that start checked (pre-selected).
-        cancel_returns: Returned on ESC/q. Defaults to the original *selected*.
-        status_fn: Optional callback ``f(chosen_indices) -> str`` whose return
-            value is rendered on the bottom row of the terminal.  Use this for
-            live aggregate info (e.g. estimated token counts).
+    参数:
+        title: 显示在复选列表上方的标题行。
+        items: 每行的显示标签。
+        selected: 初始选中的索引（预选项）。
+        cancel_returns: 按 ESC/q 时返回的值。默认为原始 *selected*。
+        status_fn: 可选回调 ``f(chosen_indices) -> str``，其返回值
+            渲染在终端底行。用于实时聚合信息（例如估计的 token 数量）。
     """
     if cancel_returns is None:
         cancel_returns = set(selected)
 
-    # Safety: curses and input() both hang or spin when stdin is not a
-    # terminal (e.g. subprocess pipe).  Return defaults immediately.
+    # 安全措施：当 stdin 不是终端时（例如子进程管道），
+    # curses 和 input() 都会挂起或空转。立即返回默认值。
     if not sys.stdin.isatty():
         return cancel_returns
 
@@ -79,10 +78,10 @@ def curses_checklist(
                 stdscr.clear()
                 max_y, max_x = stdscr.getmaxyx()
 
-                # Reserve bottom row for status bar when status_fn provided
+                # 当提供 status_fn 时，为状态栏保留底行
                 footer_rows = 1 if status_fn else 0
 
-                # Header
+                # 标题
                 try:
                     hattr = curses.A_BOLD
                     if curses.has_colors():
@@ -96,7 +95,7 @@ def curses_checklist(
                 except curses.error:
                     pass
 
-                # Scrollable item list
+                # 可滚动的项目列表
                 visible_rows = max_y - 3 - footer_rows
                 if cursor < scroll_offset:
                     scroll_offset = cursor
@@ -122,12 +121,12 @@ def curses_checklist(
                     except curses.error:
                         pass
 
-                # Status bar (bottom row, right-aligned)
+                # 状态栏（底行，右对齐）
                 if status_fn:
                     try:
                         status_text = status_fn(chosen)
                         if status_text:
-                            # Right-align on the bottom row
+                            # 右对齐到底行
                             sx = max(0, max_x - len(status_text) - 1)
                             sattr = curses.A_DIM
                             if curses.has_colors():
@@ -168,16 +167,15 @@ def curses_radiolist(
     cancel_returns: int | None = None,
     description: str | None = None,
 ) -> int:
-    """Curses single-select radio list. Returns the selected index.
+    """curses 单选列表。返回选中的索引。
 
-    Args:
-        title: Header line displayed above the list.
-        items: Display labels for each row.
-        selected: Index that starts selected (pre-selected).
-        cancel_returns: Returned on ESC/q. Defaults to the original *selected*.
-        description: Optional multi-line text shown between the title and
-            the item list.  Useful for context that should survive the
-            curses screen clear.
+    参数:
+        title: 显示在列表上方的标题行。
+        items: 每行的显示标签。
+        selected: 初始选中的索引（预选项）。
+        cancel_returns: 按 ESC/q 时返回的值。默认为原始 *selected*。
+        description: 在标题和项目列表之间显示的可选多行文本。
+            用于在 curses 屏幕清除后仍需保留的上下文信息。
     """
     if cancel_returns is None:
         cancel_returns = selected
@@ -209,7 +207,7 @@ def curses_radiolist(
 
                 row = 0
 
-                # Header
+                # 标题
                 try:
                     hattr = curses.A_BOLD
                     if curses.has_colors():
@@ -217,7 +215,7 @@ def curses_radiolist(
                     stdscr.addnstr(row, 0, title, max_x - 1, hattr)
                     row += 1
 
-                    # Description lines
+                    # 描述文本行
                     for dline in desc_lines:
                         if row >= max_y - 1:
                             break
@@ -233,7 +231,7 @@ def curses_radiolist(
                 except curses.error:
                     pass
 
-                # Scrollable item list
+                # 可滚动的项目列表
                 items_start = row + 1
                 visible_rows = max_y - items_start - 1
                 if cursor < scroll_offset:
@@ -288,7 +286,7 @@ def _radio_numbered_fallback(
     selected: int,
     cancel_returns: int,
 ) -> int:
-    """Text-based numbered fallback for radio selection."""
+    """基于文本编号的单选回退方案。"""
     print(color(f"\n  {title}", Colors.YELLOW))
     print(color("  Select by number, Enter to confirm.\n", Colors.DIM))
 
@@ -315,10 +313,10 @@ def curses_single_select(
     *,
     cancel_label: str = "Cancel",
 ) -> int | None:
-    """Curses single-select menu. Returns selected index or None on cancel.
+    """curses 单选菜单。返回选中的索引，取消时返回 None。
 
-    Works inside prompt_toolkit because curses.wrapper() restores the terminal
-    safely, unlike simple_term_menu which conflicts with /dev/tty.
+    可在 prompt_toolkit 内部使用，因为 curses.wrapper() 能安全
+    恢复终端，而 simple_term_menu 会与 /dev/tty 冲突。
     """
     if not sys.stdin.isatty():
         return None
@@ -412,7 +410,7 @@ def _numbered_single_fallback(
     items: List[str],
     cancel_idx: int,
 ) -> int | None:
-    """Text-based numbered fallback for single-select."""
+    """基于文本编号的单选回退方案。"""
     print(f"\n  {title}\n")
     for i, label in enumerate(items, 1):
         print(f"  {i}. {label}")
@@ -438,7 +436,7 @@ def _numbered_fallback(
     cancel_returns: Set[int],
     status_fn: Optional[Callable[[Set[int]], str]] = None,
 ) -> Set[int]:
-    """Text-based toggle fallback for terminals without curses."""
+    """用于不支持 curses 的终端的基于文本切换的回退方案。"""
     chosen = set(selected)
     print(color(f"\n  {title}", Colors.YELLOW))
     print(color("  Toggle by number, Enter to confirm.\n", Colors.DIM))

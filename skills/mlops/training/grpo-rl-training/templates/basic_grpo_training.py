@@ -1,13 +1,13 @@
 """
-Basic GRPO Training Template
+基础 GRPO 训练模板
 =============================
 
-A minimal, production-ready template for GRPO training with TRL.
-Adapt this for your specific task by modifying:
-1. Dataset loading (get_dataset function)
-2. Reward functions (reward_*_func)
-3. System prompt (SYSTEM_PROMPT)
-4. Hyperparameters (GRPOConfig)
+一个最小化的、可用于生产的 GRPO 训练模板，基于 TRL 框架。
+通过修改以下内容来适配你的具体任务:
+1. 数据集加载 (get_dataset 函数)
+2. 奖励函数 (reward_*_func)
+3. 系统提示词 (SYSTEM_PROMPT)
+4. 超参数 (GRPOConfig)
 """
 
 import torch
@@ -17,7 +17,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import LoraConfig
 from trl import GRPOTrainer, GRPOConfig
 
-# ==================== CONFIGURATION ====================
+# ==================== 配置 ====================
 
 MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
 OUTPUT_DIR = "outputs/grpo-model"
@@ -34,21 +34,21 @@ Respond in the following format:
 </answer>
 """
 
-# ==================== DATASET ====================
+# ==================== 数据集 ====================
 
 def get_dataset(split="train"):
     """
-    Load and prepare your dataset.
+    加载并准备数据集。
 
-    Returns: Dataset with columns:
-    - 'prompt': List[Dict] with role/content
-    - 'answer': str (ground truth, optional)
+    返回: 包含以下列的 Dataset:
+    - 'prompt': List[Dict] 包含 role/content
+    - 'answer': str (标准答案，可选)
     """
-    # Example: GSM8K math dataset
+    # 示例: GSM8K 数学数据集
     data = load_dataset('openai/gsm8k', 'main')[split]
 
     def process_example(x):
-        # Extract ground truth answer
+        # 提取标准答案
         answer = x['answer'].split('####')[1].strip() if '####' in x['answer'] else None
 
         return {
@@ -61,24 +61,24 @@ def get_dataset(split="train"):
 
     return data.map(process_example)
 
-# ==================== HELPER FUNCTIONS ====================
+# ==================== 辅助函数 ====================
 
 def extract_xml_tag(text: str, tag: str) -> str:
-    """Extract content between XML tags."""
+    """提取 XML 标签之间的内容。"""
     pattern = f'<{tag}>(.*?)</{tag}>'
     match = re.search(pattern, text, re.DOTALL)
     return match.group(1).strip() if match else ""
 
 def extract_answer(text: str) -> str:
-    """Extract the final answer from structured output."""
+    """从结构化输出中提取最终答案。"""
     return extract_xml_tag(text, 'answer')
 
-# ==================== REWARD FUNCTIONS ====================
+# ==================== 奖励函数 ====================
 
 def correctness_reward_func(prompts, completions, answer, **kwargs):
     """
-    Reward correct answers.
-    Weight: 2.0 (highest priority)
+    奖励正确答案。
+    权重: 2.0（最高优先级）
     """
     responses = [comp[0]['content'] for comp in completions]
     extracted = [extract_answer(r) for r in responses]
@@ -86,8 +86,8 @@ def correctness_reward_func(prompts, completions, answer, **kwargs):
 
 def format_reward_func(completions, **kwargs):
     """
-    Reward proper XML format.
-    Weight: 0.5
+    奖励正确的 XML 格式。
+    权重: 0.5
     """
     pattern = r'<reasoning>.*?</reasoning>\s*<answer>.*?</answer>'
     responses = [comp[0]['content'] for comp in completions]
@@ -95,8 +95,8 @@ def format_reward_func(completions, **kwargs):
 
 def incremental_format_reward_func(completions, **kwargs):
     """
-    Incremental reward for partial format compliance.
-    Weight: up to 0.5
+    渐进式奖励部分格式合规。
+    权重: 最高 0.5
     """
     responses = [comp[0]['content'] for comp in completions]
     rewards = []
@@ -112,7 +112,7 @@ def incremental_format_reward_func(completions, **kwargs):
         if '</answer>' in r:
             score += 0.125
 
-        # Penalize extra content after closing tag
+        # 惩罚结束标签后的额外内容
         if '</answer>' in r:
             extra = r.split('</answer>')[-1].strip()
             score -= len(extra) * 0.001
@@ -121,10 +121,10 @@ def incremental_format_reward_func(completions, **kwargs):
 
     return rewards
 
-# ==================== MODEL SETUP ====================
+# ==================== 模型设置 ====================
 
 def setup_model_and_tokenizer():
-    """Load model and tokenizer with optimizations."""
+    """加载模型和分词器并进行优化配置。"""
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         torch_dtype=torch.bfloat16,
@@ -138,7 +138,7 @@ def setup_model_and_tokenizer():
     return model, tokenizer
 
 def get_peft_config():
-    """LoRA configuration for parameter-efficient training."""
+    """用于参数高效训练的 LoRA 配置。"""
     return LoraConfig(
         r=16,
         lora_alpha=32,
@@ -150,26 +150,26 @@ def get_peft_config():
         lora_dropout=0.05,
     )
 
-# ==================== TRAINING ====================
+# ==================== 训练 ====================
 
 def main():
-    """Main training function."""
+    """主训练函数。"""
 
-    # Load data
+    # 加载数据
     print("Loading dataset...")
     dataset = get_dataset()
     print(f"Dataset size: {len(dataset)}")
 
-    # Setup model
+    # 设置模型
     print("Loading model...")
     model, tokenizer = setup_model_and_tokenizer()
 
-    # Training configuration
+    # 训练配置
     training_args = GRPOConfig(
         output_dir=OUTPUT_DIR,
         run_name="grpo-training",
 
-        # Learning rate
+        # 学习率
         learning_rate=5e-6,
         adam_beta1=0.9,
         adam_beta2=0.99,
@@ -177,30 +177,30 @@ def main():
         warmup_ratio=0.1,
         lr_scheduler_type='cosine',
 
-        # Batch settings
+        # 批次设置
         per_device_train_batch_size=1,
         gradient_accumulation_steps=4,
 
-        # GRPO specific
+        # GRPO 特有参数
         num_generations=8,
         max_prompt_length=MAX_PROMPT_LENGTH,
         max_completion_length=MAX_COMPLETION_LENGTH,
 
-        # Training duration
+        # 训练时长
         num_train_epochs=1,
 
-        # Optimization
+        # 优化设置
         bf16=True,
         optim="adamw_8bit",
         max_grad_norm=0.1,
 
-        # Logging
+        # 日志记录
         logging_steps=1,
         save_steps=100,
-        report_to="wandb",  # Change to "none" to disable logging
+        report_to="wandb",  # 改为 "none" 以禁用日志记录
     )
 
-    # Initialize trainer
+    # 初始化训练器
     trainer = GRPOTrainer(
         model=model,
         processing_class=tokenizer,
@@ -214,11 +214,11 @@ def main():
         peft_config=get_peft_config(),
     )
 
-    # Train
+    # 开始训练
     print("Starting training...")
     trainer.train()
 
-    # Save final model
+    # 保存最终模型
     print(f"Saving model to {OUTPUT_DIR}/final")
     trainer.save_model(f"{OUTPUT_DIR}/final")
 

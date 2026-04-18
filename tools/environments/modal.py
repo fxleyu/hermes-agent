@@ -1,7 +1,7 @@
-"""Modal cloud execution environment using the native Modal SDK directly.
+"""Modal 云端执行环境，直接使用原生 Modal SDK。
 
-Uses ``Sandbox.create()`` + ``Sandbox.exec()`` instead of the older runtime
-wrapper, while preserving Hermes' persistent snapshot behavior across sessions.
+使用 ``Sandbox.create()`` + ``Sandbox.exec()`` 替代旧版运行时封装，
+同时保留 Hermes 跨会话的持久化快照行为。
 """
 
 import asyncio
@@ -81,9 +81,9 @@ def _delete_direct_snapshot(task_id: str, snapshot_id: str | None = None) -> Non
 
 
 def _resolve_modal_image(image_spec: Any) -> Any:
-    """Convert registry references or snapshot ids into Modal image objects.
+    """将注册表引用或快照 ID 转换为 Modal 镜像对象。
 
-    Includes add_python support for ubuntu/debian images (absorbed from PR 4511).
+    包含对 ubuntu/debian 镜像的 add_python 支持（吸收自 PR 4511）。
     """
     import modal as _modal
 
@@ -93,7 +93,7 @@ def _resolve_modal_image(image_spec: Any) -> Any:
     if image_spec.startswith("im-"):
         return _modal.Image.from_id(image_spec)
 
-    # PR 4511: add python to ubuntu/debian images that don't have it
+    # PR 4511: 为没有 python 的 ubuntu/debian 镜像添加 python
     lower = image_spec.lower()
     add_python = any(base in lower for base in ("ubuntu", "debian"))
 
@@ -113,7 +113,7 @@ def _resolve_modal_image(image_spec: Any) -> Any:
 
 
 class _AsyncWorker:
-    """Background thread with its own event loop for async-safe Modal calls."""
+    """拥有自己事件循环的后台线程，用于异步安全的 Modal 调用。"""
 
     def __init__(self):
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -145,14 +145,14 @@ class _AsyncWorker:
 
 
 class ModalEnvironment(BaseEnvironment):
-    """Modal cloud execution via native Modal sandboxes.
+    """通过原生 Modal 沙箱实现的 Modal 云端执行环境。
 
-    Spawn-per-call via _ThreadedProcessHandle wrapping async SDK calls.
-    cancel_fn wired to sandbox.terminate for interrupt support.
+    每次调用创建新进程：通过 _ThreadedProcessHandle 封装异步 SDK 调用。
+    cancel_fn 连接到 sandbox.terminate 以支持中断。
     """
 
     _stdin_mode = "heredoc"
-    _snapshot_timeout = 60  # Modal cold starts can be slow
+    _snapshot_timeout = 60  # Modal 冷启动可能较慢
 
     def __init__(
         self,
@@ -170,7 +170,7 @@ class ModalEnvironment(BaseEnvironment):
         self._sandbox = None
         self._app = None
         self._worker = _AsyncWorker()
-        self._sync_manager: FileSyncManager | None = None  # initialized after sandbox creation
+        self._sync_manager: FileSyncManager | None = None  # 在沙箱创建后初始化
 
         sandbox_kwargs = dict(modal_sandbox_kwargs or {})
 
@@ -275,7 +275,7 @@ class ModalEnvironment(BaseEnvironment):
         self.init_session()
 
     def _modal_upload(self, host_path: str, remote_path: str) -> None:
-        """Upload a single file via base64 piped through stdin."""
+        """通过 base64 编码并通过 stdin 管道上传单个文件。"""
         content = Path(host_path).read_bytes()
         b64 = base64.b64encode(content).decode("ascii")
         container_dir = str(Path(remote_path).parent)
@@ -298,18 +298,17 @@ class ModalEnvironment(BaseEnvironment):
 
         self._worker.run_coroutine(_write(), timeout=30)
 
-    # Modal SDK stdin buffer limit (legacy server path).  The command-router
-    # path allows 16 MB, but we must stay under the smaller 2 MB cap for
-    # compatibility.  Chunks are written below this threshold and flushed
-    # individually via drain().
-    _STDIN_CHUNK_SIZE = 1 * 1024 * 1024  # 1 MB — safe for both transport paths
+    # Modal SDK stdin 缓冲区限制（旧版服务器路径）。command-router 路径
+    # 允许 16 MB，但为了兼容性必须保持在较小的 2 MB 上限以下。
+    # 块大小在此阈值以下，并通过 drain() 逐个刷新。
+    _STDIN_CHUNK_SIZE = 1 * 1024 * 1024  # 1 MB - 对两种传输路径都安全
 
     def _modal_bulk_upload(self, files: list[tuple[str, str]]) -> None:
-        """Upload many files via tar archive piped through stdin.
+        """通过 tar 归档并通过 stdin 管道批量上传文件。
 
-        Builds a gzipped tar archive in memory and streams it into a
-        ``base64 -d | tar xzf -`` pipeline via the process's stdin,
-        avoiding the Modal SDK's 64 KB ``ARG_MAX_BYTES`` exec-arg limit.
+        在内存中构建 gzip 压缩的 tar 归档，然后通过进程的 stdin 流式传输到
+        ``base64 -d | tar xzf -`` 管道中，以避免 Modal SDK 64 KB 的
+        ``ARG_MAX_BYTES`` exec 参数限制。
         """
         if not files:
             return
@@ -327,8 +326,8 @@ class ModalEnvironment(BaseEnvironment):
         async def _bulk():
             proc = await self._sandbox.exec.aio("bash", "-c", cmd)
 
-            # Stream payload through stdin in chunks to stay under the
-            # SDK's per-write buffer limit (2 MB legacy / 16 MB router).
+            # 通过 stdin 分块流式传输 payload，以保持在 SDK 的
+            # 每次写入缓冲区限制以下（旧版 2 MB / 路由器 16 MB）。
             offset = 0
             chunk_size = self._STDIN_CHUNK_SIZE
             while offset < len(payload):
@@ -349,10 +348,10 @@ class ModalEnvironment(BaseEnvironment):
         self._worker.run_coroutine(_bulk(), timeout=120)
 
     def _modal_bulk_download(self, dest: Path) -> None:
-        """Download remote .hermes/ as a tar archive.
+        """将远程 .hermes/ 目录作为 tar 归档下载。
 
-        Modal sandboxes always run as root, so /root/.hermes is hardcoded
-        (consistent with iter_sync_files call on line 269).
+        Modal 沙箱始终以 root 用户运行，因此 /root/.hermes 是硬编码的
+        （与第 269 行的 iter_sync_files 调用一致）。
         """
         async def _download():
             proc = await self._sandbox.exec.aio(
@@ -370,7 +369,7 @@ class ModalEnvironment(BaseEnvironment):
         dest.write_bytes(tar_bytes)
 
     def _modal_delete(self, remote_paths: list[str]) -> None:
-        """Batch-delete remote files via exec."""
+        """通过 exec 命令批量删除远程文件。"""
         rm_cmd = quoted_rm_command(remote_paths)
 
         async def _rm():
@@ -380,17 +379,17 @@ class ModalEnvironment(BaseEnvironment):
         self._worker.run_coroutine(_rm(), timeout=15)
 
     def _before_execute(self) -> None:
-        """Sync files to sandbox via FileSyncManager (rate-limited internally)."""
+        """通过 FileSyncManager 将文件同步到沙箱（内部有频率限制）。"""
         self._sync_manager.sync()
 
     # ------------------------------------------------------------------
-    # Execution
+    # 命令执行
     # ------------------------------------------------------------------
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None):
-        """Return a _ThreadedProcessHandle wrapping an async Modal sandbox exec."""
+        """返回一个封装了异步 Modal 沙箱 exec 调用的 _ThreadedProcessHandle。"""
         sandbox = self._sandbox
         worker = self._worker
 
@@ -422,7 +421,7 @@ class ModalEnvironment(BaseEnvironment):
         return _ThreadedProcessHandle(exec_fn, cancel_fn=cancel)
 
     def cleanup(self):
-        """Snapshot the filesystem (if persistent) then stop the sandbox."""
+        """对文件系统创建快照（如果启用了持久化），然后停止沙箱。"""
         if self._sandbox is None:
             return
 

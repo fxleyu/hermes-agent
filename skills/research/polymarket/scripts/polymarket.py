@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Polymarket CLI helper — query prediction market data.
+"""Polymarket CLI 助手 — 查询预测市场数据。
 
-Usage:
+用法:
     python3 polymarket.py search "bitcoin"
     python3 polymarket.py trending [--limit 10]
     python3 polymarket.py market <slug>
@@ -24,7 +24,7 @@ DATA = "https://data-api.polymarket.com"
 
 
 def _get(url: str) -> dict | list:
-    """GET request, return parsed JSON."""
+    """发送 GET 请求，返回解析后的 JSON。"""
     req = urllib.request.Request(url, headers={"User-Agent": "hermes-agent/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -38,7 +38,7 @@ def _get(url: str) -> dict | list:
 
 
 def _parse_json_field(val):
-    """Parse double-encoded JSON fields (outcomePrices, outcomes, clobTokenIds)."""
+    """解析双重编码的 JSON 字段（outcomePrices、outcomes、clobTokenIds）。"""
     if isinstance(val, str):
         try:
             return json.loads(val)
@@ -48,7 +48,7 @@ def _parse_json_field(val):
 
 
 def _fmt_pct(price_str: str) -> str:
-    """Format price string as percentage."""
+    """将价格字符串格式化为百分比。"""
     try:
         return f"{float(price_str) * 100:.1f}%"
     except (ValueError, TypeError):
@@ -56,7 +56,7 @@ def _fmt_pct(price_str: str) -> str:
 
 
 def _fmt_volume(vol) -> str:
-    """Format volume as human-readable."""
+    """将交易量格式化为可读形式。"""
     try:
         v = float(vol)
         if v >= 1_000_000:
@@ -69,7 +69,7 @@ def _fmt_volume(vol) -> str:
 
 
 def _print_market(m: dict, indent: str = ""):
-    """Print a market summary."""
+    """打印市场摘要。"""
     question = m.get("question", "?")
     prices = _parse_json_field(m.get("outcomePrices", "[]"))
     outcomes = _parse_json_field(m.get("outcomes", "[]"))
@@ -94,7 +94,7 @@ def _print_market(m: dict, indent: str = ""):
 
 
 def cmd_search(query: str):
-    """Search for markets."""
+    """搜索市场。"""
     q = urllib.parse.quote(query)
     data = _get(f"{GAMMA}/public-search?q={q}")
     events = data.get("events", [])
@@ -112,7 +112,7 @@ def cmd_search(query: str):
 
 
 def cmd_trending(limit: int = 10):
-    """Show trending events by volume."""
+    """按交易量显示热门事件。"""
     events = _get(f"{GAMMA}/events?limit={limit}&active=true&closed=false&order=volume&ascending=false")
     print(f"Top {len(events)} trending events:\n")
     for i, evt in enumerate(events, 1):
@@ -128,7 +128,7 @@ def cmd_trending(limit: int = 10):
 
 
 def cmd_market(slug: str):
-    """Get market details by slug."""
+    """通过 slug 获取市场详情。"""
     markets = _get(f"{GAMMA}/markets?slug={urllib.parse.quote(slug)}")
     if not markets:
         print(f"No market found with slug: {slug}")
@@ -150,7 +150,7 @@ def cmd_market(slug: str):
 
 
 def cmd_event(slug: str):
-    """Get event details by slug."""
+    """通过 slug 获取事件详情。"""
     events = _get(f"{GAMMA}/events?slug={urllib.parse.quote(slug)}")
     if not events:
         print(f"No event found with slug: {slug}")
@@ -166,7 +166,7 @@ def cmd_event(slug: str):
 
 
 def cmd_price(token_id: str):
-    """Get current price for a token."""
+    """获取代币的当前价格。"""
     buy = _get(f"{CLOB}/price?token_id={token_id}&side=buy")
     mid = _get(f"{CLOB}/midpoint?token_id={token_id}")
     spread = _get(f"{CLOB}/spread?token_id={token_id}")
@@ -177,7 +177,7 @@ def cmd_price(token_id: str):
 
 
 def cmd_book(token_id: str):
-    """Get orderbook for a token."""
+    """获取代币的订单簿。"""
     book = _get(f"{CLOB}/book?token_id={token_id}")
     bids = book.get("bids", [])
     asks = book.get("asks", [])
@@ -185,7 +185,7 @@ def cmd_book(token_id: str):
     print(f"Orderbook for {token_id[:30]}...")
     print(f"Last trade: {_fmt_pct(last)}  |  Tick size: {book.get('tick_size', '?')}")
     print(f"\n  Top bids ({len(bids)} total):")
-    # Show bids sorted by price descending (best bids first)
+    # 按价格降序排列买单（最优买价在前）
     sorted_bids = sorted(bids, key=lambda x: float(x.get("price", 0)), reverse=True)
     for b in sorted_bids[:10]:
         print(f"    {_fmt_pct(b['price']):>7}  |  Size: {float(b['size']):>10.2f}")
@@ -196,7 +196,7 @@ def cmd_book(token_id: str):
 
 
 def cmd_history(condition_id: str, interval: str = "all", fidelity: int = 50):
-    """Get price history for a market."""
+    """获取市场的价格历史。"""
     data = _get(f"{CLOB}/prices-history?market={condition_id}&interval={interval}&fidelity={fidelity}")
     history = data.get("history", [])
     if not history:
@@ -212,7 +212,7 @@ def cmd_history(condition_id: str, interval: str = "all", fidelity: int = 50):
 
 
 def cmd_trades(limit: int = 10, market: str = None):
-    """Get recent trades."""
+    """获取最近的交易记录。"""
     url = f"{DATA}/trades?limit={limit}"
     if market:
         url += f"&market={market}"

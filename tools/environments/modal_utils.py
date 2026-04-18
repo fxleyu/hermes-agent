@@ -1,14 +1,13 @@
-"""Shared Hermes-side execution flow for Modal transports.
+"""Modal 传输层的 Hermes 侧共享执行流程。
 
-This module deliberately stops at the Hermes boundary:
-- command preparation
-- cwd/timeout normalization
-- stdin/sudo shell wrapping
-- common result shape
-- interrupt/cancel polling
+本模块刻意限制在 Hermes 边界内：
+- 命令准备
+- 工作目录/超时时间规范化
+- 标准输入/sudo 的 shell 封装
+- 统一的结果格式
+- 中断/取消轮询
 
-Direct Modal and managed Modal keep separate transport logic, persistence, and
-trust-boundary decisions in their own modules.
+直接 Modal 和托管 Modal 在各自的模块中保留独立的传输逻辑、持久化和信任边界决策。
 """
 
 from __future__ import annotations
@@ -26,7 +25,7 @@ from tools.interrupt import is_interrupted
 
 @dataclass(frozen=True)
 class PreparedModalExec:
-    """Normalized command data passed to a transport-specific exec runner."""
+    """传递给特定传输层执行器的规范化命令数据。"""
 
     command: str
     cwd: str
@@ -36,14 +35,14 @@ class PreparedModalExec:
 
 @dataclass(frozen=True)
 class ModalExecStart:
-    """Transport response after starting an exec."""
+    """启动 exec 后传输层的响应。"""
 
     handle: Any | None = None
     immediate_result: dict | None = None
 
 
 def wrap_modal_stdin_heredoc(command: str, stdin_data: str) -> str:
-    """Append stdin as a shell heredoc for transports without stdin piping."""
+    """为不支持 stdin 管道的传输层，将 stdin 作为 shell heredoc 附加。"""
     marker = f"HERMES_EOF_{uuid.uuid4().hex[:8]}"
     while marker in stdin_data:
         marker = f"HERMES_EOF_{uuid.uuid4().hex[:8]}"
@@ -51,19 +50,17 @@ def wrap_modal_stdin_heredoc(command: str, stdin_data: str) -> str:
 
 
 def wrap_modal_sudo_pipe(command: str, sudo_stdin: str) -> str:
-    """Feed sudo via a shell pipe for transports without direct stdin piping."""
+    """为不支持直接 stdin 管道的传输层，通过 shell 管道传递 sudo 密码。"""
     return f"printf '%s\\n' {shlex.quote(sudo_stdin.rstrip())} | {command}"
 
 
 class BaseModalExecutionEnvironment(BaseEnvironment):
-    """Execution flow for the *managed* Modal transport (gateway-owned sandbox).
+    """*托管* Modal 传输层的执行流程。
 
-    This deliberately overrides :meth:`BaseEnvironment.execute` because the
-    tool-gateway handles command preparation, CWD tracking, and env-snapshot
-    management on the server side.  The base class's ``_wrap_command`` /
-    ``_wait_for_process`` / snapshot machinery does not apply here — the
-    gateway owns that responsibility.  See ``ManagedModalEnvironment`` for the
-    concrete subclass.
+    此类刻意覆盖了 :meth:`BaseEnvironment.execute`，因为 tool-gateway 在
+    服务器端处理命令准备、工作目录跟踪和环境快照管理。基类的
+    ``_wrap_command`` / ``_wait_for_process`` / 快照机制在此不适用 -
+    网关承担了这些职责。具体子类参见 ``ManagedModalEnvironment``。
     """
 
     _stdin_mode = "payload"
@@ -134,7 +131,7 @@ class BaseModalExecutionEnvironment(BaseEnvironment):
                     pass
                 return self._timeout_result_for_modal(prepared.timeout)
 
-            # Periodic activity touch so the gateway knows we're alive
+            # 定期发送活动信号，让网关知道我们仍在运行
             try:
                 from tools.environments.base import touch_activity_if_due
                 touch_activity_if_due(_activity_state, "modal command running")
@@ -144,7 +141,7 @@ class BaseModalExecutionEnvironment(BaseEnvironment):
             time.sleep(self._poll_interval_seconds)
 
     def _before_execute(self) -> None:
-        """Hook for backends that need pre-exec sync or validation."""
+        """供需要预执行同步或验证的后端使用的钩子。"""
         pass
 
     def _prepare_modal_exec(
@@ -188,12 +185,12 @@ class BaseModalExecutionEnvironment(BaseEnvironment):
 
     @abstractmethod
     def _start_modal_exec(self, prepared: PreparedModalExec) -> ModalExecStart:
-        """Begin a transport-specific exec."""
+        """启动特定传输层的 exec。"""
 
     @abstractmethod
     def _poll_modal_exec(self, handle: Any) -> dict | None:
-        """Return a final result dict when complete, else ``None``."""
+        """完成时返回最终结果字典，否则返回 ``None``。"""
 
     @abstractmethod
     def _cancel_modal_exec(self, handle: Any) -> None:
-        """Cancel or terminate the active transport exec."""
+        """取消或终止正在进行的传输层 exec。"""

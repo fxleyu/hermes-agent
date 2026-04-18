@@ -1,11 +1,11 @@
-"""Pack a directory into a DOCX, PPTX, or XLSX file.
+"""将目录打包为 DOCX、PPTX 或 XLSX 文件。
 
-Validates with auto-repair, condenses XML formatting, and creates the Office file.
+使用自动修复进行验证，压缩 XML 格式，并创建 Office 文件。
 
-Usage:
+用法:
     python pack.py <input_directory> <output_file> [--original <file>] [--validate true|false]
 
-Examples:
+示例:
     python pack.py unpacked/ output.docx --original input.docx
     python pack.py unpacked/ output.pptx --validate false
 """

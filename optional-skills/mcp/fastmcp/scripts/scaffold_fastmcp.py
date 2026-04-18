@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Copy a FastMCP starter template into a working file."""
+"""将 FastMCP 入门模板复制到工作文件中。"""
 
 from __future__ import annotations
 

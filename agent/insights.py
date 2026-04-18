@@ -1,15 +1,13 @@
 """
-Session Insights Engine for Hermes Agent.
+Hermes Agent 的会话洞察引擎。
 
-Analyzes historical session data from the SQLite state database to produce
-comprehensive usage insights — token consumption, cost estimates, tool usage
-patterns, activity trends, model/platform breakdowns, and session metrics.
+分析 SQLite 状态数据库中的历史会话数据，生成全面的使用洞察报告——
+包括 token 消耗、费用估算、工具使用模式、活跃趋势、模型/平台细分以及会话指标。
 
-Inspired by Claude Code's /insights command, adapted for Hermes Agent's
-multi-platform architecture with additional cost estimation and platform
-breakdown capabilities.
+灵感来源于 Claude Code 的 /insights 命令，针对 Hermes Agent 的多平台架构做了适配，
+增加了费用估算和平台细分功能。
 
-Usage:
+用法：
     from agent.insights import InsightsEngine
     engine = InsightsEngine(db)
     report = engine.generate(days=30)
@@ -34,7 +32,7 @@ _DEFAULT_PRICING = DEFAULT_PRICING
 
 
 def _has_known_pricing(model_name: str, provider: str = None, base_url: str = None) -> bool:
-    """Check if a model has known pricing (vs unknown/custom endpoint)."""
+    """检查模型是否有已知定价（区别于未知/自定义端点）。"""
     return has_known_pricing(model_name, provider=provider, base_url=base_url)
 
 
@@ -48,7 +46,7 @@ def _estimate_cost(
     provider: str = None,
     base_url: str = None,
 ) -> tuple[float, str]:
-    """Estimate the USD cost for a session row or a model/token tuple."""
+    """估算某个会话行或模型/token 元组的美元费用。"""
     if isinstance(session_or_model, dict):
         session = session_or_model
         model = session.get("model") or ""
@@ -78,12 +76,12 @@ def _estimate_cost(
 
 
 def _format_duration(seconds: float) -> str:
-    """Format seconds into a human-readable duration string."""
+    """将秒数格式化为人类可读的时长字符串。"""
     return format_duration_compact(seconds)
 
 
 def _bar_chart(values: List[int], max_width: int = 20) -> List[str]:
-    """Create simple horizontal bar chart strings from values."""
+    """根据数值列表生成简单的水平条形图字符串。"""
     peak = max(values) if values else 1
     if peak == 0:
         return ["" for _ in values]
@@ -92,36 +90,35 @@ def _bar_chart(values: List[int], max_width: int = 20) -> List[str]:
 
 class InsightsEngine:
     """
-    Analyzes session history and produces usage insights.
+    分析会话历史并生成使用洞察报告。
 
-    Works directly with a SessionDB instance (or raw sqlite3 connection)
-    to query session and message data.
+    直接使用 SessionDB 实例（或原始 sqlite3 连接）查询会话和消息数据。
     """
 
     def __init__(self, db):
         """
-        Initialize with a SessionDB instance.
+        使用 SessionDB 实例进行初始化。
 
         Args:
-            db: A SessionDB instance (from hermes_state.py)
+            db: SessionDB 实例（来自 hermes_state.py）
         """
         self.db = db
         self._conn = db._conn
 
     def generate(self, days: int = 30, source: str = None) -> Dict[str, Any]:
         """
-        Generate a complete insights report.
+        生成完整的洞察报告。
 
         Args:
-            days: Number of days to look back (default: 30)
-            source: Optional filter by source platform
+            days: 回溯天数（默认：30）
+            source: 可选的来源平台过滤条件
 
         Returns:
-            Dict with all computed insights
+            包含所有计算洞察数据的字典
         """
         cutoff = time.time() - (days * 86400)
 
-        # Gather raw data
+        # 收集原始数据
         sessions = self._get_sessions(cutoff, source)
         tool_usage = self._get_tool_usage(cutoff, source)
         message_stats = self._get_message_stats(cutoff, source)
@@ -139,7 +136,7 @@ class InsightsEngine:
                 "top_sessions": [],
             }
 
-        # Compute insights
+        # 计算洞察数据
         overview = self._compute_overview(sessions, message_stats)
         models = self._compute_model_breakdown(sessions)
         platforms = self._compute_platform_breakdown(sessions)
@@ -161,18 +158,18 @@ class InsightsEngine:
         }
 
     # =========================================================================
-    # Data gathering (SQL queries)
+    # 数据收集（SQL 查询）
     # =========================================================================
 
-    # Columns we actually need (skip system_prompt, model_config blobs)
+    # 实际需要的列（跳过 system_prompt、model_config 等大字段）
     _SESSION_COLS = ("id, source, model, started_at, ended_at, "
                      "message_count, tool_call_count, input_tokens, output_tokens, "
                      "cache_read_tokens, cache_write_tokens, billing_provider, "
                      "billing_base_url, billing_mode, estimated_cost_usd, "
                      "actual_cost_usd, cost_status, cost_source")
 
-    # Pre-computed query strings — f-string evaluated once at class definition,
-    # not at runtime, so no user-controlled value can alter the query structure.
+    # 预编译的查询字符串——f-string 在类定义时求值一次，
+    # 而非运行时，因此用户输入无法改变查询结构（防止 SQL 注入）。
     _GET_SESSIONS_WITH_SOURCE = (
         f"SELECT {_SESSION_COLS} FROM sessions"
         " WHERE started_at >= ? AND source = ?"
@@ -185,7 +182,7 @@ class InsightsEngine:
     )
 
     def _get_sessions(self, cutoff: float, source: str = None) -> List[Dict]:
-        """Fetch sessions within the time window."""
+        """获取时间窗口内的会话记录。"""
         if source:
             cursor = self._conn.execute(self._GET_SESSIONS_WITH_SOURCE, (cutoff, source))
         else:
@@ -193,16 +190,15 @@ class InsightsEngine:
         return [dict(row) for row in cursor.fetchall()]
 
     def _get_tool_usage(self, cutoff: float, source: str = None) -> List[Dict]:
-        """Get tool call counts from messages.
+        """从消息中获取工具调用计数。
 
-        Uses two sources:
-        1. tool_name column on 'tool' role messages (set by gateway)
-        2. tool_calls JSON on 'assistant' role messages (covers CLI where
-           tool_name is not populated on tool responses)
+        使用两个数据源：
+        1. 'tool' 角色消息上的 tool_name 列（由 gateway 设置）
+        2. 'assistant' 角色消息上的 tool_calls JSON（覆盖 CLI 中 tool_name 未填充的情况）
         """
         tool_counts = Counter()
 
-        # Source 1: explicit tool_name on tool response messages
+        # 数据源 1：工具响应消息上的显式 tool_name
         if source:
             cursor = self._conn.execute(
                 """SELECT m.tool_name, COUNT(*) as count
@@ -228,8 +224,8 @@ class InsightsEngine:
         for row in cursor.fetchall():
             tool_counts[row["tool_name"]] += row["count"]
 
-        # Source 2: extract from tool_calls JSON on assistant messages
-        # (covers CLI sessions where tool_name is NULL on tool responses)
+        # 数据源 2：从 assistant 消息的 tool_calls JSON 中提取
+        # （覆盖 CLI 会话中 tool 响应的 tool_name 为 NULL 的情况）
         if source:
             cursor2 = self._conn.execute(
                 """SELECT m.tool_calls
@@ -264,28 +260,27 @@ class InsightsEngine:
             except (json.JSONDecodeError, TypeError, AttributeError):
                 continue
 
-        # Merge: prefer tool_name source, supplement with tool_calls source
-        # for tools not already counted
+        # 合并：优先使用 tool_name 来源，用 tool_calls 来源补充尚未计数的工具
         if not tool_counts and tool_calls_counts:
-            # No tool_name data at all — use tool_calls exclusively
+            # 完全没有 tool_name 数据——仅使用 tool_calls
             tool_counts = tool_calls_counts
         elif tool_counts and tool_calls_counts:
-            # Both sources have data — use whichever has the higher count per tool
-            # (they may overlap, so take the max to avoid double-counting)
+            # 两个来源都有数据——取每个工具的较大计数
+            # （它们可能重叠，取最大值以避免重复计数）
             all_tools = set(tool_counts) | set(tool_calls_counts)
             merged = Counter()
             for tool in all_tools:
                 merged[tool] = max(tool_counts.get(tool, 0), tool_calls_counts.get(tool, 0))
             tool_counts = merged
 
-        # Convert to the expected format
+        # 转换为预期格式
         return [
             {"tool_name": name, "count": count}
             for name, count in tool_counts.most_common()
         ]
 
     def _get_message_stats(self, cutoff: float, source: str = None) -> Dict:
-        """Get aggregate message statistics."""
+        """获取聚合消息统计数据。"""
         if source:
             cursor = self._conn.execute(
                 """SELECT
@@ -317,11 +312,11 @@ class InsightsEngine:
         }
 
     # =========================================================================
-    # Computation
+    # 计算逻辑
     # =========================================================================
 
     def _compute_overview(self, sessions: List[Dict], message_stats: Dict) -> Dict:
-        """Compute high-level overview statistics."""
+        """计算高层次的概览统计数据。"""
         total_input = sum(s.get("input_tokens") or 0 for s in sessions)
         total_output = sum(s.get("output_tokens") or 0 for s in sessions)
         total_cache_read = sum(s.get("cache_read_tokens") or 0 for s in sessions)
@@ -330,7 +325,7 @@ class InsightsEngine:
         total_tool_calls = sum(s.get("tool_call_count") or 0 for s in sessions)
         total_messages = sum(s.get("message_count") or 0 for s in sessions)
 
-        # Cost estimation (weighted by model)
+        # 费用估算（按模型加权）
         total_cost = 0.0
         actual_cost = 0.0
         models_with_pricing = set()
@@ -352,7 +347,7 @@ class InsightsEngine:
             else:
                 models_without_pricing.add(display)
 
-        # Session duration stats (guard against negative durations from clock drift)
+        # 会话时长统计（防止时钟漂移导致的负时长）
         durations = []
         for s in sessions:
             start = s.get("started_at")
@@ -363,7 +358,7 @@ class InsightsEngine:
         total_hours = sum(durations) / 3600 if durations else 0
         avg_duration = sum(durations) / len(durations) if durations else 0
 
-        # Earliest and latest session
+        # 最早和最晚的会话
         started_timestamps = [s["started_at"] for s in sessions if s.get("started_at")]
         date_range_start = min(started_timestamps) if started_timestamps else None
         date_range_end = max(started_timestamps) if started_timestamps else None
@@ -395,7 +390,7 @@ class InsightsEngine:
         }
 
     def _compute_model_breakdown(self, sessions: List[Dict]) -> List[Dict]:
-        """Break down usage by model."""
+        """按模型分解使用情况。"""
         model_data = defaultdict(lambda: {
             "sessions": 0, "input_tokens": 0, "output_tokens": 0,
             "cache_read_tokens": 0, "cache_write_tokens": 0,
@@ -404,7 +399,7 @@ class InsightsEngine:
 
         for s in sessions:
             model = s.get("model") or "unknown"
-            # Normalize: strip provider prefix for display
+            # 标准化：去掉提供商前缀以便展示
             display_model = model.split("/")[-1] if "/" in model else model
             d = model_data[display_model]
             d["sessions"] += 1
@@ -427,12 +422,12 @@ class InsightsEngine:
             {"model": model, **data}
             for model, data in model_data.items()
         ]
-        # Sort by tokens first, fall back to session count when tokens are 0
+        # 优先按 token 数排序，token 为 0 时按会话数排序
         result.sort(key=lambda x: (x["total_tokens"], x["sessions"]), reverse=True)
         return result
 
     def _compute_platform_breakdown(self, sessions: List[Dict]) -> List[Dict]:
-        """Break down usage by platform/source."""
+        """按平台/来源分解使用情况。"""
         platform_data = defaultdict(lambda: {
             "sessions": 0, "messages": 0, "input_tokens": 0,
             "output_tokens": 0, "cache_read_tokens": 0,
@@ -463,7 +458,7 @@ class InsightsEngine:
         return result
 
     def _compute_tool_breakdown(self, tool_usage: List[Dict]) -> List[Dict]:
-        """Process tool usage data into a ranked list with percentages."""
+        """将工具使用数据处理成带百分比的排名列表。"""
         total_calls = sum(t["count"] for t in tool_usage) if tool_usage else 0
         result = []
         for t in tool_usage:
@@ -476,8 +471,8 @@ class InsightsEngine:
         return result
 
     def _compute_activity_patterns(self, sessions: List[Dict]) -> Dict:
-        """Analyze activity patterns by day of week and hour."""
-        day_counts = Counter()  # 0=Monday ... 6=Sunday
+        """按星期几和小时分析活跃模式。"""
+        day_counts = Counter()  # 0=周一 ... 6=周日
         hour_counts = Counter()
         daily_counts = Counter()  # date string -> count
 
@@ -501,14 +496,14 @@ class InsightsEngine:
             for i in range(24)
         ]
 
-        # Busiest day and hour
+        # 最繁忙的日期和时段
         busiest_day = max(day_breakdown, key=lambda x: x["count"]) if day_breakdown else None
         busiest_hour = max(hour_breakdown, key=lambda x: x["count"]) if hour_breakdown else None
 
-        # Active days (days with at least one session)
+        # 活跃天数（至少有一个会话的日期）
         active_days = len(daily_counts)
 
-        # Streak calculation
+        # 连续天数计算
         if daily_counts:
             all_dates = sorted(daily_counts.keys())
             current_streak = 1
@@ -534,10 +529,10 @@ class InsightsEngine:
         }
 
     def _compute_top_sessions(self, sessions: List[Dict]) -> List[Dict]:
-        """Find notable sessions (longest, most messages, most tokens)."""
+        """查找值得关注的会话（最长、最多消息、最多 token）。"""
         top = []
 
-        # Longest by duration
+        # 按时长最长
         sessions_with_duration = [
             s for s in sessions
             if s.get("started_at") and s.get("ended_at")
@@ -555,7 +550,7 @@ class InsightsEngine:
                 "date": datetime.fromtimestamp(longest["started_at"]).strftime("%b %d"),
             })
 
-        # Most messages
+        # 最多消息
         most_msgs = max(sessions, key=lambda s: s.get("message_count") or 0)
         if (most_msgs.get("message_count") or 0) > 0:
             top.append({
@@ -565,7 +560,7 @@ class InsightsEngine:
                 "date": datetime.fromtimestamp(most_msgs["started_at"]).strftime("%b %d") if most_msgs.get("started_at") else "?",
             })
 
-        # Most tokens
+        # 最多 token
         most_tokens = max(
             sessions,
             key=lambda s: (s.get("input_tokens") or 0) + (s.get("output_tokens") or 0),
@@ -579,7 +574,7 @@ class InsightsEngine:
                 "date": datetime.fromtimestamp(most_tokens["started_at"]).strftime("%b %d") if most_tokens.get("started_at") else "?",
             })
 
-        # Most tool calls
+        # 最多工具调用
         most_tools = max(sessions, key=lambda s: s.get("tool_call_count") or 0)
         if (most_tools.get("tool_call_count") or 0) > 0:
             top.append({
@@ -592,11 +587,11 @@ class InsightsEngine:
         return top
 
     # =========================================================================
-    # Formatting
+    # 格式化输出
     # =========================================================================
 
     def format_terminal(self, report: Dict) -> str:
-        """Format the insights report for terminal display (CLI)."""
+        """将洞察报告格式化为终端显示格式（CLI）。"""
         if report.get("empty"):
             days = report.get("days", 30)
             src = f" (source: {report['source_filter']})" if report.get("source_filter") else ""
@@ -607,7 +602,7 @@ class InsightsEngine:
         days = report["days"]
         src_filter = report.get("source_filter")
 
-        # Header
+        # 标题头
         lines.append("")
         lines.append("  ╔══════════════════════════════════════════════════════════╗")
         lines.append("  ║                    📊 Hermes Insights                    ║")
@@ -621,14 +616,14 @@ class InsightsEngine:
         lines.append("  ╚══════════════════════════════════════════════════════════╝")
         lines.append("")
 
-        # Date range
+        # 日期范围
         if o.get("date_range_start") and o.get("date_range_end"):
             start_str = datetime.fromtimestamp(o["date_range_start"]).strftime("%b %d, %Y")
             end_str = datetime.fromtimestamp(o["date_range_end"]).strftime("%b %d, %Y")
             lines.append(f"  Period: {start_str} — {end_str}")
             lines.append("")
 
-        # Overview
+        # 概览
         lines.append("  📋 Overview")
         lines.append("  " + "─" * 56)
         lines.append(f"  Sessions:          {o['total_sessions']:<12}  Messages:        {o['total_messages']:,}")
@@ -640,7 +635,7 @@ class InsightsEngine:
         lines.append(f"  Avg msgs/session:  {o['avg_messages_per_session']:.1f}")
         lines.append("")
 
-        # Model breakdown
+        # 模型细分
         if report["models"]:
             lines.append("  🤖 Models Used")
             lines.append("  " + "─" * 56)
@@ -650,7 +645,7 @@ class InsightsEngine:
                 lines.append(f"  {model_name:<30} {m['sessions']:>8} {m['total_tokens']:>12,}")
             lines.append("")
 
-        # Platform breakdown
+        # 平台细分
         if len(report["platforms"]) > 1 or (report["platforms"] and report["platforms"][0]["platform"] != "cli"):
             lines.append("  📱 Platforms")
             lines.append("  " + "─" * 56)
@@ -659,7 +654,7 @@ class InsightsEngine:
                 lines.append(f"  {p['platform']:<14} {p['sessions']:>8} {p['messages']:>10,} {p['total_tokens']:>14,}")
             lines.append("")
 
-        # Tool usage
+        # 工具使用情况
         if report["tools"]:
             lines.append("  🔧 Top Tools")
             lines.append("  " + "─" * 56)
@@ -670,13 +665,13 @@ class InsightsEngine:
                 lines.append(f"  ... and {len(report['tools']) - 15} more tools")
             lines.append("")
 
-        # Activity patterns
+        # 活跃模式
         act = report.get("activity", {})
         if act.get("by_day"):
             lines.append("  📅 Activity Patterns")
             lines.append("  " + "─" * 56)
 
-            # Day of week chart
+            # 按星期几的图表
             day_values = [d["count"] for d in act["by_day"]]
             bars = _bar_chart(day_values, max_width=15)
             for i, d in enumerate(act["by_day"]):
@@ -685,7 +680,7 @@ class InsightsEngine:
 
             lines.append("")
 
-            # Peak hours (show top 5 busiest hours)
+            # 高峰时段（显示最繁忙的前 5 个小时）
             busy_hours = sorted(act["by_hour"], key=lambda x: x["count"], reverse=True)
             busy_hours = [h for h in busy_hours if h["count"] > 0][:5]
             if busy_hours:
@@ -703,7 +698,7 @@ class InsightsEngine:
                 lines.append(f"  Best streak: {act['max_streak']} consecutive days")
             lines.append("")
 
-        # Notable sessions
+        # 值得关注的会话
         if report.get("top_sessions"):
             lines.append("  🏆 Notable Sessions")
             lines.append("  " + "─" * 56)
@@ -714,7 +709,7 @@ class InsightsEngine:
         return "\n".join(lines)
 
     def format_gateway(self, report: Dict) -> str:
-        """Format the insights report for gateway/messaging (shorter)."""
+        """将洞察报告格式化为网关/消息平台格式（较简短）。"""
         if report.get("empty"):
             days = report.get("days", 30)
             return f"No sessions found in the last {days} days."
@@ -725,35 +720,35 @@ class InsightsEngine:
 
         lines.append(f"📊 **Hermes Insights** — Last {days} days\n")
 
-        # Overview
+        # 概览
         lines.append(f"**Sessions:** {o['total_sessions']} | **Messages:** {o['total_messages']:,} | **Tool calls:** {o['total_tool_calls']:,}")
         lines.append(f"**Tokens:** {o['total_tokens']:,} (in: {o['total_input_tokens']:,} / out: {o['total_output_tokens']:,})")
         if o["total_hours"] > 0:
             lines.append(f"**Active time:** ~{_format_duration(o['total_hours'] * 3600)} | **Avg session:** ~{_format_duration(o['avg_session_duration'])}")
         lines.append("")
 
-        # Models (top 5)
+        # 模型（前 5 名）
         if report["models"]:
             lines.append("**🤖 Models:**")
             for m in report["models"][:5]:
                 lines.append(f"  {m['model'][:25]} — {m['sessions']} sessions, {m['total_tokens']:,} tokens")
             lines.append("")
 
-        # Platforms (if multi-platform)
+        # 平台（多平台时显示）
         if len(report["platforms"]) > 1:
             lines.append("**📱 Platforms:**")
             for p in report["platforms"]:
                 lines.append(f"  {p['platform']} — {p['sessions']} sessions, {p['messages']:,} msgs")
             lines.append("")
 
-        # Tools (top 8)
+        # 工具（前 8 名）
         if report["tools"]:
             lines.append("**🔧 Top Tools:**")
             for t in report["tools"][:8]:
                 lines.append(f"  {t['tool']} — {t['count']:,} calls ({t['percentage']:.1f}%)")
             lines.append("")
 
-        # Activity summary
+        # 活跃摘要
         act = report.get("activity", {})
         if act.get("busiest_day") and act.get("busiest_hour"):
             hr = act["busiest_hour"]["hour"]

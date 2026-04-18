@@ -1,4 +1,4 @@
-"""Browser Use cloud browser provider."""
+"""Browser Use 云端浏览器提供者。"""
 
 import logging
 import os
@@ -61,7 +61,7 @@ def _should_preserve_pending_create_key(response: requests.Response) -> bool:
 
 
 class BrowserUseProvider(CloudBrowserProvider):
-    """Browser Use (https://browser-use.com) cloud browser backend."""
+    """Browser Use (https://browser-use.com) 云端浏览器后端。"""
 
     def provider_name(self) -> str:
         return "Browser Use"
@@ -70,7 +70,7 @@ class BrowserUseProvider(CloudBrowserProvider):
         return self._get_config_or_none() is not None
 
     # ------------------------------------------------------------------
-    # Config resolution (direct API key OR managed Nous gateway)
+    # 配置解析（直接 API 密钥或托管 Nous 网关）
     # ------------------------------------------------------------------
 
     def _get_config_or_none(self) -> Optional[Dict[str, Any]]:
@@ -107,7 +107,7 @@ class BrowserUseProvider(CloudBrowserProvider):
         return config
 
     # ------------------------------------------------------------------
-    # Session lifecycle
+    # 会话生命周期
     # ------------------------------------------------------------------
 
     def _headers(self, config: Dict[str, Any]) -> Dict[str, str]:
@@ -125,9 +125,8 @@ class BrowserUseProvider(CloudBrowserProvider):
         if managed_mode:
             headers["X-Idempotency-Key"] = _get_or_create_pending_create_key(task_id)
 
-        # Keep gateway-backed sessions short so billing authorization does not
-        # default to a long Browser-Use timeout when Hermes only needs a task-
-        # scoped ephemeral browser.
+        # 保持网关后端的会话较短，以免在 Hermes 只需要
+        # 任务范围内的临时浏览器时，计费授权默认使用 Browser-Use 的长超时。
         payload = (
             {
                 "timeout": _DEFAULT_MANAGED_TIMEOUT_MINUTES,

@@ -1,28 +1,28 @@
-"""Google Code Assist API client — project discovery, onboarding, quota.
+"""Google Code Assist API 客户端——项目发现、注册引导、配额。
 
-The Code Assist API powers Google's official gemini-cli. It sits at
-``cloudcode-pa.googleapis.com`` and provides:
+Code Assist API 驱动 Google 官方的 gemini-cli。它位于
+``cloudcode-pa.googleapis.com``，提供：
 
-- Free tier access (generous daily quota) for personal Google accounts
-- Paid tier access via GCP projects with billing / Workspace / Standard / Enterprise
+- 个人 Google 账户的免费层访问（慷慨的每日配额）
+- 通过 GCP 项目的付费层访问（Billing / Workspace / Standard / Enterprise）
 
-This module handles the control-plane dance needed before inference:
+此模块处理推理之前所需的控制面协商：
 
-1. ``load_code_assist()`` — probe the user's account to learn what tier they're on
-   and whether a ``cloudaicompanionProject`` is already assigned.
-2. ``onboard_user()`` — if the user hasn't been onboarded yet (new account, fresh
-   free tier, etc.), call this with the chosen tier + project id. Supports LRO
-   polling for slow provisioning.
-3. ``retrieve_user_quota()`` — fetch the ``buckets[]`` array showing remaining
-   quota per model, used by the ``/gquota`` slash command.
+1. ``load_code_assist()``——探测用户账户以了解其所在层级
+   以及是否已分配 ``cloudaicompanionProject``。
+2. ``onboard_user()``——如果用户尚未注册引导（新账户、新免费层等），
+   使用选定的层级 + 项目 ID 调用此方法。支持 LRO（长时间运行操作）轮询
+   以应对慢速配置。
+3. ``retrieve_user_quota()``——获取 ``buckets[]`` 数组，显示每个模型的
+   剩余配额，供 ``/gquota`` 斜杠命令使用。
 
-VPC-SC handling: enterprise accounts under a VPC Service Controls perimeter
-will get ``SECURITY_POLICY_VIOLATED`` on ``load_code_assist``. We catch this
-and force the account to ``standard-tier`` so the call chain still succeeds.
+VPC-SC 处理：在 VPC 服务控制边界下的企业账户在 ``load_code_assist``
+时会收到 ``SECURITY_POLICY_VIOLATED``。我们捕获此错误并将账户强制设为
+``standard-tier``，使调用链仍能成功。
 
-Derived from opencode-gemini-auth (MIT) and clawdbot/extensions/google. The
-request/response shapes are specific to Google's internal Code Assist API,
-documented nowhere public — we copy them from the reference implementations.
+源自 opencode-gemini-auth（MIT）和 clawdbot/extensions/google。
+请求/响应格式特定于 Google 的内部 Code Assist API，
+无公开文档——我们从参考实现中复制它们。
 """
 
 from __future__ import annotations
@@ -42,24 +42,24 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# Constants
+# 常量
 # =============================================================================
 
 CODE_ASSIST_ENDPOINT = "https://cloudcode-pa.googleapis.com"
 
-# Fallback endpoints tried when prod returns an error during project discovery
+# 生产环境返回错误时尝试的备用端点
 FALLBACK_ENDPOINTS = [
     "https://daily-cloudcode-pa.sandbox.googleapis.com",
     "https://autopush-cloudcode-pa.sandbox.googleapis.com",
 ]
 
-# Tier identifiers that Google's API uses
+# Google API 使用的层级标识符
 FREE_TIER_ID = "free-tier"
 LEGACY_TIER_ID = "legacy-tier"
 STANDARD_TIER_ID = "standard-tier"
 
-# Default HTTP headers matching gemini-cli's fingerprint.
-# Google may reject unrecognized User-Agents on these internal endpoints.
+# 匹配 gemini-cli 指纹的默认 HTTP 请求头。
+# Google 可能在这些内部端点上拒绝不被识别的 User-Agent。
 _GEMINI_CLI_USER_AGENT = "google-api-nodejs-client/9.15.1 (gzip)"
 _X_GOOG_API_CLIENT = "gl-node/24.0.0"
 _DEFAULT_REQUEST_TIMEOUT = 30.0
@@ -79,7 +79,7 @@ class ProjectIdRequiredError(CodeAssistError):
 
 
 # =============================================================================
-# HTTP primitive (auth via Bearer token passed per-call)
+# HTTP 基础方法（认证通过每次调用传递的 Bearer 令牌）
 # =============================================================================
 
 def _build_headers(access_token: str, *, user_agent_model: str = "") -> Dict[str, str]:
@@ -97,7 +97,7 @@ def _build_headers(access_token: str, *, user_agent_model: str = "") -> Dict[str
 
 
 def _client_metadata() -> Dict[str, str]:
-    """Match Google's gemini-cli exactly — unrecognized metadata may be rejected."""
+    """精确匹配 Google 的 gemini-cli——未被识别的 metadata 可能被拒绝。"""
     return {
         "ideType": "IDE_UNSPECIFIED",
         "platform": "PLATFORM_UNSPECIFIED",
@@ -128,7 +128,7 @@ def _post_json(
             detail = exc.read().decode("utf-8", errors="replace")
         except Exception:
             pass
-        # Special case: VPC-SC violation should be distinguishable
+        # 特殊情况：VPC-SC 违规应可区分
         if _is_vpc_sc_violation(detail):
             raise CodeAssistError(
                 f"VPC-SC policy violation: {detail}",
@@ -146,14 +146,14 @@ def _post_json(
 
 
 def _is_vpc_sc_violation(body: str) -> bool:
-    """Detect a VPC Service Controls violation from a response body."""
+    """从响应体中检测 VPC 服务控制违规。"""
     if not body:
         return False
     try:
         parsed = json.loads(body)
     except (json.JSONDecodeError, ValueError):
         return "SECURITY_POLICY_VIOLATED" in body
-    # Walk the nested error structure Google uses
+    # 遍历 Google 使用的嵌套错误结构
     error = parsed.get("error") if isinstance(parsed, dict) else None
     if not isinstance(error, dict):
         return False
@@ -169,14 +169,14 @@ def _is_vpc_sc_violation(body: str) -> bool:
 
 
 # =============================================================================
-# load_code_assist — discovers current tier + assigned project
+# load_code_assist——发现当前层级 + 已分配的项目
 # =============================================================================
 
 @dataclass
 class CodeAssistProjectInfo:
-    """Result from ``load_code_assist``."""
+    """``load_code_assist`` 的返回结果。"""
     current_tier_id: str = ""
-    cloudaicompanion_project: str = ""   # Google-managed project (free tier)
+    cloudaicompanion_project: str = ""   # Google 管理的项目（免费层）
     allowed_tiers: List[str] = field(default_factory=list)
     raw: Dict[str, Any] = field(default_factory=dict)
 
@@ -187,10 +187,10 @@ def load_code_assist(
     project_id: str = "",
     user_agent_model: str = "",
 ) -> CodeAssistProjectInfo:
-    """Call ``POST /v1internal:loadCodeAssist`` with prod → sandbox fallback.
+    """调用 ``POST /v1internal:loadCodeAssist``，带有生产 → 沙盒的回退。
 
-    Returns whatever tier + project info Google reports. On VPC-SC violations,
-    returns a synthetic ``standard-tier`` result so the chain can continue.
+    返回 Google 报告的层级 + 项目信息。对于 VPC-SC 违规，
+    返回合成的 ``standard-tier`` 结果，以便调用链能继续。
     """
     body: Dict[str, Any] = {
         "metadata": {
@@ -244,7 +244,7 @@ def _parse_load_response(resp: Dict[str, Any]) -> CodeAssistProjectInfo:
 
 
 # =============================================================================
-# onboard_user — provisions a new user on a tier (with LRO polling)
+# onboard_user——在某个层级上配置新用户（含 LRO 轮询）
 # =============================================================================
 
 def onboard_user(
@@ -254,14 +254,14 @@ def onboard_user(
     project_id: str = "",
     user_agent_model: str = "",
 ) -> Dict[str, Any]:
-    """Call ``POST /v1internal:onboardUser`` to provision the user.
+    """调用 ``POST /v1internal:onboardUser`` 来配置用户。
 
-    For paid tiers, ``project_id`` is REQUIRED (raises ProjectIdRequiredError).
-    For free tiers, ``project_id`` is optional — Google will assign one.
+    对于付费层级，``project_id`` 是必需的（抛出 ProjectIdRequiredError）。
+    对于免费层级，``project_id`` 是可选的——Google 会分配一个。
 
-    Returns the final operation response. Polls ``/v1internal/<name>`` for up
-    to ``_ONBOARDING_POLL_ATTEMPTS`` × ``_ONBOARDING_POLL_INTERVAL_SECONDS``
-    (default: 12 × 5s = 1 min).
+    返回最终的操作响应。轮询 ``/v1internal/<name>``，最多
+    ``_ONBOARDING_POLL_ATTEMPTS`` x ``_ONBOARDING_POLL_INTERVAL_SECONDS``
+    （默认：12 x 5s = 1 分钟）。
     """
     if tier_id != FREE_TIER_ID and tier_id != LEGACY_TIER_ID and not project_id:
         raise ProjectIdRequiredError(
@@ -280,7 +280,7 @@ def onboard_user(
     url = f"{endpoint}/v1internal:onboardUser"
     resp = _post_json(url, body, access_token, user_agent_model=user_agent_model)
 
-    # Poll if LRO (long-running operation)
+    # 如果是 LRO（长时间运行操作）则轮询
     if not resp.get("done"):
         op_name = resp.get("name", "")
         if not op_name:
@@ -300,7 +300,7 @@ def onboard_user(
 
 
 # =============================================================================
-# retrieve_user_quota — for /gquota
+# retrieve_user_quota——用于 /gquota
 # =============================================================================
 
 @dataclass
@@ -318,7 +318,7 @@ def retrieve_user_quota(
     project_id: str = "",
     user_agent_model: str = "",
 ) -> List[QuotaBucket]:
-    """Call ``POST /v1internal:retrieveUserQuota`` and parse ``buckets[]``."""
+    """调用 ``POST /v1internal:retrieveUserQuota`` 并解析 ``buckets[]``。"""
     body: Dict[str, Any] = {}
     if project_id:
         body["project"] = project_id
@@ -342,16 +342,16 @@ def retrieve_user_quota(
 
 
 # =============================================================================
-# Project context resolution
+# 项目上下文解析
 # =============================================================================
 
 @dataclass
 class ProjectContext:
-    """Resolved state for a given OAuth session."""
-    project_id: str = ""           # effective project id sent on requests
-    managed_project_id: str = ""   # Google-assigned project (free tier)
+    """给定 OAuth 会话的已解析状态。"""
+    project_id: str = ""           # 请求中使用的有效项目 ID
+    managed_project_id: str = ""   # Google 分配的项目（免费层）
     tier_id: str = ""
-    source: str = ""               # "env", "config", "discovered", "onboarded"
+    source: str = ""               # "env"、"config"、"discovered"、"onboarded"
 
 
 def resolve_project_context(
@@ -361,19 +361,19 @@ def resolve_project_context(
     env_project_id: str = "",
     user_agent_model: str = "",
 ) -> ProjectContext:
-    """Figure out what project id + tier to use for requests.
+    """确定请求使用的项目 ID + 层级。
 
-    Priority:
-      1. If configured_project_id or env_project_id is set, use that directly
-         and short-circuit (no discovery needed).
-      2. Otherwise call loadCodeAssist to see what Google says.
-      3. If no tier assigned yet, onboard the user (free tier default).
+    优先级：
+      1. 如果设置了 configured_project_id 或 env_project_id，直接使用
+         并短路（无需发现流程）。
+      2. 否则调用 loadCodeAssist 查看 Google 的响应。
+      3. 如果尚未分配层级，注册引导用户（默认免费层级）。
     """
-    # Short-circuit: caller provided a project id
+    # 短路：调用方提供了项目 ID
     if configured_project_id:
         return ProjectContext(
             project_id=configured_project_id,
-            tier_id=STANDARD_TIER_ID,  # assume paid since they specified one
+            tier_id=STANDARD_TIER_ID,  # 假设为付费层级，因为用户指定了项目 ID
             source="config",
         )
     if env_project_id:
@@ -383,21 +383,21 @@ def resolve_project_context(
             source="env",
         )
 
-    # Discover via loadCodeAssist
+    # 通过 loadCodeAssist 发现
     info = load_code_assist(access_token, user_agent_model=user_agent_model)
 
     effective_project = info.cloudaicompanion_project
     tier = info.current_tier_id
 
     if not tier:
-        # User hasn't been onboarded — provision them on free tier
+        # 用户尚未注册引导——在免费层级上为其配置
         onboard_resp = onboard_user(
             access_token,
             tier_id=FREE_TIER_ID,
             project_id="",
             user_agent_model=user_agent_model,
         )
-        # Re-parse from the onboard response
+        # 从注册引导响应中重新解析
         response_body = onboard_resp.get("response") or {}
         if isinstance(response_body, dict):
             effective_project = (

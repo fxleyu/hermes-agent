@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Memento card storage, spaced-repetition engine, and CSV I/O.
+"""Memento 闪卡存储、间隔重复引擎和 CSV 导入导出。
 
-Stdlib-only. All output is JSON for agent parsing.
-Data file: $HERMES_HOME/skills/productivity/memento-flashcards/data/cards.json
+仅使用标准库。所有输出为 JSON 格式供代理解析。
+数据文件: $HERMES_HOME/skills/productivity/memento-flashcards/data/cards.json
 """
 
 import argparse
@@ -72,7 +72,7 @@ def _out(obj: object) -> None:
     sys.stdout.write("\n")
 
 
-# ── Subcommands ──────────────────────────────────────────────────────────────
+# ── 子命令 ──────────────────────────────────────────────────────────────
 
 def cmd_add(args: argparse.Namespace) -> None:
     data = _load()
@@ -104,7 +104,7 @@ def cmd_add_quiz(args: argparse.Namespace) -> None:
         _out({"ok": False, "error": f"Invalid JSON for --questions: {exc}"})
         sys.exit(1)
 
-    # Dedup: skip if cards with this video_id already exist
+    # 去重: 如果已有该 video_id 的卡片则跳过
     existing_ids = {c["video_id"] for c in data["cards"] if c.get("video_id")}
     if args.video_id in existing_ids:
         existing = [c for c in data["cards"] if c.get("video_id") == args.video_id]
@@ -290,7 +290,7 @@ def cmd_delete_collection(args: argparse.Namespace) -> None:
     _out({"ok": True, "deleted_count": removed, "collection": args.collection})
 
 
-# ── CLI ──────────────────────────────────────────────────────────────────────
+# ── 命令行接口 ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Memento flashcard manager")

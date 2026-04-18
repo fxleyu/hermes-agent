@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """
-Skills Guard — Security scanner for externally-sourced skills.
+技能守卫 -- 外部来源技能的安全扫描器。
 
-Every skill downloaded from a registry passes through this scanner before
-installation. It uses regex-based static analysis to detect known-bad patterns
-(data exfiltration, prompt injection, destructive commands, persistence, etc.)
-and a trust-aware install policy that determines whether a skill is allowed
-based on both the scan verdict and the source's trust level.
+从注册表下载的每个技能在安装前都会经过此扫描器。它使用基于正则的
+静态分析来检测已知的危险模式（数据泄露、提示注入、破坏性命令、
+持久化等），并使用信任感知的安装策略根据扫描结果和来源的
+信任级别来决定是否允许安装该技能。
 
-Trust levels:
-  - builtin:   Ships with Hermes. Never scanned, always trusted.
-  - trusted:   openai/skills and anthropics/skills only. Caution verdicts allowed.
-  - community: Everything else. Any findings = blocked unless --force.
+信任级别：
+  - builtin:   随 Hermes 一起分发。从不扫描，始终信任。
+  - trusted:   仅限 openai/skills 和 anthropics/skills。允许警告级别的结果。
+  - community: 其他所有来源。有任何发现 = 阻止，除非使用 --force。
 
-Usage:
+用法：
     from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
 
     result = scan_skill(Path("skills/.hub/quarantine/some-skill"), source="community")
@@ -33,13 +32,13 @@ from typing import List, Tuple
 
 
 # ---------------------------------------------------------------------------
-# Hardcoded trust configuration
+# 硬编码的信任配置
 # ---------------------------------------------------------------------------
 
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills"}
 
 INSTALL_POLICY = {
-    #                  safe      caution    dangerous
+    #                  安全      警告       危险
     "builtin":       ("allow",  "allow",   "allow"),
     "trusted":       ("allow",  "allow",   "block"),
     "community":     ("allow",  "block",   "block"),
@@ -50,7 +49,7 @@ VERDICT_INDEX = {"safe": 0, "caution": 1, "dangerous": 2}
 
 
 # ---------------------------------------------------------------------------
-# Data structures
+# 数据结构
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -76,11 +75,11 @@ class ScanResult:
 
 
 # ---------------------------------------------------------------------------
-# Threat patterns — (regex, pattern_id, severity, category, description)
+# 威胁模式 -- (正则, 模式ID, 严重性, 分类, 描述)
 # ---------------------------------------------------------------------------
 
 THREAT_PATTERNS = [
-    # ── Exfiltration: shell commands leaking secrets ──
+    # ── 数据泄露：泄露密钥的 shell 命令 ──
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)',
      "env_exfil_curl", "critical", "exfiltration",
      "curl command interpolating secret environment variable"),
@@ -97,7 +96,7 @@ THREAT_PATTERNS = [
      "env_exfil_requests", "critical", "exfiltration",
      "requests library call with secret variable"),
 
-    # ── Exfiltration: reading credential stores ──
+    # ── 数据泄露：读取凭证存储 ──
     (r'base64[^\n]*env',
      "encoded_exfil", "high", "exfiltration",
      "base64 encoding combined with environment access"),
@@ -123,7 +122,7 @@ THREAT_PATTERNS = [
      "read_secrets_file", "critical", "exfiltration",
      "reads known secrets file"),
 
-    # ── Exfiltration: programmatic env access ──
+    # ── 数据泄露：编程方式访问环境变量 ──
     (r'printenv|env\s*\|',
      "dump_all_env", "high", "exfiltration",
      "dumps all environment variables"),
@@ -140,7 +139,7 @@ THREAT_PATTERNS = [
      "ruby_env_secret", "critical", "exfiltration",
      "reads secret via Ruby ENV[]"),
 
-    # ── Exfiltration: DNS and staging ──
+    # ── 数据泄露：DNS 和暂存区 ──
     (r'\b(dig|nslookup|host)\s+[^\n]*\$',
      "dns_exfil", "critical", "exfiltration",
      "DNS lookup with variable interpolation (possible DNS exfiltration)"),
@@ -148,7 +147,7 @@ THREAT_PATTERNS = [
      "tmp_staging", "critical", "exfiltration",
      "writes to /tmp then exfiltrates"),
 
-    # ── Exfiltration: markdown/link based ──
+    # ── 数据泄露：基于 markdown/链接的方式 ──
     (r'!\[.*\]\(https?://[^\)]*\$\{?',
      "md_image_exfil", "high", "exfiltration",
      "markdown image URL with variable interpolation (image-based exfil)"),
@@ -156,7 +155,7 @@ THREAT_PATTERNS = [
      "md_link_exfil", "high", "exfiltration",
      "markdown link with variable interpolation"),
 
-    # ── Prompt injection ──
+    # ── 提示注入 ──
     (r'ignore\s+(?:\w+\s+)*(previous|all|above|prior)\s+instructions',
      "prompt_injection_ignore", "critical", "injection",
      "prompt injection: ignore previous instructions"),
@@ -194,7 +193,7 @@ THREAT_PATTERNS = [
      "hidden_div", "high", "injection",
      "hidden HTML div (invisible instructions)"),
 
-    # ── Destructive operations ──
+    # ── 破坏性操作 ──
     (r'rm\s+-rf\s+/',
      "destructive_root_rm", "critical", "destructive",
      "recursive delete from root"),
@@ -220,7 +219,7 @@ THREAT_PATTERNS = [
      "truncate_system", "critical", "destructive",
      "truncates system file to zero bytes"),
 
-    # ── Persistence ──
+    # ── 持久化 ──
     (r'\bcrontab\b',
      "persistence_cron", "medium", "persistence",
      "modifies cron jobs"),
@@ -249,7 +248,7 @@ THREAT_PATTERNS = [
      "git_config_global", "medium", "persistence",
      "modifies global git configuration"),
 
-    # ── Network: reverse shells and tunnels ──
+    # ── 网络：反向 shell 和隧道 ──
     (r'\bnc\s+-[lp]|ncat\s+-[lp]|\bsocat\b',
      "reverse_shell", "critical", "network",
      "potential reverse shell listener"),
@@ -278,7 +277,7 @@ THREAT_PATTERNS = [
      "paste_service", "medium", "network",
      "references paste service (possible data staging)"),
 
-    # ── Obfuscation: encoding and eval ──
+    # ── 混淆：编码和 eval ──
     (r'base64\s+(-d|--decode)\s*\|',
      "base64_decode_pipe", "high", "obfuscation",
      "base64 decodes and pipes to execution"),
@@ -322,7 +321,7 @@ THREAT_PATTERNS = [
      "unicode_escape_chain", "medium", "obfuscation",
      "chain of unicode escapes (possible obfuscation)"),
 
-    # ── Process execution in scripts ──
+    # ── 脚本中的进程执行 ──
     (r'subprocess\.(run|call|Popen|check_output)\s*\(',
      "python_subprocess", "medium", "execution",
      "Python subprocess execution"),
@@ -342,7 +341,7 @@ THREAT_PATTERNS = [
      "backtick_subshell", "medium", "execution",
      "backtick string with command substitution"),
 
-    # ── Path traversal ──
+    # ── 路径穿越 ──
     (r'\.\./\.\./\.\.',
      "path_traversal_deep", "high", "traversal",
      "deep relative path traversal (3+ levels up)"),
@@ -359,7 +358,7 @@ THREAT_PATTERNS = [
      "dev_shm", "medium", "traversal",
      "references shared memory (common staging area)"),
 
-    # ── Crypto mining ──
+    # ── 加密货币挖矿 ──
     (r'xmrig|stratum\+tcp|monero|coinhive|cryptonight',
      "crypto_mining", "critical", "mining",
      "cryptocurrency mining reference"),
@@ -367,7 +366,7 @@ THREAT_PATTERNS = [
      "mining_indicators", "medium", "mining",
      "possible cryptocurrency mining indicators"),
 
-    # ── Supply chain: curl/wget pipe to shell ──
+    # ── 供应链攻击：curl/wget 管道到 shell ──
     (r'curl\s+[^\n]*\|\s*(ba)?sh',
      "curl_pipe_shell", "critical", "supply_chain",
      "curl piped to shell (download-and-execute)"),
@@ -378,7 +377,7 @@ THREAT_PATTERNS = [
      "curl_pipe_python", "critical", "supply_chain",
      "curl piped to Python interpreter"),
 
-    # ── Supply chain: unpinned/deferred dependencies ──
+    # ── 供应链攻击：未锁定/延迟依赖 ──
     (r'#\s*///\s*script.*dependencies',
      "pep723_inline_deps", "medium", "supply_chain",
      "PEP 723 inline script metadata with dependencies (verify pinning)"),
@@ -392,7 +391,7 @@ THREAT_PATTERNS = [
      "uv_run", "medium", "supply_chain",
      "uv run (may auto-install unpinned dependencies)"),
 
-    # ── Supply chain: remote resource fetching ──
+    # ── 供应链攻击：远程资源获取 ──
     (r'(curl|wget|httpx?\.get|requests\.get|fetch)\s*[\(]?\s*["\']https?://',
      "remote_fetch", "medium", "supply_chain",
      "fetches remote resource at runtime"),
@@ -403,7 +402,7 @@ THREAT_PATTERNS = [
      "docker_pull", "medium", "supply_chain",
      "pulls a Docker image at runtime"),
 
-    # ── Privilege escalation ──
+    # ── 权限提升 ──
     (r'^allowed-tools\s*:',
      "allowed_tools_field", "high", "privilege_escalation",
      "skill declares allowed-tools (pre-approves tool access)"),
@@ -420,7 +419,7 @@ THREAT_PATTERNS = [
      "suid_bit", "critical", "privilege_escalation",
      "sets SUID/SGID bit on a file"),
 
-    # ── Agent config persistence ──
+    # ── 智能体配置持久化 ──
     (r'AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules',
      "agent_config_mod", "critical", "persistence",
      "references agent config files (could persist malicious instructions across sessions)"),
@@ -431,7 +430,7 @@ THREAT_PATTERNS = [
      "other_agent_config", "high", "persistence",
      "references other agent configuration files"),
 
-    # ── Hardcoded secrets (credentials embedded in the skill itself) ──
+    # ── 硬编码凭证（嵌入在技能本身中的凭证）──
     (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\'][A-Za-z0-9+/=_-]{20,}',
      "hardcoded_secret", "critical", "credential_exposure",
      "possible hardcoded API key, token, or secret"),
@@ -451,7 +450,7 @@ THREAT_PATTERNS = [
      "aws_access_key_leaked", "critical", "credential_exposure",
      "AWS access key ID in skill content"),
 
-    # ── Additional prompt injection: jailbreak patterns ──
+    # ── 额外的提示注入：越狱模式 ──
     (r'\bDAN\s+mode\b|Do\s+Anything\s+Now',
      "jailbreak_dan", "critical", "injection",
      "DAN (Do Anything Now) jailbreak attempt"),
@@ -474,7 +473,7 @@ THREAT_PATTERNS = [
      "fake_policy", "medium", "injection",
      "claims new policy/guidelines (may be social engineering)"),
 
-    # ── Context window exfiltration ──
+    # ── 上下文窗口泄露 ──
     (r'(include|output|print|send|share)\s+(?:\w+\s+)*(conversation|chat\s+history|previous\s+messages|context)',
      "context_exfil", "high", "exfiltration",
      "instructs agent to output/share conversation history"),
@@ -483,60 +482,60 @@ THREAT_PATTERNS = [
      "instructs agent to send data to a URL"),
 ]
 
-# Structural limits for skill directories
-MAX_FILE_COUNT = 50       # skills shouldn't have 50+ files
-MAX_TOTAL_SIZE_KB = 1024  # 1MB total is suspicious for a skill
-MAX_SINGLE_FILE_KB = 256  # individual file > 256KB is suspicious
+# 技能目录的结构限制
+MAX_FILE_COUNT = 50       # 技能不应包含 50+ 个文件
+MAX_TOTAL_SIZE_KB = 1024  # 总计 1MB 是可疑的
+MAX_SINGLE_FILE_KB = 256  # 单个文件 > 256KB 是可疑的
 
-# File extensions to scan (text files only — skip binary)
+# 需要扫描的文件扩展名（仅文本文件 -- 跳过二进制）
 SCANNABLE_EXTENSIONS = {
     '.md', '.txt', '.py', '.sh', '.bash', '.js', '.ts', '.rb',
     '.yaml', '.yml', '.json', '.toml', '.cfg', '.ini', '.conf',
     '.html', '.css', '.xml', '.tex', '.r', '.jl', '.pl', '.php',
 }
 
-# Known binary extensions that should NOT be in a skill
+# 不应出现在技能中的已知二进制扩展名
 SUSPICIOUS_BINARY_EXTENSIONS = {
     '.exe', '.dll', '.so', '.dylib', '.bin', '.dat', '.com',
     '.msi', '.dmg', '.app', '.deb', '.rpm',
 }
 
-# Zero-width and invisible unicode characters used for injection
+# 用于注入攻击的零宽和不可见 Unicode 字符
 INVISIBLE_CHARS = {
-    '\u200b',  # zero-width space
-    '\u200c',  # zero-width non-joiner
-    '\u200d',  # zero-width joiner
-    '\u2060',  # word joiner
-    '\u2062',  # invisible times
-    '\u2063',  # invisible separator
-    '\u2064',  # invisible plus
-    '\ufeff',  # zero-width no-break space (BOM)
-    '\u202a',  # left-to-right embedding
-    '\u202b',  # right-to-left embedding
-    '\u202c',  # pop directional formatting
-    '\u202d',  # left-to-right override
-    '\u202e',  # right-to-left override
-    '\u2066',  # left-to-right isolate
-    '\u2067',  # right-to-left isolate
-    '\u2068',  # first strong isolate
-    '\u2069',  # pop directional isolate
+    '\u200b',  # 零宽空格
+    '\u200c',  # 零宽非连接符
+    '\u200d',  # 零宽连接符
+    '\u2060',  # 词连接符
+    '\u2062',  # 不可见乘号
+    '\u2063',  # 不可见分隔符
+    '\u2064',  # 不可见加号
+    '\ufeff',  # 零宽不间断空格 (BOM)
+    '\u202a',  # 从左到右嵌入
+    '\u202b',  # 从右到左嵌入
+    '\u202c',  # 弹出方向格式
+    '\u202d',  # 从左到右覆盖
+    '\u202e',  # 从右到左覆盖
+    '\u2066',  # 从左到右隔离
+    '\u2067',  # 从右到左隔离
+    '\u2068',  # 首个强隔离
+    '\u2069',  # 弹出方向隔离
 }
 
 
 # ---------------------------------------------------------------------------
-# Scanning functions
+# 扫描函数
 # ---------------------------------------------------------------------------
 
 def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     """
-    Scan a single file for threat patterns and invisible unicode characters.
+    扫描单个文件中的威胁模式和不可见的 Unicode 字符。
 
-    Args:
-        file_path: Absolute path to the file
-        rel_path: Relative path for display (defaults to file_path.name)
+    参数：
+        file_path: 文件的绝对路径
+        rel_path: 用于显示的相对路径（默认为 file_path.name）
 
-    Returns:
-        List of findings (deduplicated per pattern per line)
+    返回：
+        发现列表（按模式和行号去重）
     """
     if not rel_path:
         rel_path = file_path.name
@@ -551,9 +550,9 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
 
     findings = []
     lines = content.split('\n')
-    seen = set()  # (pattern_id, line_number) for deduplication
+    seen = set()  # (pattern_id, 行号) 用于去重
 
-    # Regex pattern matching
+    # 正则模式匹配
     for pattern, pid, severity, category, description in THREAT_PATTERNS:
         for i, line in enumerate(lines, start=1):
             if (pid, i) in seen:
@@ -573,7 +572,7 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
                     description=description,
                 ))
 
-    # Invisible unicode character detection
+    # 不可见 Unicode 字符检测
     for i, line in enumerate(lines, start=1):
         for char in INVISIBLE_CHARS:
             if char in line:
@@ -587,26 +586,26 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
                     match=f"U+{ord(char):04X} ({char_name})",
                     description=f"invisible unicode character {char_name} (possible text hiding/injection)",
                 ))
-                break  # one finding per line for invisible chars
+                break  # 每行对不可见字符只报告一个发现
 
     return findings
 
 
 def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     """
-    Scan all files in a skill directory for security threats.
+    扫描技能目录中的所有文件以检测安全威胁。
 
-    Performs:
-    1. Structural checks (file count, total size, binary files, symlinks)
-    2. Regex pattern matching on all text files
-    3. Invisible unicode character detection
+    执行以下检查：
+    1. 结构检查（文件数量、总大小、二进制文件、符号链接）
+    2. 对所有文本文件进行正则模式匹配
+    3. 不可见 Unicode 字符检测
 
-    Args:
-        skill_path: Path to the skill directory (must contain SKILL.md)
-        source: Source identifier for trust level resolution (e.g. "openai/skills")
+    参数：
+        skill_path: 技能目录路径（必须包含 SKILL.md）
+        source: 用于信任级别解析的来源标识符（如 "openai/skills"）
 
-    Returns:
-        ScanResult with verdict, findings, and trust metadata
+    返回：
+        包含判定结果、发现和信任元数据的 ScanResult
     """
     skill_name = skill_path.name
     trust_level = _resolve_trust_level(source)
@@ -614,10 +613,10 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     all_findings: List[Finding] = []
 
     if skill_path.is_dir():
-        # Structural checks first
+        # 首先进行结构检查
         all_findings.extend(_check_structure(skill_path))
 
-        # Pattern scanning on each file
+        # 对每个文件进行模式扫描
         for f in skill_path.rglob("*"):
             if f.is_file():
                 rel = str(f.relative_to(skill_path))
@@ -641,14 +640,14 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
 
 def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool, str]:
     """
-    Determine whether a skill should be installed based on scan result and trust.
+    根据扫描结果和信任级别确定是否应安装该技能。
 
-    Args:
-        result: Scan result from scan_skill()
-        force: If True, override blocked policy decisions for this scan result
+    参数：
+        result: scan_skill() 的扫描结果
+        force: 如果为 True，覆盖此扫描结果的阻止策略决定
 
-    Returns:
-        (allowed, reason) tuple
+    返回：
+        (是否允许, 原因) 元组
     """
     policy = INSTALL_POLICY.get(result.trust_level, INSTALL_POLICY["community"])
     vi = VERDICT_INDEX.get(result.verdict, 2)
@@ -664,7 +663,7 @@ def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool,
         )
 
     if decision == "ask":
-        # Return None to signal "needs user confirmation"
+        # 返回 None 表示"需要用户确认"
         return None, (
             f"Requires confirmation ({result.trust_level} source + {result.verdict} verdict, "
             f"{len(result.findings)} findings)"
@@ -678,9 +677,9 @@ def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool,
 
 def format_scan_report(result: ScanResult) -> str:
     """
-    Format a scan result as a human-readable report string.
+    将扫描结果格式化为人类可读的报告字符串。
 
-    Returns a compact multi-line report suitable for CLI or chat display.
+    返回适用于 CLI 或聊天显示的紧凑多行报告。
     """
     lines = []
 
@@ -688,7 +687,7 @@ def format_scan_report(result: ScanResult) -> str:
     lines.append(f"Scan: {result.skill_name} ({result.source}/{result.trust_level})  Verdict: {verdict_display}")
 
     if result.findings:
-        # Group and sort: critical first, then high, medium, low
+        # 分组排序：critical 优先，然后 high、medium、low
         severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
         sorted_findings = sorted(result.findings, key=lambda f: severity_order.get(f.severity, 4))
 
@@ -713,7 +712,7 @@ def format_scan_report(result: ScanResult) -> str:
 
 
 def content_hash(skill_path: Path) -> str:
-    """Compute a SHA-256 hash of all files in a skill directory for integrity tracking."""
+    """计算技能目录中所有文件的 SHA-256 哈希值，用于完整性跟踪。"""
     h = hashlib.sha256()
     if skill_path.is_dir():
         for f in sorted(skill_path.rglob("*")):
@@ -728,17 +727,17 @@ def content_hash(skill_path: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Structural checks
+# 结构检查
 # ---------------------------------------------------------------------------
 
 def _check_structure(skill_dir: Path) -> List[Finding]:
     """
-    Check the skill directory for structural anomalies:
-    - Too many files
-    - Suspiciously large total size
-    - Binary/executable files that shouldn't be in a skill
-    - Symlinks pointing outside the skill directory
-    - Individual files that are too large
+    检查技能目录的结构异常：
+    - 文件过多
+    - 总大小可疑地过大
+    - 不应出现在技能中的二进制/可执行文件
+    - 指向技能目录外部的符号链接
+    - 单个文件过大
     """
     findings = []
     file_count = 0
@@ -751,7 +750,7 @@ def _check_structure(skill_dir: Path) -> List[Finding]:
         rel = str(f.relative_to(skill_dir))
         file_count += 1
 
-        # Symlink check — must resolve within the skill directory
+        # 符号链接检查 -- 必须解析到技能目录内
         if f.is_symlink():
             try:
                 resolved = f.resolve()
@@ -777,14 +776,14 @@ def _check_structure(skill_dir: Path) -> List[Finding]:
                 ))
             continue
 
-        # Size tracking
+        # 大小跟踪
         try:
             size = f.stat().st_size
             total_size += size
         except OSError:
             continue
 
-        # Single file too large
+        # 单个文件过大
         if size > MAX_SINGLE_FILE_KB * 1024:
             findings.append(Finding(
                 pattern_id="oversized_file",
@@ -796,7 +795,7 @@ def _check_structure(skill_dir: Path) -> List[Finding]:
                 description=f"file is {size // 1024}KB (limit: {MAX_SINGLE_FILE_KB}KB)",
             ))
 
-        # Binary/executable files
+        # 二进制/可执行文件
         ext = f.suffix.lower()
         if ext in SUSPICIOUS_BINARY_EXTENSIONS:
             findings.append(Finding(
@@ -809,7 +808,7 @@ def _check_structure(skill_dir: Path) -> List[Finding]:
                 description=f"binary/executable file ({ext}) should not be in a skill",
             ))
 
-        # Executable permission on non-script files
+        # 非脚本文件具有可执行权限
         if ext not in ('.sh', '.bash', '.py', '.rb', '.pl') and f.stat().st_mode & 0o111:
             findings.append(Finding(
                 pattern_id="unexpected_executable",
@@ -821,7 +820,7 @@ def _check_structure(skill_dir: Path) -> List[Finding]:
                 description="file has executable permission but is not a recognized script type",
             ))
 
-    # File count limit
+    # 文件数量限制
     if file_count > MAX_FILE_COUNT:
         findings.append(Finding(
             pattern_id="too_many_files",
@@ -833,7 +832,7 @@ def _check_structure(skill_dir: Path) -> List[Finding]:
             description=f"skill has {file_count} files (limit: {MAX_FILE_COUNT})",
         ))
 
-    # Total size limit
+    # 总大小限制
     if total_size > MAX_TOTAL_SIZE_KB * 1024:
         findings.append(Finding(
             pattern_id="oversized_skill",
@@ -849,7 +848,7 @@ def _check_structure(skill_dir: Path) -> List[Finding]:
 
 
 def _unicode_char_name(char: str) -> str:
-    """Get a readable name for an invisible unicode character."""
+    """获取不可见 Unicode 字符的可读名称。"""
     names = {
         '\u200b': "zero-width space",
         '\u200c': "zero-width non-joiner",
@@ -874,11 +873,11 @@ def _unicode_char_name(char: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# 内部辅助函数
 # ---------------------------------------------------------------------------
 
 def _resolve_trust_level(source: str) -> str:
-    """Map a source identifier to a trust level."""
+    """将来源标识符映射到信任级别。"""
     prefix_aliases = (
         "skills-sh/",
         "skills.sh/",
@@ -891,13 +890,13 @@ def _resolve_trust_level(source: str) -> str:
             normalized_source = normalized_source[len(prefix):]
             break
 
-    # Agent-created skills get their own permissive trust level
+    # 智能体创建的技能有自己的宽松信任级别
     if normalized_source == "agent-created":
         return "agent-created"
-    # Official optional skills shipped with the repo
+    # 随仓库分发的官方可选技能
     if normalized_source.startswith("official/") or normalized_source == "official":
         return "builtin"
-    # Check if source matches any trusted repo
+    # 检查来源是否匹配任何受信任的仓库
     for trusted in TRUSTED_REPOS:
         if normalized_source.startswith(trusted) or normalized_source == trusted:
             return "trusted"
@@ -905,7 +904,7 @@ def _resolve_trust_level(source: str) -> str:
 
 
 def _determine_verdict(findings: List[Finding]) -> str:
-    """Determine the overall verdict from a list of findings."""
+    """从发现列表中确定整体判定结果。"""
     if not findings:
         return "safe"
 
@@ -920,7 +919,7 @@ def _determine_verdict(findings: List[Finding]) -> str:
 
 
 def _build_summary(name: str, source: str, trust: str, verdict: str, findings: List[Finding]) -> str:
-    """Build a one-line summary of the scan result."""
+    """构建扫描结果的单行摘要。"""
     if not findings:
         return f"{name}: clean scan, no threats detected"
 

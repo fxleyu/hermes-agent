@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-ro5_screen.py — Batch Lipinski Ro5 + Veber screening via PubChem API.
-Usage: python3 ro5_screen.py aspirin ibuprofen paracetamol
-No external dependencies beyond stdlib.
+ro5_screen.py — 通过 PubChem API 批量进行 Lipinski 五规则 + Veber 筛选。
+用法: python3 ro5_screen.py aspirin ibuprofen paracetamol
+无需标准库以外的外部依赖。
 """
 import sys, json, time, argparse
 import urllib.request, urllib.parse, urllib.error

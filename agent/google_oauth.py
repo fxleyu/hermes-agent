@@ -1,42 +1,38 @@
-"""Google OAuth PKCE flow for the Gemini (google-gemini-cli) inference provider.
+"""Gemini（google-gemini-cli）推理提供者的 Google OAuth PKCE 流程。
 
-This module implements Authorization Code + PKCE (S256) OAuth against Google's
-accounts.google.com endpoints. The resulting access token is used by
-``agent.gemini_cloudcode_adapter`` to talk to ``cloudcode-pa.googleapis.com``
-(Google's Code Assist backend that powers the Gemini CLI's free and paid tiers).
+本模块实现了针对 Google accounts.google.com 端点的
+授权码 + PKCE (S256) OAuth 流程。生成的访问令牌由
+``agent.gemini_cloudcode_adapter`` 使用，用于与 ``cloudcode-pa.googleapis.com``
+通信（即为 Gemini CLI 免费和付费层提供支持的 Google Code Assist 后端）。
 
-Synthesized from:
-- jenslys/opencode-gemini-auth (MIT) — overall flow shape, public OAuth creds, request format
-- clawdbot/extensions/google/ — refresh-token rotation, VPC-SC handling reference
-- PRs #10176 (@sliverp) and #10779 (@newarthur) — PKCE module structure, cross-process lock
+参考来源：
+- jenslys/opencode-gemini-auth (MIT) — 总体流程结构、公共 OAuth 凭据、请求格式
+- clawdbot/extensions/google/ — 刷新令牌轮换、VPC-SC 处理参考
+- PRs #10176 (@sliverp) 和 #10779 (@newarthur) — PKCE 模块结构、跨进程锁
 
-Storage (``~/.hermes/auth/google_oauth.json``, chmod 0o600):
+存储位置（``~/.hermes/auth/google_oauth.json``，权限 0o600）：
 
     {
       "refresh": "refreshToken|projectId|managedProjectId",
       "access": "...",
-      "expires": 1744848000000,   // unix MILLIseconds
+      "expires": 1744848000000,   // unix 毫秒时间戳
       "email": "user@example.com"
     }
 
-The ``refresh`` field packs the refresh_token together with the resolved GCP
-project IDs so subsequent sessions don't need to re-discover the project.
-This matches opencode-gemini-auth's storage contract exactly.
+``refresh`` 字段将 refresh_token 与已解析的 GCP 项目 ID 打包在一起，
+使得后续会话无需重新发现项目。这与 opencode-gemini-auth 的存储契约完全一致。
 
-The packed format stays parseable even if no project IDs are present — just
-a bare refresh_token is treated as "packed with empty IDs".
+打包格式即使在没有项目 ID 时也可解析——裸 refresh_token 被视为"打包了空 ID"。
 
-Public client credentials
+公共客户端凭据
 -------------------------
-The client_id and client_secret below are Google's PUBLIC desktop OAuth client
-for their own open-source gemini-cli. They are baked into every copy of the
-gemini-cli npm package and are NOT confidential — desktop OAuth clients have
-no secret-keeping requirement (PKCE provides the security). Shipping them here
-is consistent with opencode-gemini-auth and the official Google gemini-cli.
+下面的 client_id 和 client_secret 是 Google 为其自有开源 gemini-cli
+提供的公共桌面 OAuth 客户端。它们内置在 gemini-cli npm 包的每份副本中，
+不是机密信息——桌面 OAuth 客户端不需要保密（PKCE 提供安全保证）。
+在此处内置它们与 opencode-gemini-auth 和官方 Google gemini-cli 一致。
 
-Policy note: Google considers using this OAuth client with third-party software
-a policy violation. Users see an upfront warning with ``confirm(default=False)``
-before authorization begins.
+政策说明：Google 认为使用此 OAuth 客户端与第三方软件属于政策违规。
+用户在授权开始前会看到带有 ``confirm(default=False)`` 的前置警告。
 """
 
 from __future__ import annotations
@@ -66,26 +62,26 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# OAuth client credential resolution.
+# OAuth 客户端凭据解析。
 #
-# Resolution order:
-#   1. HERMES_GEMINI_CLIENT_ID / HERMES_GEMINI_CLIENT_SECRET env vars (power users)
-#   2. Shipped defaults — Google's public gemini-cli desktop OAuth client
-#      (baked into every copy of Google's open-source gemini-cli; NOT
-#      confidential — desktop OAuth clients use PKCE, not client_secret, for
-#      security). Using these matches opencode-gemini-auth behavior.
-#   3. Fallback: scrape from a locally installed gemini-cli binary (helps forks
-#      that deliberately wipe the shipped defaults).
-#   4. Fail with a helpful error.
+# 解析优先级：
+#   1. HERMES_GEMINI_CLIENT_ID / HERMES_GEMINI_CLIENT_SECRET 环境变量（高级用户）
+#   2. 内置默认值 — Google 的公共 gemini-cli 桌面 OAuth 客户端
+#      （内置在 Google 开源 gemini-cli 的每份副本中；非机密——
+#      桌面 OAuth 客户端使用 PKCE 而非 client_secret 保证安全）。
+#      使用这些与 opencode-gemini-auth 行为一致。
+#   3. 回退：从本地安装的 gemini-cli 二进制文件中抓取（帮助
+#      故意删除内置默认值的分支）。
+#   4. 以帮助性错误信息失败。
 # =============================================================================
 
 ENV_CLIENT_ID = "HERMES_GEMINI_CLIENT_ID"
 ENV_CLIENT_SECRET = "HERMES_GEMINI_CLIENT_SECRET"
 
-# Public gemini-cli desktop OAuth client (shipped in Google's open-source
-# gemini-cli MIT repo). Composed piecewise to keep the constants readable and
-# to pair each piece with an explicit comment about why it is non-confidential.
-# See: https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/code_assist/oauth2.ts
+# 公共 gemini-cli 桌面 OAuth 客户端（内置在 Google 开源
+# gemini-cli MIT 仓库中）。分段组合以保持常量可读性，
+# 并为每段明确注释其为何是非机密的。
+# 参见: https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/code_assist/oauth2.ts
 _PUBLIC_CLIENT_ID_PROJECT_NUM = "681255809395"
 _PUBLIC_CLIENT_ID_HASH = "oo8ft2oprdrnp9e3aqf6av3hmdib135j"
 _PUBLIC_CLIENT_SECRET_SUFFIX = "4uHgMPm-1o7Sk-geV6Cu5clXFsxl"
@@ -96,7 +92,7 @@ _DEFAULT_CLIENT_ID = (
 )
 _DEFAULT_CLIENT_SECRET = f"GOCSPX-{_PUBLIC_CLIENT_SECRET_SUFFIX}"
 
-# Regex patterns for fallback scraping from an installed gemini-cli.
+# 从已安装的 gemini-cli 进行回退抓取的正则表达式模式。
 import re as _re
 _CLIENT_ID_PATTERN = _re.compile(
     r"OAUTH_CLIENT_ID\s*=\s*['\"]([0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com)['\"]"
@@ -109,7 +105,7 @@ _CLIENT_SECRET_SHAPE = _re.compile(r"(GOCSPX-[A-Za-z0-9_-]{20,})")
 
 
 # =============================================================================
-# Endpoints & constants
+# 端点与常量
 # =============================================================================
 
 AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -126,23 +122,23 @@ DEFAULT_REDIRECT_PORT = 8085
 REDIRECT_HOST = "127.0.0.1"
 CALLBACK_PATH = "/oauth2callback"
 
-# 60-second clock skew buffer (matches opencode-gemini-auth).
+# 60 秒时钟偏差缓冲（与 opencode-gemini-auth 一致）。
 REFRESH_SKEW_SECONDS = 60
 
 TOKEN_REQUEST_TIMEOUT_SECONDS = 20.0
 CALLBACK_WAIT_SECONDS = 300
 LOCK_TIMEOUT_SECONDS = 30.0
 
-# Headless env detection
+# 无头环境检测
 _HEADLESS_ENV_VARS = ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "HERMES_HEADLESS")
 
 
 # =============================================================================
-# Error type
+# 错误类型
 # =============================================================================
 
 class GoogleOAuthError(RuntimeError):
-    """Raised for any failure in the Google OAuth flow."""
+    """Google OAuth 流程中任何失败时抛出。"""
 
     def __init__(self, message: str, *, code: str = "google_oauth_error") -> None:
         super().__init__(message)
@@ -150,7 +146,7 @@ class GoogleOAuthError(RuntimeError):
 
 
 # =============================================================================
-# File paths & cross-process locking
+# 文件路径与跨进程锁
 # =============================================================================
 
 def _credentials_path() -> Path:
@@ -166,7 +162,7 @@ _lock_state = threading.local()
 
 @contextlib.contextmanager
 def _credentials_lock(timeout_seconds: float = LOCK_TIMEOUT_SECONDS):
-    """Cross-process lock around the credentials file (fcntl POSIX / msvcrt Windows)."""
+    """凭据文件的跨进程锁（POSIX 使用 fcntl / Windows 使用 msvcrt）。"""
     depth = getattr(_lock_state, "depth", 0)
     if depth > 0:
         _lock_state.depth = depth + 1
@@ -243,18 +239,18 @@ def _credentials_lock(timeout_seconds: float = LOCK_TIMEOUT_SECONDS):
 
 
 # =============================================================================
-# Client ID resolution
+# 客户端 ID 解析
 # =============================================================================
 
 _scraped_creds_cache: Dict[str, str] = {}
 
 
 def _locate_gemini_cli_oauth_js() -> Optional[Path]:
-    """Walk the user's gemini binary install to find its oauth2.js.
+    """遍历用户的 gemini 二进制安装路径以查找其 oauth2.js。
 
-    Returns None if gemini isn't installed. Supports both the npm install
-    (``node_modules/@google/gemini-cli-core/dist/**/code_assist/oauth2.js``)
-    and the Homebrew ``bundle/`` layout.
+    如果 gemini 未安装则返回 None。同时支持 npm 安装
+    （``node_modules/@google/gemini-cli-core/dist/**/code_assist/oauth2.js``）
+    和 Homebrew 的 ``bundle/`` 布局。
     """
     import shutil
 
@@ -267,10 +263,10 @@ def _locate_gemini_cli_oauth_js() -> Optional[Path]:
     except OSError:
         return None
 
-    # Walk up from the binary to find npm install root
+    # 从二进制文件向上遍历以找到 npm 安装根目录
     search_dirs: list[Path] = []
     cur = real.parent
-    for _ in range(8):  # don't walk too far
+    for _ in range(8):  # 不要遍历太远
         search_dirs.append(cur)
         if (cur / "node_modules").exists():
             search_dirs.append(cur / "node_modules" / "@google" / "gemini-cli-core")
@@ -282,7 +278,7 @@ def _locate_gemini_cli_oauth_js() -> Optional[Path]:
     for root in search_dirs:
         if not root.exists():
             continue
-        # Common known paths
+        # 常见已知路径
         candidates = [
             root / "dist" / "src" / "code_assist" / "oauth2.js",
             root / "dist" / "code_assist" / "oauth2.js",
@@ -291,7 +287,7 @@ def _locate_gemini_cli_oauth_js() -> Optional[Path]:
         for c in candidates:
             if c.exists():
                 return c
-        # Recursive fallback: look for oauth2.js within 10 dirs deep
+        # 递归回退：在 10 层目录深度内查找 oauth2.js
         try:
             for path in root.rglob("oauth2.js"):
                 return path
@@ -302,13 +298,13 @@ def _locate_gemini_cli_oauth_js() -> Optional[Path]:
 
 
 def _scrape_client_credentials() -> Tuple[str, str]:
-    """Extract client_id + client_secret from the local gemini-cli install."""
+    """从本地 gemini-cli 安装中提取 client_id + client_secret。"""
     if _scraped_creds_cache.get("resolved"):
         return _scraped_creds_cache.get("client_id", ""), _scraped_creds_cache.get("client_secret", "")
 
     oauth_js = _locate_gemini_cli_oauth_js()
     if oauth_js is None:
-        _scraped_creds_cache["resolved"] = "1"  # Don't retry on every call
+        _scraped_creds_cache["resolved"] = "1"  # 不要每次调用都重试
         return "", ""
 
     try:
@@ -318,7 +314,7 @@ def _scrape_client_credentials() -> Tuple[str, str]:
         _scraped_creds_cache["resolved"] = "1"
         return "", ""
 
-    # Precise pattern first, then fallback shape match
+    # 先尝试精确模式匹配，再回退到形状匹配
     cid_match = _CLIENT_ID_PATTERN.search(content) or _CLIENT_ID_SHAPE.search(content)
     cs_match = _CLIENT_SECRET_PATTERN.search(content) or _CLIENT_SECRET_SHAPE.search(content)
 
@@ -374,11 +370,11 @@ def _require_client_id() -> str:
 
 
 # =============================================================================
-# PKCE
+# PKCE 密钥对生成
 # =============================================================================
 
 def _generate_pkce_pair() -> Tuple[str, str]:
-    """Generate a (verifier, challenge) pair using S256."""
+    """使用 S256 算法生成 (verifier, challenge) 密钥对。"""
     verifier = secrets.token_urlsafe(64)
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
     challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
@@ -386,7 +382,7 @@ def _generate_pkce_pair() -> Tuple[str, str]:
 
 
 # =============================================================================
-# Packed refresh format:  refresh_token[|project_id[|managed_project_id]]
+# 打包刷新格式：refresh_token[|project_id[|managed_project_id]]
 # =============================================================================
 
 @dataclass
@@ -415,14 +411,14 @@ class RefreshParts:
 
 
 # =============================================================================
-# Credentials (dataclass wrapping the on-disk format)
+# 凭据（包装磁盘格式的数据类）
 # =============================================================================
 
 @dataclass
 class GoogleCredentials:
     access_token: str
     refresh_token: str
-    expires_ms: int  # unix milliseconds
+    expires_ms: int  # unix 毫秒时间戳
     email: str = ""
     project_id: str = ""
     managed_project_id: str = ""
@@ -462,11 +458,11 @@ class GoogleCredentials:
 
 
 # =============================================================================
-# Credential I/O (atomic + locked)
+# 凭据读写（原子 + 加锁）
 # =============================================================================
 
 def load_credentials() -> Optional[GoogleCredentials]:
-    """Load credentials from disk. Returns None if missing or corrupt."""
+    """从磁盘加载凭据。如果缺失或损坏则返回 None。"""
     path = _credentials_path()
     if not path.exists():
         return None
@@ -486,7 +482,7 @@ def load_credentials() -> Optional[GoogleCredentials]:
 
 
 def save_credentials(creds: GoogleCredentials) -> Path:
-    """Atomically write creds to disk with 0o600 permissions."""
+    """原子写入凭据到磁盘，权限 0o600。"""
     path = _credentials_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(creds.to_dict(), indent=2, sort_keys=True) + "\n"
@@ -510,7 +506,7 @@ def save_credentials(creds: GoogleCredentials) -> Path:
 
 
 def clear_credentials() -> None:
-    """Remove the creds file. Idempotent."""
+    """删除凭据文件。幂等操作。"""
     path = _credentials_path()
     with _credentials_lock():
         try:
@@ -522,11 +518,11 @@ def clear_credentials() -> None:
 
 
 # =============================================================================
-# HTTP helpers
+# HTTP 辅助函数
 # =============================================================================
 
 def _post_form(url: str, data: Dict[str, str], timeout: float) -> Dict[str, Any]:
-    """POST x-www-form-urlencoded and return parsed JSON response."""
+    """发送 x-www-form-urlencoded POST 请求并返回解析后的 JSON 响应。"""
     body = urllib.parse.urlencode(data).encode("ascii")
     request = urllib.request.Request(
         url,
@@ -547,7 +543,7 @@ def _post_form(url: str, data: Dict[str, str], timeout: float) -> Dict[str, Any]
             detail = exc.read().decode("utf-8", errors="replace")
         except Exception:
             pass
-        # Detect invalid_grant to signal credential revocation
+        # 检测 invalid_grant 以指示凭据已被撤销
         code = "google_oauth_token_http_error"
         if "invalid_grant" in detail.lower():
             code = "google_oauth_invalid_grant"
@@ -571,7 +567,7 @@ def exchange_code(
     client_secret: Optional[str] = None,
     timeout: float = TOKEN_REQUEST_TIMEOUT_SECONDS,
 ) -> Dict[str, Any]:
-    """Exchange authorization code for access + refresh tokens."""
+    """用授权码交换访问令牌 + 刷新令牌。"""
     cid = client_id if client_id is not None else _get_client_id()
     csecret = client_secret if client_secret is not None else _get_client_secret()
     data = {
@@ -593,7 +589,7 @@ def refresh_access_token(
     client_secret: Optional[str] = None,
     timeout: float = TOKEN_REQUEST_TIMEOUT_SECONDS,
 ) -> Dict[str, Any]:
-    """Refresh the access token."""
+    """刷新访问令牌。"""
     if not refresh_token:
         raise GoogleOAuthError(
             "Cannot refresh: refresh_token is empty. Re-run OAuth login.",
@@ -612,7 +608,7 @@ def refresh_access_token(
 
 
 def _fetch_user_email(access_token: str, timeout: float = TOKEN_REQUEST_TIMEOUT_SECONDS) -> str:
-    """Best-effort userinfo fetch for display. Failures return empty string."""
+    """尽力获取用户信息用于显示。失败时返回空字符串。"""
     try:
         request = urllib.request.Request(
             USERINFO_ENDPOINT + "?alt=json",
@@ -628,7 +624,7 @@ def _fetch_user_email(access_token: str, timeout: float = TOKEN_REQUEST_TIMEOUT_
 
 
 # =============================================================================
-# In-flight refresh deduplication
+# 并发刷新去重
 # =============================================================================
 
 _refresh_inflight: Dict[str, threading.Event] = {}
@@ -636,11 +632,11 @@ _refresh_inflight_lock = threading.Lock()
 
 
 def get_valid_access_token(*, force_refresh: bool = False) -> str:
-    """Load creds, refreshing if near expiry, and return a valid bearer token.
+    """加载凭据，如果接近过期则刷新，返回有效的 bearer 令牌。
 
-    Dedupes concurrent refreshes by refresh_token. On ``invalid_grant``, the
-    credential file is wiped and a ``google_oauth_invalid_grant`` error is raised
-    (caller is expected to trigger a re-login flow).
+    通过 refresh_token 去重并发刷新。当遇到 ``invalid_grant`` 时，
+    清除凭据文件并抛出 ``google_oauth_invalid_grant`` 错误
+    （调用方应触发重新登录流程）。
     """
     creds = load_credentials()
     if creds is None:
@@ -652,7 +648,7 @@ def get_valid_access_token(*, force_refresh: bool = False) -> str:
     if not force_refresh and not creds.access_token_expired():
         return creds.access_token
 
-    # Dedupe concurrent refreshes by refresh_token
+    # 通过 refresh_token 去重并发刷新
     rt = creds.refresh_token
     with _refresh_inflight_lock:
         event = _refresh_inflight.get(rt)
@@ -664,12 +660,12 @@ def get_valid_access_token(*, force_refresh: bool = False) -> str:
             owner = False
 
     if not owner:
-        # Another thread is refreshing — wait, then re-read from disk.
+        # 另一个线程正在刷新——等待，然后从磁盘重新读取。
         event.wait(timeout=LOCK_TIMEOUT_SECONDS)
         fresh = load_credentials()
         if fresh is not None and not fresh.access_token_expired():
             return fresh.access_token
-        # Fall through to do our own refresh if the other attempt failed
+        # 如果其他尝试失败，则继续执行自己的刷新
 
     try:
         try:
@@ -690,7 +686,7 @@ def get_valid_access_token(*, force_refresh: bool = False) -> str:
                 "Refresh response did not include an access_token.",
                 code="google_oauth_refresh_empty",
             )
-        # Google sometimes rotates refresh_token; preserve existing if omitted.
+        # Google 有时会轮换 refresh_token；如果省略则保留现有的。
         new_refresh = str(resp.get("refresh_token", "") or "").strip() or creds.refresh_token
         expires_in = int(resp.get("expires_in", 0) or 0)
 
@@ -707,11 +703,11 @@ def get_valid_access_token(*, force_refresh: bool = False) -> str:
 
 
 # =============================================================================
-# Update project IDs on stored creds
+# 更新存储凭据中的项目 ID
 # =============================================================================
 
 def update_project_ids(project_id: str = "", managed_project_id: str = "") -> None:
-    """Persist resolved/discovered project IDs back into the credential file."""
+    """将已解析/发现的项目 ID 持久化回凭据文件。"""
     creds = load_credentials()
     if creds is None:
         return
@@ -723,7 +719,7 @@ def update_project_ids(project_id: str = "", managed_project_id: str = "") -> No
 
 
 # =============================================================================
-# Callback server
+# 回调服务器
 # =============================================================================
 
 class _OAuthCallbackHandler(http.server.BaseHTTPRequestHandler):
@@ -752,7 +748,7 @@ class _OAuthCallbackHandler(http.server.BaseHTTPRequestHandler):
             self._respond_html(400, _ERROR_PAGE.format(message="State mismatch — aborting for safety."))
         elif error:
             type(self).captured_error = error
-            # Simple HTML-escape of the error value
+            # 对错误值进行简单 HTML 转义
             safe_err = (
                 str(error)
                 .replace("&", "&amp;")
@@ -818,7 +814,7 @@ def _is_headless() -> bool:
 
 
 # =============================================================================
-# Main login flow
+# 主登录流程
 # =============================================================================
 
 def start_oauth_flow(
@@ -828,14 +824,14 @@ def start_oauth_flow(
     callback_wait_seconds: float = CALLBACK_WAIT_SECONDS,
     project_id: str = "",
 ) -> GoogleCredentials:
-    """Run the interactive browser OAuth flow and persist credentials.
+    """运行交互式浏览器 OAuth 流程并持久化凭据。
 
-    Args:
-        force_relogin: If False and valid creds already exist, return them.
-        open_browser: If False, skip webbrowser.open and print the URL only.
-        callback_wait_seconds: Max seconds to wait for the browser callback.
-        project_id: Initial GCP project ID to bake into the stored creds.
-                    Can be discovered/updated later via update_project_ids().
+    参数:
+        force_relogin: 如果为 False 且已存在有效凭据，直接返回。
+        open_browser: 如果为 False，跳过 webbrowser.open 仅打印 URL。
+        callback_wait_seconds: 等待浏览器回调的最大秒数。
+        project_id: 初始 GCP 项目 ID，会写入存储的凭据中。
+                    可以稍后通过 update_project_ids() 发现/更新。
     """
     if not force_relogin:
         existing = load_credentials()
@@ -843,13 +839,13 @@ def start_oauth_flow(
             logger.info("Google OAuth credentials already present; skipping login.")
             return existing
 
-    client_id = _require_client_id()  # raises GoogleOAuthError with install hints
+    client_id = _require_client_id()  # 如果缺失则抛出带安装提示的 GoogleOAuthError
     client_secret = _get_client_secret()
 
     verifier, challenge = _generate_pkce_pair()
     state = secrets.token_urlsafe(16)
 
-    # If headless, skip the listener and go straight to paste mode
+    # 如果是无头环境，跳过监听器直接进入粘贴模式
     if _is_headless() and open_browser:
         logger.info("Headless environment detected; using paste-mode OAuth fallback.")
         return _paste_mode_login(verifier, challenge, state, client_id, client_secret, project_id)
@@ -937,8 +933,8 @@ def _paste_mode_login(
     client_secret: str,
     project_id: str,
 ) -> GoogleCredentials:
-    """Run OAuth flow without a local callback server."""
-    # Use a placeholder redirect URI; user will paste the full URL back
+    """不使用本地回调服务器运行 OAuth 流程。"""
+    # 使用占位 redirect URI；用户会将完整 URL 粘贴回来
     redirect_uri = f"http://{REDIRECT_HOST}:{DEFAULT_REDIRECT_PORT}{CALLBACK_PATH}"
     params = {
         "client_id": client_id,
@@ -982,7 +978,7 @@ def _prompt_paste_fallback() -> Optional[str]:
         parsed = urllib.parse.urlparse(raw)
         params = urllib.parse.parse_qs(parsed.query)
         return (params.get("code") or [""])[0] or None
-    # Accept a bare query string as well
+    # 也接受裸查询字符串
     if raw.startswith("?"):
         params = urllib.parse.parse_qs(raw[1:])
         return (params.get("code") or [""])[0] or None
@@ -1016,11 +1012,11 @@ def _persist_token_response(
 
 
 # =============================================================================
-# Pool-compatible variant
+# 连接池兼容变体
 # =============================================================================
 
 def run_gemini_oauth_login_pure() -> Dict[str, Any]:
-    """Run the login flow and return a dict matching the credential pool shape."""
+    """运行登录流程并返回匹配凭据池结构的字典。"""
     creds = start_oauth_flow(force_relogin=True)
     return {
         "access_token": creds.access_token,
@@ -1032,11 +1028,11 @@ def run_gemini_oauth_login_pure() -> Dict[str, Any]:
 
 
 # =============================================================================
-# Project ID resolution
+# 项目 ID 解析
 # =============================================================================
 
 def resolve_project_id_from_env() -> str:
-    """Return a GCP project ID from env vars, in priority order."""
+    """按优先级从环境变量返回 GCP 项目 ID。"""
     for var in (
         "HERMES_GEMINI_PROJECT_ID",
         "GOOGLE_CLOUD_PROJECT",

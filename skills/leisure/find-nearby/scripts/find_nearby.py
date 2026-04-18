@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Find nearby places using OpenStreetMap (Overpass + Nominatim). No API keys needed.
+"""使用 OpenStreetMap（Overpass + Nominatim）查找附近地点。无需 API 密钥。
 
-Usage:
-    # By coordinates
+用法:
+    # 通过坐标查找
     python find_nearby.py --lat 36.17 --lon -115.14 --type restaurant --radius 1500
 
-    # By address/city/zip (auto-geocoded)
+    # 通过地址/城市/邮编查找（自动地理编码）
     python find_nearby.py --near "Times Square, New York" --type cafe --radius 1000
     python find_nearby.py --near "90210" --type pharmacy
 
-    # Multiple types
+    # 多种类型
     python find_nearby.py --lat 36.17 --lon -115.14 --type restaurant --type bar
 
-    # JSON output for programmatic use
+    # JSON 输出，便于程序化使用
     python find_nearby.py --near "downtown las vegas" --type restaurant --json
 """
 
@@ -48,7 +48,7 @@ def _http_post(url: str, data: str) -> Any:
 
 
 def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Distance in meters between two coordinates."""
+    """计算两个坐标之间的距离（单位：米）。"""
     R = 6_371_000
     rlat1, rlat2 = math.radians(lat1), math.radians(lat2)
     dlat = math.radians(lat2 - lat1)
@@ -58,7 +58,7 @@ def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 def geocode(query: str) -> tuple[float, float]:
-    """Convert address/city/zip to coordinates via Nominatim."""
+    """通过 Nominatim 将地址/城市/邮编转换为坐标。"""
     params = urllib.parse.urlencode({"q": query, "format": "json", "limit": 1})
     results = _http_get(f"{NOMINATIM_URL}?{params}")
     if not results:
@@ -68,14 +68,14 @@ def geocode(query: str) -> tuple[float, float]:
 
 
 def find_nearby(lat: float, lon: float, types: list[str], radius: int = 1500, limit: int = 15) -> list[dict]:
-    """Query Overpass for nearby amenities."""
-    # Build Overpass QL query
+    """通过 Overpass 查询附近的设施。"""
+    # 构建 Overpass QL 查询语句
     type_filters = "".join(
         f'nwr["amenity"="{t}"](around:{radius},{lat},{lon});' for t in types
     )
     query = f"[out:json][timeout:{TIMEOUT}];({type_filters});out center tags;"
 
-    # Try each Overpass server
+    # 尝试每个 Overpass 服务器
     data = None
     for url in OVERPASS_URLS:
         try:
@@ -87,7 +87,7 @@ def find_nearby(lat: float, lon: float, types: list[str], radius: int = 1500, li
     if not data:
         return []
 
-    # Parse results
+    # 解析结果
     places = []
     for el in data.get("elements", []):
         tags = el.get("tags", {})
@@ -95,7 +95,7 @@ def find_nearby(lat: float, lon: float, types: list[str], radius: int = 1500, li
         if not name:
             continue
 
-        # Get coordinates (nodes have lat/lon directly, ways/relations use center)
+        # 获取坐标（节点直接有 lat/lon，路径/关系使用 center）
         plat = el.get("lat") or (el.get("center", {}) or {}).get("lat")
         plon = el.get("lon") or (el.get("center", {}) or {}).get("lon")
         if plat is None or plon is None:
@@ -113,7 +113,7 @@ def find_nearby(lat: float, lon: float, types: list[str], radius: int = 1500, li
             "directions_url": f"https://www.google.com/maps/dir/?api=1&origin={lat},{lon}&destination={plat},{plon}",
         }
 
-        # Add useful optional fields
+        # 添加有用的可选字段
         if tags.get("cuisine"):
             place["cuisine"] = tags["cuisine"]
         if tags.get("opening_hours"):
@@ -130,7 +130,7 @@ def find_nearby(lat: float, lon: float, types: list[str], radius: int = 1500, li
 
         places.append(place)
 
-    # Sort by distance, limit results
+    # 按距离排序，限制结果数量
     places.sort(key=lambda p: p["distance_m"])
     return places[:limit]
 
@@ -146,7 +146,7 @@ def main():
     parser.add_argument("--json", action="store_true", dest="json_output", help="Output as JSON")
     args = parser.parse_args()
 
-    # Resolve coordinates
+    # 解析坐标
     if args.near:
         lat, lon = geocode(args.near)
     elif args.lat is not None and args.lon is not None:

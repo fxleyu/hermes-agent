@@ -1,12 +1,12 @@
 """
-Mistral tool call parser.
+Mistral 工具调用解析器。
 
-Supports two formats depending on tokenizer version:
-- Pre-v11: content[TOOL_CALLS] [{"name": ..., "arguments": {...}}, ...]
-- v11+:    content[TOOL_CALLS]tool_name1{"arg": "val"}[TOOL_CALLS]tool_name2{"arg": "val"}
+根据分词器版本支持两种格式：
+- v11 之前：content[TOOL_CALLS] [{"name": ..., "arguments": {...}}, ...]
+- v11 及之后：content[TOOL_CALLS]tool_name1{"arg": "val"}[TOOL_CALLS]tool_name2{"arg": "val"}
 
-Based on VLLM's MistralToolParser.extract_tool_calls()
-The [TOOL_CALLS] token is the bot_token used by Mistral models.
+基于 VLLM 的 MistralToolParser.extract_tool_calls()
+[TOOL_CALLS] 标记是 Mistral 模型使用的 bot_token。
 """
 
 import json
@@ -22,7 +22,7 @@ from environments.tool_call_parsers import ParseResult, ToolCallParser, register
 
 
 def _generate_mistral_id() -> str:
-    """Mistral tool call IDs are 9-char alphanumeric strings."""
+    """Mistral 工具调用 ID 是 9 字符的字母数字字符串。"""
     import random
     import string
 
@@ -32,13 +32,13 @@ def _generate_mistral_id() -> str:
 @register_parser("mistral")
 class MistralToolCallParser(ToolCallParser):
     """
-    Parser for Mistral-format tool calls.
+    Mistral 格式工具调用的解析器。
 
-    Detects format by checking if the content after [TOOL_CALLS] starts with '['
-    (pre-v11 JSON array) or with a tool name (v11+ format).
+    通过检查 [TOOL_CALLS] 之后的内容是否以 '[' 开头（v11 之前的 JSON 数组）
+    还是以工具名称开头（v11+ 格式）来检测格式类型。
     """
 
-    # The [TOOL_CALLS] token -- may appear as different strings depending on tokenizer
+    # [TOOL_CALLS] 标记 -- 根据分词器可能以不同字符串出现
     BOT_TOKEN = "[TOOL_CALLS]"
 
     def parse(self, text: str) -> ParseResult:
@@ -46,33 +46,35 @@ class MistralToolCallParser(ToolCallParser):
             return text, None
 
         try:
+            # 以 [TOOL_CALLS] 为分隔符拆分文本
             parts = text.split(self.BOT_TOKEN)
             content = parts[0].strip()
             raw_tool_calls = parts[1:]
 
-            # Detect format: if the first raw part starts with '[', it's pre-v11
+            # 检测格式：如果第一个原始部分以 '[' 开头，则为 v11 之前的格式
             first_raw = raw_tool_calls[0].strip() if raw_tool_calls else ""
             is_pre_v11 = first_raw.startswith("[") or first_raw.startswith("{")
 
             tool_calls: List[ChatCompletionMessageToolCall] = []
 
             if not is_pre_v11:
-                # v11+ format: [TOOL_CALLS]tool_name{args}[TOOL_CALLS]tool_name2{args2}
+                # v11+ 格式：[TOOL_CALLS]tool_name{args}[TOOL_CALLS]tool_name2{args2}
                 for raw in raw_tool_calls:
                     raw = raw.strip()
                     if not raw or "{" not in raw:
                         continue
 
+                    # 在第一个 '{' 处分割，前面是工具名，后面是参数 JSON
                     brace_idx = raw.find("{")
                     tool_name = raw[:brace_idx].strip()
                     args_str = raw[brace_idx:]
 
-                    # Validate and clean the JSON arguments
+                    # 验证并清理 JSON 参数
                     try:
                         parsed_args = json.loads(args_str)
                         args_str = json.dumps(parsed_args, ensure_ascii=False)
                     except json.JSONDecodeError:
-                        pass  # Keep raw if parsing fails
+                        pass  # 解析失败时保留原始字符串
 
                     tool_calls.append(
                         ChatCompletionMessageToolCall(
@@ -82,9 +84,10 @@ class MistralToolCallParser(ToolCallParser):
                         )
                     )
             else:
-                # Pre-v11 format: [TOOL_CALLS] [{"name": ..., "arguments": {...}}]
+                # v11 之前的格式：[TOOL_CALLS] [{"name": ..., "arguments": {...}}]
                 try:
                     parsed = json.loads(first_raw)
+                    # 如果解析结果是单个字典，包装成列表
                     if isinstance(parsed, dict):
                         parsed = [parsed]
 
@@ -105,7 +108,7 @@ class MistralToolCallParser(ToolCallParser):
                             )
                         )
                 except json.JSONDecodeError:
-                    # Fallback: extract JSON objects using raw_decode
+                    # 回退方案：使用 raw_decode 逐个提取 JSON 对象
                     decoder = json.JSONDecoder()
                     idx = 0
                     while idx < len(first_raw):

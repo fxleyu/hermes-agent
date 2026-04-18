@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Generate a meme image by overlaying text on a template.
+"""通过在模板图片上叠加文字来生成表情包。
 
-Usage:
-    python generate_meme.py <template_id_or_name> <output_path> <text1> [text2] [text3] [text4]
+用法:
+    python generate_meme.py <模板ID或名称> <输出路径> <文字1> [文字2] [文字3] [文字4]
 
-Example:
+示例:
     python generate_meme.py drake /tmp/meme.png "Writing tests" "Shipping to prod and hoping"
     python generate_meme.py "Disaster Girl" /tmp/meme.png "Top text" "Bottom text"
-    python generate_meme.py --list                    # show curated templates
-    python generate_meme.py --search "distracted"     # search all imgflip templates
+    python generate_meme.py --list                    # 显示精选模板
+    python generate_meme.py --search "distracted"     # 搜索所有 imgflip 模板
 
-Templates with custom text positioning are in templates.json (10 curated).
-Any of the ~100 popular imgflip templates can also be used by name or ID —
-unknown templates get smart default text positioning based on their box_count.
+带有自定义文字位置的模板保存在 templates.json 中（10 个精选模板）。
+也可以通过名称或 ID 使用约 100 个热门 imgflip 模板 —
+未知模板会根据其 box_count 自动生成智能默认文字位置。
 """
 
 import json
@@ -34,11 +34,11 @@ TEMPLATES_FILE = SCRIPT_DIR / "templates.json"
 CACHE_DIR = SCRIPT_DIR / ".cache"
 IMGFLIP_API = "https://api.imgflip.com/get_memes"
 IMGFLIP_CACHE_FILE = CACHE_DIR / "imgflip_memes.json"
-IMGFLIP_CACHE_MAX_AGE = 86400  # 24 hours
+IMGFLIP_CACHE_MAX_AGE = 86400  # 24 小时
 
 
 def _fetch_url(url: str, timeout: int = 15) -> bytes:
-    """Fetch URL content, using requests if available, else urllib."""
+    """获取 URL 内容，优先使用 requests 库，否则使用 urllib。"""
     if _requests is not None:
         resp = _requests.get(url, timeout=timeout)
         resp.raise_for_status()
@@ -48,13 +48,13 @@ def _fetch_url(url: str, timeout: int = 15) -> bytes:
 
 
 def load_curated_templates() -> dict:
-    """Load templates with hand-tuned text field positions."""
+    """加载带有手动调优文字区域位置的精选模板。"""
     with open(TEMPLATES_FILE) as f:
         return json.load(f)
 
 
 def _default_fields(box_count: int) -> list:
-    """Generate sensible default text field positions for unknown templates."""
+    """为未知模板生成合理的默认文字区域位置。"""
     if box_count <= 0:
         box_count = 2
     if box_count == 1:
@@ -64,7 +64,7 @@ def _default_fields(box_count: int) -> list:
             {"name": "top", "x_pct": 0.5, "y_pct": 0.08, "w_pct": 0.95, "align": "center"},
             {"name": "bottom", "x_pct": 0.5, "y_pct": 0.92, "w_pct": 0.95, "align": "center"},
         ]
-    # 3+: evenly space vertically
+    # 3 个以上: 纵向均匀分布
     fields = []
     for i in range(box_count):
         y = 0.08 + (0.84 * i / (box_count - 1)) if box_count > 1 else 0.5
@@ -79,11 +79,11 @@ def _default_fields(box_count: int) -> list:
 
 
 def fetch_imgflip_templates() -> list:
-    """Fetch popular meme templates from imgflip API. Cached for 24h."""
+    """从 imgflip API 获取热门表情包模板，缓存 24 小时。"""
     import time
 
     CACHE_DIR.mkdir(exist_ok=True)
-    # Check cache
+    # 检查缓存
     if IMGFLIP_CACHE_FILE.exists():
         age = time.time() - IMGFLIP_CACHE_FILE.stat().st_mtime
         if age < IMGFLIP_CACHE_MAX_AGE:
@@ -97,7 +97,7 @@ def fetch_imgflip_templates() -> list:
             json.dump(memes, f)
         return memes
     except Exception as e:
-        # If fetch fails and we have stale cache, use it
+        # 获取失败时，如有过期缓存则使用过期缓存
         if IMGFLIP_CACHE_FILE.exists():
             with open(IMGFLIP_CACHE_FILE) as f:
                 return json.load(f)
@@ -106,36 +106,36 @@ def fetch_imgflip_templates() -> list:
 
 
 def _slugify(name: str) -> str:
-    """Convert a template name to a slug for matching."""
+    """将模板名称转为 slug 格式以便匹配。"""
     return name.lower().replace(" ", "-").replace("'", "").replace("\"", "")
 
 
 def resolve_template(identifier: str) -> dict:
-    """Resolve a template by curated ID, imgflip name, or imgflip ID.
+    """通过精选 ID、imgflip 名称或 imgflip ID 解析模板。
 
-    Returns dict with: name, url, fields, source.
+    返回包含 name, url, fields, source 的字典。
     """
     curated = load_curated_templates()
 
-    # 1. Exact curated ID match
+    # 1. 精确匹配精选 ID
     if identifier in curated:
         tmpl = curated[identifier]
         return {**tmpl, "source": "curated"}
 
-    # 2. Slugified curated match
+    # 2. Slug 化精选匹配
     slug = _slugify(identifier)
     for tid, tmpl in curated.items():
         if _slugify(tmpl["name"]) == slug or tid == slug:
             return {**tmpl, "source": "curated"}
 
-    # 3. Search imgflip templates
+    # 3. 搜索 imgflip 模板
     imgflip_memes = fetch_imgflip_templates()
     slug_lower = slug.lower()
     id_lower = identifier.strip()
 
     for meme in imgflip_memes:
         meme_slug = _slugify(meme["name"])
-        # Check curated first for this imgflip template (custom positioning)
+        # 优先检查该 imgflip 模板是否有精选版本（自定义位置）
         for tid, ctmpl in curated.items():
             if _slugify(ctmpl["name"]) == meme_slug:
                 if meme_slug == slug_lower or meme["id"] == id_lower:
@@ -153,13 +153,13 @@ def resolve_template(identifier: str) -> dict:
 
 
 def get_template_image(url: str) -> Image.Image:
-    """Download a template image, caching it locally."""
+    """下载模板图片，并缓存到本地。"""
     CACHE_DIR.mkdir(exist_ok=True)
-    # Use URL hash as cache key
+    # 使用 URL 哈希作为缓存键
     cache_name = url.split("/")[-1]
     cache_path = CACHE_DIR / cache_name
 
-    # Always cache as PNG to avoid JPEG/RGBA conflicts
+    # 始终缓存为 PNG 以避免 JPEG/RGBA 冲突
     cache_path = cache_path.with_suffix(".png")
 
     if cache_path.exists():
@@ -172,7 +172,7 @@ def get_template_image(url: str) -> Image.Image:
 
 
 def find_font(size: int) -> ImageFont.FreeTypeFont:
-    """Find a bold font for meme text. Tries Impact, then falls back."""
+    """查找适合表情包的粗体字体。优先使用 Impact，否则回退到其他字体。"""
     candidates = [
         "/usr/share/fonts/truetype/msttcorefonts/Impact.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
@@ -188,7 +188,7 @@ def find_font(size: int) -> ImageFont.FreeTypeFont:
                 return ImageFont.truetype(path, size)
             except (OSError, IOError):
                 continue
-    # Last resort: Pillow default
+    # 最后手段: Pillow 默认字体
     try:
         return ImageFont.truetype("DejaVuSans-Bold", size)
     except (OSError, IOError):
@@ -196,7 +196,7 @@ def find_font(size: int) -> ImageFont.FreeTypeFont:
 
 
 def _wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> str:
-    """Word-wrap text to fit within max_width pixels. Never breaks mid-word."""
+    """自动换行文字以适应最大像素宽度。不会在单词中间断开。"""
     words = text.split()
     if not words:
         return text
@@ -222,8 +222,8 @@ def draw_outlined_text(
     max_width: int,
     align: str = "center",
 ):
-    """Draw white text with black outline, auto-scaled to fit max_width."""
-    # Auto-scale: reduce font size until text fits reasonably
+    """绘制带黑色描边的白色文字，自动缩放以适应最大宽度。"""
+    # 自动缩放: 逐步减小字号直到文字合理适配
     size = font_size
     while size > 12:
         font = find_font(size)
@@ -231,7 +231,7 @@ def draw_outlined_text(
         bbox = draw.multiline_textbbox((0, 0), wrapped, font=font, align=align)
         text_w = bbox[2] - bbox[0]
         line_count = wrapped.count("\n") + 1
-        # Accept if width fits and not too many lines
+        # 宽度合适且行数不超过 4 行时接受
         if text_w <= max_width * 1.05 and line_count <= 4:
             break
         size -= 2
@@ -239,16 +239,16 @@ def draw_outlined_text(
         font = find_font(size)
         wrapped = _wrap_text(text, font, max_width)
 
-    # Measure total text block
+    # 测量文字块整体尺寸
     bbox = draw.multiline_textbbox((0, 0), wrapped, font=font, align=align)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
 
-    # Center horizontally at x, vertically at y
+    # 以 (x, y) 为中心水平和垂直居中
     tx = x - text_w // 2
     ty = y - text_h // 2
 
-    # Draw outline (black border)
+    # 绘制描边（黑色边框）
     outline_range = max(2, font.size // 18)
     for dx in range(-outline_range, outline_range + 1):
         for dy in range(-outline_range, outline_range + 1):
@@ -257,12 +257,12 @@ def draw_outlined_text(
             draw.multiline_text(
                 (tx + dx, ty + dy), wrapped, font=font, fill="black", align=align
             )
-    # Draw main text (white)
+    # 绘制主体文字（白色）
     draw.multiline_text((tx, ty), wrapped, font=font, fill="white", align=align)
 
 
 def _overlay_on_image(img: Image.Image, texts: list, fields: list) -> Image.Image:
-    """Overlay meme text directly on an image using field positions."""
+    """根据字段位置在图片上叠加表情包文字。"""
     draw = ImageDraw.Draw(img)
     w, h = img.size
     base_font_size = max(16, min(w, h) // 12)
@@ -281,10 +281,10 @@ def _overlay_on_image(img: Image.Image, texts: list, fields: list) -> Image.Imag
 
 
 def _add_bars(img: Image.Image, texts: list) -> Image.Image:
-    """Add black bars with white text above/below the image.
+    """在图片上下添加黑色条带并写入白色文字。
 
-    Distributes texts across bars: first text on top bar, last text on
-    bottom bar, any middle texts overlaid on the image center.
+    文字分配方式: 第一段文字放顶部条带，最后一段放底部条带，
+    中间的文字叠加在图片中央。
     """
     w, h = img.size
     bar_font_size = max(20, w // 16)
@@ -330,10 +330,10 @@ def _add_bars(img: Image.Image, texts: list) -> Image.Image:
         ty = top_h + h + (bottom_h - th) // 2
         draw.multiline_text((tx, ty), wrapped, font=font, fill="white", align="center")
 
-    # Overlay any middle texts centered on the image
+    # 将中间文字叠加在图片中央
     if middle_texts:
         mid_fields = _default_fields(len(middle_texts))
-        # Shift y positions to account for top bar offset
+        # 调整 y 坐标以补偿顶部条带偏移
         for field in mid_fields:
             field["y_pct"] = (top_h + field["y_pct"] * h) / new_h
             field["w_pct"] = 0.90
@@ -343,7 +343,7 @@ def _add_bars(img: Image.Image, texts: list) -> Image.Image:
 
 
 def generate_meme(template_id: str, texts: list[str], output_path: str) -> str:
-    """Generate a meme from a template and save it. Returns the path."""
+    """根据模板生成表情包并保存。返回文件路径。"""
     tmpl = resolve_template(template_id)
 
     if tmpl is None:
@@ -367,7 +367,7 @@ def generate_meme(template_id: str, texts: list[str], output_path: str) -> str:
 def generate_from_image(
     image_path: str, texts: list[str], output_path: str, use_bars: bool = False
 ) -> str:
-    """Generate a meme from a custom image (e.g. AI-generated). Returns the path."""
+    """从自定义图片（如 AI 生成的图片）生成表情包。返回文件路径。"""
     img = Image.open(image_path).convert("RGBA")
     print(f"Custom image: {img.size[0]}x{img.size[1]}, {len(texts)} text(s), mode={'bars' if use_bars else 'overlay'}", file=sys.stderr)
 
@@ -385,7 +385,7 @@ def generate_from_image(
 
 
 def list_templates():
-    """Print curated templates with custom positioning."""
+    """打印带有自定义位置的精选模板列表。"""
     templates = load_curated_templates()
     print(f"{'ID':<25} {'Name':<30} {'Fields':<8} Best for")
     print("-" * 90)
@@ -397,7 +397,7 @@ def list_templates():
 
 
 def search_templates(query: str):
-    """Search imgflip templates by name."""
+    """按名称搜索 imgflip 模板。"""
     imgflip_memes = fetch_imgflip_templates()
     curated = load_curated_templates()
     curated_slugs = {_slugify(t["name"]) for t in curated.values()}
@@ -441,7 +441,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     if sys.argv[1] == "--image":
-        # Custom image mode: --image <path> [--bars] <output> <text1> ...
+        # 自定义图片模式: --image <路径> [--bars] <输出> <文字1> ...
         args = sys.argv[2:]
         if len(args) < 3:
             print("Usage: generate_meme.py --image <image_path> [--bars] <output_path> <text1> ...")

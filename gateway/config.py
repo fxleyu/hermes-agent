@@ -1,11 +1,11 @@
 """
-Gateway configuration management.
+网关配置管理模块。
 
-Handles loading and validating configuration for:
-- Connected platforms (Telegram, Discord, WhatsApp)
-- Home channels for each platform
-- Session reset policies
-- Delivery preferences
+负责加载和校验以下配置项：
+- 已连接的平台（Telegram、Discord、WhatsApp）
+- 各平台的主频道（Home Channel）
+- 会话重置策略
+- 消息投递偏好设置
 """
 
 import logging
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 def _coerce_bool(value: Any, default: bool = True) -> bool:
-    """Coerce bool-ish config values, preserving a caller-provided default."""
+    """将配置中类似布尔值的内容强制转换为 bool 类型，保留调用方指定的默认值。"""
     if value is None:
         return default
     if isinstance(value, str):
@@ -37,7 +37,7 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
 
 
 def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> str:
-    """Normalize unauthorized DM behavior to a supported value."""
+    """将未授权 DM 行为配置规范化为支持的取值（"pair" 或 "ignore"）。"""
     if isinstance(value, str):
         normalized = value.strip().lower()
         if normalized in {"pair", "ignore"}:
@@ -46,7 +46,7 @@ def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> st
 
 
 class Platform(Enum):
-    """Supported messaging platforms."""
+    """支持的消息平台枚举。"""
     LOCAL = "local"
     TELEGRAM = "telegram"
     DISCORD = "discord"
@@ -72,14 +72,14 @@ class Platform(Enum):
 @dataclass
 class HomeChannel:
     """
-    Default destination for a platform.
-    
-    When a cron job specifies deliver="telegram" without a specific chat ID,
-    messages are sent to this home channel.
+    平台的默认投递目标。
+
+    当定时任务指定 deliver="telegram" 但未提供具体 chat ID 时，
+    消息将发送到此主频道。
     """
     platform: Platform
     chat_id: str
-    name: str  # Human-readable name for display
+    name: str  # 用于界面展示的人类可读名称
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -100,19 +100,19 @@ class HomeChannel:
 @dataclass
 class SessionResetPolicy:
     """
-    Controls when sessions reset (lose context).
-    
-    Modes:
-    - "daily": Reset at a specific hour each day
-    - "idle": Reset after N minutes of inactivity
-    - "both": Whichever triggers first (daily boundary OR idle timeout)
-    - "none": Never auto-reset (context managed only by compression)
+    控制会话何时重置（丢失上下文）。
+
+    模式说明：
+    - "daily"：每天在指定时刻重置
+    - "idle"：在 N 分钟无活动后重置
+    - "both"：两个条件哪个先触发就重置（每日边界 或 空闲超时）
+    - "none"：永不自动重置（上下文仅通过压缩管理）
     """
-    mode: str = "both"  # "daily", "idle", "both", or "none"
-    at_hour: int = 4  # Hour for daily reset (0-23, local time)
-    idle_minutes: int = 1440  # Minutes of inactivity before reset (24 hours)
-    notify: bool = True  # Send a notification to the user when auto-reset occurs
-    notify_exclude_platforms: tuple = ("api_server", "webhook")  # Platforms that don't get reset notifications
+    mode: str = "both"  # "daily"、"idle"、"both" 或 "none"
+    at_hour: int = 4  # 每日重置时刻（0-23，本地时间）
+    idle_minutes: int = 1440  # 无活动多少分钟后重置（默认 24 小时）
+    notify: bool = True  # 自动重置时是否通知用户
+    notify_exclude_platforms: tuple = ("api_server", "webhook")  # 不发送重置通知的平台
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -125,7 +125,7 @@ class SessionResetPolicy:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionResetPolicy":
-        # Handle both missing keys and explicit null values (YAML null → None)
+        # 处理缺失的键和显式 null 值（YAML 中的 null 会变成 Python 的 None）
         mode = data.get("mode")
         at_hour = data.get("at_hour")
         idle_minutes = data.get("idle_minutes")
@@ -142,19 +142,19 @@ class SessionResetPolicy:
 
 @dataclass
 class PlatformConfig:
-    """Configuration for a single messaging platform."""
+    """单个消息平台的配置。"""
     enabled: bool = False
-    token: Optional[str] = None  # Bot token (Telegram, Discord)
-    api_key: Optional[str] = None  # API key if different from token
+    token: Optional[str] = None  # 机器人令牌（Telegram、Discord）
+    api_key: Optional[str] = None  # API 密钥（与 token 不同时使用）
     home_channel: Optional[HomeChannel] = None
-    
-    # Reply threading mode (Telegram/Slack)
-    # - "off": Never thread replies to original message
-    # - "first": Only first chunk threads to user's message (default)
-    # - "all": All chunks in multi-part replies thread to user's message
+
+    # 回复线程模式（Telegram/Slack）
+    # - "off"：从不将回复线程化到原始消息
+    # - "first"：仅第一段回复线程化到用户消息（默认）
+    # - "all"：多段回复中所有段都线程化到用户消息
     reply_to_mode: str = "first"
-    
-    # Platform-specific settings
+
+    # 平台特定设置
     extra: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> Dict[str, Any]:
@@ -189,12 +189,12 @@ class PlatformConfig:
 
 @dataclass
 class StreamingConfig:
-    """Configuration for real-time token streaming to messaging platforms."""
+    """消息平台实时 token 流式传输的配置。"""
     enabled: bool = False
-    transport: str = "edit"       # "edit" (progressive editMessageText) or "off"
-    edit_interval: float = 1.0    # Seconds between message edits (Telegram rate-limits at ~1/s)
-    buffer_threshold: int = 40    # Chars before forcing an edit
-    cursor: str = " ▉"           # Cursor shown during streaming
+    transport: str = "edit"       # "edit"（渐进式编辑消息文本）或 "off"
+    edit_interval: float = 1.0    # 消息编辑间隔秒数（Telegram 限速约为 1 次/秒）
+    buffer_threshold: int = 40    # 缓冲多少字符后强制触发一次编辑
+    cursor: str = " ▉"           # 流式传输时显示的光标符号
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -221,119 +221,119 @@ class StreamingConfig:
 @dataclass
 class GatewayConfig:
     """
-    Main gateway configuration.
-    
-    Manages all platform connections, session policies, and delivery settings.
+    网关主配置。
+
+    管理所有平台连接、会话策略和投递设置。
     """
-    # Platform configurations
+    # 平台配置
     platforms: Dict[Platform, PlatformConfig] = field(default_factory=dict)
-    
-    # Session reset policies by type
+
+    # 按类型划分的会话重置策略
     default_reset_policy: SessionResetPolicy = field(default_factory=SessionResetPolicy)
     reset_by_type: Dict[str, SessionResetPolicy] = field(default_factory=dict)
     reset_by_platform: Dict[Platform, SessionResetPolicy] = field(default_factory=dict)
-    
-    # Reset trigger commands
+
+    # 重置触发命令
     reset_triggers: List[str] = field(default_factory=lambda: ["/new", "/reset"])
 
-    # User-defined quick commands (slash commands that bypass the agent loop)
+    # 用户自定义快捷命令（绕过代理循环的斜杠命令）
     quick_commands: Dict[str, Any] = field(default_factory=dict)
-    
-    # Storage paths
+
+    # 存储路径
     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
-    
-    # Delivery settings
-    always_log_local: bool = True  # Always save cron outputs to local files
 
-    # STT settings
-    stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
+    # 投递设置
+    always_log_local: bool = True  # 是否始终将定时任务输出保存到本地文件
 
-    # Session isolation in shared chats
-    group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
-    thread_sessions_per_user: bool = False  # When False (default), threads are shared across all participants
+    # 语音转文字设置
+    stt_enabled: bool = True  # 是否自动转录收到的语音消息
 
-    # Unauthorized DM policy
-    unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
+    # 共享聊天中的会话隔离
+    group_sessions_per_user: bool = True  # 当有用户 ID 时，在群组/频道中按参与者隔离会话
+    thread_sessions_per_user: bool = False  # 为 False（默认）时，线程中所有参与者共享会话
 
-    # Streaming configuration
+    # 未授权 DM 策略
+    unauthorized_dm_behavior: str = "pair"  # "pair" 或 "ignore"
+
+    # 流式传输配置
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
     def get_connected_platforms(self) -> List[Platform]:
-        """Return list of platforms that are enabled and configured."""
+        """返回已启用且已配置的平台列表。"""
         connected = []
         for platform, config in self.platforms.items():
             if not config.enabled:
                 continue
-            # Weixin requires both a token and an account_id
+            # 微信需要同时提供 token 和 account_id
             if platform == Platform.WEIXIN:
                 if config.extra.get("account_id") and (config.token or config.extra.get("token")):
                     connected.append(platform)
                 continue
-            # Platforms that use token/api_key auth
+            # 使用 token/api_key 认证的平台
             if config.token or config.api_key:
                 connected.append(platform)
-            # WhatsApp uses enabled flag only (bridge handles auth)
+            # WhatsApp 仅使用 enabled 标志（桥接层处理认证）
             elif platform == Platform.WHATSAPP:
                 connected.append(platform)
-            # Signal uses extra dict for config (http_url + account)
+            # Signal 使用 extra 字典配置（http_url + account）
             elif platform == Platform.SIGNAL and config.extra.get("http_url"):
                 connected.append(platform)
-            # Email uses extra dict for config (address + imap_host + smtp_host)
+            # Email 使用 extra 字典配置（address + imap_host + smtp_host）
             elif platform == Platform.EMAIL and config.extra.get("address"):
                 connected.append(platform)
-            # SMS uses api_key (Twilio auth token) — SID checked via env
+            # SMS 使用 api_key（Twilio auth token）— SID 通过环境变量检查
             elif platform == Platform.SMS and os.getenv("TWILIO_ACCOUNT_SID"):
                 connected.append(platform)
-            # API Server uses enabled flag only (no token needed)
+            # API Server 仅使用 enabled 标志（不需要 token）
             elif platform == Platform.API_SERVER:
                 connected.append(platform)
-            # Webhook uses enabled flag only (secrets are per-route)
+            # Webhook 仅使用 enabled 标志（密钥按路由配置）
             elif platform == Platform.WEBHOOK:
                 connected.append(platform)
-            # Feishu uses extra dict for app credentials
+            # 飞书使用 extra 字典的 app 凭证
             elif platform == Platform.FEISHU and config.extra.get("app_id"):
                 connected.append(platform)
-            # WeCom bot mode uses extra dict for bot credentials
+            # 企业微信机器人模式使用 extra 字典的 bot 凭证
             elif platform == Platform.WECOM and config.extra.get("bot_id"):
                 connected.append(platform)
-            # WeCom callback mode uses corp_id or apps list
+            # 企业微信回调模式使用 corp_id 或 apps 列表
             elif platform == Platform.WECOM_CALLBACK and (
                 config.extra.get("corp_id") or config.extra.get("apps")
             ):
                 connected.append(platform)
-            # BlueBubbles uses extra dict for local server config
+            # BlueBubbles 使用 extra 字典的本地服务器配置
             elif platform == Platform.BLUEBUBBLES and config.extra.get("server_url") and config.extra.get("password"):
                 connected.append(platform)
-            # QQBot uses extra dict for app credentials
+            # QQ 机器人使用 extra 字典的 app 凭证
             elif platform == Platform.QQBOT and config.extra.get("app_id") and config.extra.get("client_secret"):
                 connected.append(platform)
         return connected
     
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
-        """Get the home channel for a platform."""
+        """获取指定平台的主频道。"""
         config = self.platforms.get(platform)
         if config:
             return config.home_channel
         return None
     
     def get_reset_policy(
-        self, 
+        self,
         platform: Optional[Platform] = None,
         session_type: Optional[str] = None
     ) -> SessionResetPolicy:
         """
-        Get the appropriate reset policy for a session.
-        
-        Priority: platform override > type override > default
+        获取适用于某个会话的重置策略。
+
+        优先级：平台覆盖 > 类型覆盖 > 默认策略
         """
-        # Platform-specific override takes precedence
+        # 平台级别的覆盖优先级最高
         if platform and platform in self.reset_by_platform:
             return self.reset_by_platform[platform]
-        
-        # Type-specific override (dm, group, thread)
+
+        # 类型级别的覆盖（dm、group、thread）
         if session_type and session_type in self.reset_by_type:
             return self.reset_by_type[session_type]
-        
+
         return self.default_reset_policy
     
     def to_dict(self) -> Dict[str, Any]:
@@ -367,7 +367,7 @@ class GatewayConfig:
                 platform = Platform(platform_name)
                 platforms[platform] = PlatformConfig.from_dict(platform_data)
             except ValueError:
-                pass  # Skip unknown platforms
+                pass  # 跳过未知平台
         
         reset_by_type = {}
         for type_name, policy_data in data.get("reset_by_type", {}).items():
@@ -421,7 +421,7 @@ class GatewayConfig:
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
-        """Return the effective unauthorized-DM behavior for a platform."""
+        """返回指定平台生效的未授权 DM 行为策略。"""
         if platform:
             platform_cfg = self.platforms.get(platform)
             if platform_cfg and "unauthorized_dm_behavior" in platform_cfg.extra:
@@ -434,19 +434,19 @@ class GatewayConfig:
 
 def load_gateway_config() -> GatewayConfig:
     """
-    Load gateway configuration from multiple sources.
+    从多个来源加载网关配置。
 
-    Priority (highest to lowest):
-    1. Environment variables
-    2. ~/.hermes/config.yaml (primary user-facing config)
-    3. ~/.hermes/gateway.json (legacy — provides defaults under config.yaml)
-    4. Built-in defaults
+    优先级（从高到低）：
+    1. 环境变量
+    2. ~/.hermes/config.yaml（主要的用户配置文件）
+    3. ~/.hermes/gateway.json（旧版 — 在 config.yaml 下层提供默认值）
+    4. 内置默认值
     """
     _home = get_hermes_home()
     gw_data: dict = {}
 
-    # Legacy fallback: gateway.json provides the base layer.
-    # config.yaml keys always win when both specify the same setting.
+    # 旧版兜底：gateway.json 提供基础配置层。
+    # 当两者都配置了同一设置时，config.yaml 的值始终优先。
     gateway_json_path = _home / "gateway.json"
     if gateway_json_path.exists():
         try:
@@ -459,7 +459,7 @@ def load_gateway_config() -> GatewayConfig:
         except Exception as e:
             logger.warning("Failed to load %s: %s", gateway_json_path, e)
 
-    # Primary source: config.yaml
+    # 主要来源：config.yaml
     try:
         import yaml
         config_yaml_path = _home / "config.yaml"
@@ -467,8 +467,8 @@ def load_gateway_config() -> GatewayConfig:
             with open(config_yaml_path, encoding="utf-8") as f:
                 yaml_cfg = yaml.safe_load(f) or {}
 
-            # Map config.yaml keys → GatewayConfig.from_dict() schema.
-            # Each key overwrites whatever gateway.json may have set.
+            # 将 config.yaml 的键映射到 GatewayConfig.from_dict() 的 schema。
+            # 每个键都会覆盖 gateway.json 中可能已设置的对应值。
             sr = yaml_cfg.get("session_reset")
             if sr and isinstance(sr, dict):
                 gw_data["default_reset_policy"] = sr
@@ -510,8 +510,8 @@ def load_gateway_config() -> GatewayConfig:
                     "pair",
                 )
 
-            # Merge platforms section from config.yaml into gw_data so that
-            # nested keys like platforms.webhook.extra.routes are loaded.
+            # 将 config.yaml 的 platforms 部分合并到 gw_data，
+            # 以便加载嵌套键如 platforms.webhook.extra.routes。
             yaml_platforms = yaml_cfg.get("platforms")
             platforms_data = gw_data.setdefault("platforms", {})
             if not isinstance(platforms_data, dict):
@@ -524,7 +524,7 @@ def load_gateway_config() -> GatewayConfig:
                     existing = platforms_data.get(plat_name, {})
                     if not isinstance(existing, dict):
                         existing = {}
-                    # Deep-merge extra dicts so gateway.json defaults survive
+                    # 深度合并 extra 字典，保留 gateway.json 的默认值
                     merged_extra = {**existing.get("extra", {}), **plat_block.get("extra", {})}
                     merged = {**existing, **plat_block}
                     if merged_extra:
@@ -537,7 +537,7 @@ def load_gateway_config() -> GatewayConfig:
                 platform_cfg = yaml_cfg.get(plat.value)
                 if not isinstance(platform_cfg, dict):
                     continue
-                # Collect bridgeable keys from this platform section
+                # 从该平台配置区域收集可桥接的键
                 bridged = {}
                 if "unauthorized_dm_behavior" in platform_cfg:
                     bridged["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
@@ -572,7 +572,7 @@ def load_gateway_config() -> GatewayConfig:
                     plat_data["extra"] = extra
                 extra.update(bridged)
 
-            # Slack settings → env vars (env vars take precedence)
+            # Slack 设置 → 环境变量（环境变量优先）
             slack_cfg = yaml_cfg.get("slack", {})
             if isinstance(slack_cfg, dict):
                 if "require_mention" in slack_cfg and not os.getenv("SLACK_REQUIRE_MENTION"):
@@ -585,7 +585,7 @@ def load_gateway_config() -> GatewayConfig:
                         frc = ",".join(str(v) for v in frc)
                     os.environ["SLACK_FREE_RESPONSE_CHANNELS"] = str(frc)
 
-            # Discord settings → env vars (env vars take precedence)
+            # Discord 设置 → 环境变量（环境变量优先）
             discord_cfg = yaml_cfg.get("discord", {})
             if isinstance(discord_cfg, dict):
                 if "require_mention" in discord_cfg and not os.getenv("DISCORD_REQUIRE_MENTION"):
@@ -599,26 +599,26 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
                 if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
                     os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
-                # ignored_channels: channels where bot never responds (even when mentioned)
+                # ignored_channels：机器人永不响应的频道（即使被提及也不响应）
                 ic = discord_cfg.get("ignored_channels")
                 if ic is not None and not os.getenv("DISCORD_IGNORED_CHANNELS"):
                     if isinstance(ic, list):
                         ic = ",".join(str(v) for v in ic)
                     os.environ["DISCORD_IGNORED_CHANNELS"] = str(ic)
-                # allowed_channels: if set, bot ONLY responds in these channels (whitelist)
+                # allowed_channels：如果设置了，机器人只在这些频道中响应（白名单）
                 ac = discord_cfg.get("allowed_channels")
                 if ac is not None and not os.getenv("DISCORD_ALLOWED_CHANNELS"):
                     if isinstance(ac, list):
                         ac = ",".join(str(v) for v in ac)
                     os.environ["DISCORD_ALLOWED_CHANNELS"] = str(ac)
-                # no_thread_channels: channels where bot responds directly without creating thread
+                # no_thread_channels：机器人直接回复而不创建线程的频道
                 ntc = discord_cfg.get("no_thread_channels")
                 if ntc is not None and not os.getenv("DISCORD_NO_THREAD_CHANNELS"):
                     if isinstance(ntc, list):
                         ntc = ",".join(str(v) for v in ntc)
                     os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
 
-            # Telegram settings → env vars (env vars take precedence)
+            # Telegram 设置 → 环境变量（环境变量优先）
             telegram_cfg = yaml_cfg.get("telegram", {})
             if isinstance(telegram_cfg, dict):
                 if "require_mention" in telegram_cfg and not os.getenv("TELEGRAM_REQUIRE_MENTION"):
@@ -663,7 +663,7 @@ def load_gateway_config() -> GatewayConfig:
                         frc = ",".join(str(v) for v in frc)
                     os.environ["WHATSAPP_FREE_RESPONSE_CHATS"] = str(frc)
 
-            # Matrix settings → env vars (env vars take precedence)
+            # Matrix 设置 → 环境变量（环境变量优先）
             matrix_cfg = yaml_cfg.get("matrix", {})
             if isinstance(matrix_cfg, dict):
                 if "require_mention" in matrix_cfg and not os.getenv("MATRIX_REQUIRE_MENTION"):
@@ -688,20 +688,20 @@ def load_gateway_config() -> GatewayConfig:
 
     config = GatewayConfig.from_dict(gw_data)
 
-    # Override with environment variables
+    # 使用环境变量覆盖配置
     _apply_env_overrides(config)
     
-    # --- Validate loaded values ---
+    # --- 校验已加载的配置值 ---
     _validate_gateway_config(config)
 
     return config
 
 
 def _validate_gateway_config(config: "GatewayConfig") -> None:
-    """Validate and sanitize a loaded GatewayConfig in place.
+    """校验并修正已加载的 GatewayConfig（就地修改）。
 
-    Called by ``load_gateway_config()`` after all config sources are merged.
-    Extracted as a separate function for testability.
+    在所有配置来源合并后由 ``load_gateway_config()`` 调用。
+    单独提取为函数便于测试。
     """
     policy = config.default_reset_policy
 
@@ -718,8 +718,8 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
         )
         policy.idle_minutes = 1440
 
-    # Warn about empty bot tokens — platforms that loaded an empty string
-    # won't connect and the cause can be confusing without a log line.
+    # 警告空的机器人令牌 — 加载了空字符串的平台不会连接，
+    # 没有日志提示会让原因难以排查。
     _token_env_names = {
         Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
         Platform.DISCORD: "DISCORD_BOT_TOKEN",
@@ -739,10 +739,10 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
                 platform.value, env_name,
             )
 
-    # Reject known-weak placeholder tokens.
-    # Ported from openclaw/openclaw#64586: users who copy .env.example
-    # without changing placeholder values get a clear startup error instead
-    # of a confusing "auth failed" from the platform API.
+    # 拒绝已知的弱占位符令牌。
+    # 移植自 openclaw/openclaw#64586：用户复制 .env.example 后未修改
+    # 占位符值时，会收到清晰的启动错误，而不是来自平台 API 的
+    # 令人困惑的"认证失败"消息。
     try:
         from hermes_cli.auth import has_usable_secret
     except ImportError:
@@ -767,7 +767,7 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
 
 
 def _apply_env_overrides(config: GatewayConfig) -> None:
-    """Apply environment variable overrides to config."""
+    """应用环境变量对配置的覆盖。"""
     
     # Telegram
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -777,7 +777,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.TELEGRAM].enabled = True
         config.platforms[Platform.TELEGRAM].token = telegram_token
     
-    # Reply threading mode for Telegram (off/first/all)
+    # Telegram 回复线程模式（off/first/all）
     telegram_reply_mode = os.getenv("TELEGRAM_REPLY_TO_MODE", "").lower()
     if telegram_reply_mode in ("off", "first", "all"):
         if Platform.TELEGRAM not in config.platforms:
@@ -816,14 +816,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             name=os.getenv("DISCORD_HOME_CHANNEL_NAME", "Home"),
         )
     
-    # Reply threading mode for Discord (off/first/all)
+    # Discord 回复线程模式（off/first/all）
     discord_reply_mode = os.getenv("DISCORD_REPLY_TO_MODE", "").lower()
     if discord_reply_mode in ("off", "first", "all"):
         if Platform.DISCORD not in config.platforms:
             config.platforms[Platform.DISCORD] = PlatformConfig()
         config.platforms[Platform.DISCORD].reply_to_mode = discord_reply_mode
     
-    # WhatsApp (typically uses different auth mechanism)
+    # WhatsApp（通常使用不同的认证机制）
     whatsapp_enabled = os.getenv("WHATSAPP_ENABLED", "").lower() in ("true", "1", "yes")
     if whatsapp_enabled:
         if Platform.WHATSAPP not in config.platforms:
@@ -948,7 +948,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             name=os.getenv("EMAIL_HOME_ADDRESS_NAME", "Home"),
         )
 
-    # SMS (Twilio)
+    # SMS（Twilio 短信服务）
     twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
     if twilio_sid:
         if Platform.SMS not in config.platforms:
@@ -990,7 +990,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if api_server_model_name:
             config.platforms[Platform.API_SERVER].extra["model_name"] = api_server_model_name
 
-    # Webhook platform
+    # Webhook 平台
     webhook_enabled = os.getenv("WEBHOOK_ENABLED", "").lower() in ("true", "1", "yes")
     webhook_port = os.getenv("WEBHOOK_PORT")
     webhook_secret = os.getenv("WEBHOOK_SECRET", "")
@@ -1006,7 +1006,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if webhook_secret:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
 
-    # Feishu / Lark
+    # 飞书 / Lark
     feishu_app_id = os.getenv("FEISHU_APP_ID")
     feishu_app_secret = os.getenv("FEISHU_APP_SECRET")
     if feishu_app_id and feishu_app_secret:
@@ -1033,7 +1033,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 name=os.getenv("FEISHU_HOME_CHANNEL_NAME", "Home"),
             )
 
-    # WeCom (Enterprise WeChat)
+    # 企业微信（Enterprise WeChat）
     wecom_bot_id = os.getenv("WECOM_BOT_ID")
     wecom_secret = os.getenv("WECOM_SECRET")
     if wecom_bot_id and wecom_secret:
@@ -1055,7 +1055,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 name=os.getenv("WECOM_HOME_CHANNEL_NAME", "Home"),
             )
 
-    # WeCom callback mode (self-built apps)
+    # 企业微信回调模式（自建应用）
     wecom_callback_corp_id = os.getenv("WECOM_CALLBACK_CORP_ID")
     wecom_callback_corp_secret = os.getenv("WECOM_CALLBACK_CORP_SECRET")
     if wecom_callback_corp_id and wecom_callback_corp_secret:
@@ -1072,7 +1072,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "port": int(os.getenv("WECOM_CALLBACK_PORT", "8645")),
         })
 
-    # Weixin (personal WeChat via iLink Bot API)
+    # 个人微信（通过 iLink Bot API）
     weixin_token = os.getenv("WEIXIN_TOKEN")
     weixin_account_id = os.getenv("WEIXIN_ACCOUNT_ID")
     if weixin_token or weixin_account_id:
@@ -1113,7 +1113,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 name=os.getenv("WEIXIN_HOME_CHANNEL_NAME", "Home"),
             )
 
-    # BlueBubbles (iMessage)
+    # BlueBubbles (iMessage 桥接)
     bluebubbles_server_url = os.getenv("BLUEBUBBLES_SERVER_URL")
     bluebubbles_password = os.getenv("BLUEBUBBLES_PASSWORD")
     if bluebubbles_server_url and bluebubbles_password:
@@ -1136,7 +1136,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             name=os.getenv("BLUEBUBBLES_HOME_CHANNEL_NAME", "Home"),
         )
 
-    # QQ (Official Bot API v2)
+    # QQ（官方机器人 API v2）
     qq_app_id = os.getenv("QQ_APP_ID")
     qq_client_secret = os.getenv("QQ_CLIENT_SECRET")
     if qq_app_id or qq_client_secret:
@@ -1162,7 +1162,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 name=os.getenv("QQ_HOME_CHANNEL_NAME", "Home"),
             )
 
-    # Session settings
+    # 会话设置
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")
     if idle_minutes:
         try:

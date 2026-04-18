@@ -1,35 +1,33 @@
 #!/usr/bin/env python3
 """
-MCP OAuth 2.1 Client Support
+MCP OAuth 2.1 客户端支持
 
-Implements the browser-based OAuth 2.1 authorization code flow with PKCE
-for MCP servers that require OAuth authentication instead of static bearer
-tokens.
+为需要 OAuth 认证（而非静态持有者令牌）的 MCP 服务器实现基于浏览器的
+OAuth 2.1 授权码流程（带 PKCE）。
 
-Uses the MCP Python SDK's ``OAuthClientProvider`` (an ``httpx.Auth`` subclass)
-which handles discovery, dynamic client registration, PKCE, token exchange,
-refresh, and step-up authorization automatically.
+使用 MCP Python SDK 的 ``OAuthClientProvider``（一个 ``httpx.Auth`` 子类），
+自动处理发现、动态客户端注册、PKCE、令牌交换、刷新和升级授权。
 
-This module provides the glue:
-    - ``HermesTokenStorage``: persists tokens/client-info to disk so they
-      survive across process restarts.
-    - Callback server: ephemeral localhost HTTP server to capture the OAuth
-      redirect with the authorization code.
-    - ``build_oauth_auth()``: entry point called by ``mcp_tool.py`` that wires
-      everything together and returns the ``httpx.Auth`` object.
+本模块提供粘合层：
+    - ``HermesTokenStorage``：将令牌/客户端信息持久化到磁盘，
+      使其在进程重启后仍然有效。
+    - 回调服务器：临时 localhost HTTP 服务器，用于捕获携带授权码的
+      OAuth 重定向。
+    - ``build_oauth_auth()``：由 ``mcp_tool.py`` 调用的入口点，
+      将所有组件连接在一起并返回 ``httpx.Auth`` 对象。
 
-Configuration in config.yaml::
+config.yaml 中的配置::
 
     mcp_servers:
       my_server:
         url: "https://mcp.example.com/mcp"
         auth: oauth
-        oauth:                                  # all fields optional
-          client_id: "pre-registered-id"        # skip dynamic registration
-          client_secret: "secret"               # confidential clients only
-          scope: "read write"                   # default: server-provided
-          redirect_port: 0                      # 0 = auto-pick free port
-          client_name: "My Custom Client"       # default: "Hermes Agent"
+        oauth:                                  # 所有字段均可选
+          client_id: "pre-registered-id"        # 跳过动态注册
+          client_secret: "secret"               # 仅限机密客户端
+          scope: "read write"                   # 默认：服务器提供
+          redirect_port: 0                      # 0 = 自动选择空闲端口
+          client_name: "My Custom Client"       # 默认: "Hermes Agent"
 """
 
 import asyncio
@@ -49,7 +47,7 @@ from urllib.parse import parse_qs, urlparse
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Lazy imports -- MCP SDK with OAuth support is optional
+# 延迟导入 -- 带 OAuth 支持的 MCP SDK 是可选的
 # ---------------------------------------------------------------------------
 
 _OAUTH_AVAILABLE = False
@@ -68,33 +66,33 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# Exceptions
+# 异常类
 # ---------------------------------------------------------------------------
 
 
 class OAuthNonInteractiveError(RuntimeError):
-    """Raised when OAuth requires browser interaction in a non-interactive env."""
+    """在非交互式环境中 OAuth 需要浏览器交互时抛出。"""
 
 
 # ---------------------------------------------------------------------------
-# Module-level state
+# 模块级状态
 # ---------------------------------------------------------------------------
 
-# Port used by the most recent build_oauth_auth() call.  Exposed so that
-# tests can verify the callback server and the redirect_uri share a port.
+# 最近一次 build_oauth_auth() 调用使用的端口。暴露出来以便测试可以
+# 验证回调服务器和 redirect_uri 共享同一端口。
 _oauth_port: int | None = None
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# 辅助函数
 # ---------------------------------------------------------------------------
 
 
 def _get_token_dir() -> Path:
-    """Return the directory for MCP OAuth token files.
+    """返回 MCP OAuth 令牌文件的目录。
 
-    Uses HERMES_HOME so each profile gets its own OAuth tokens.
-    Layout: ``HERMES_HOME/mcp-tokens/``
+    使用 HERMES_HOME，使每个配置文件拥有自己的 OAuth 令牌。
+    布局：``HERMES_HOME/mcp-tokens/``
     """
     try:
         from hermes_constants import get_hermes_home
@@ -105,19 +103,19 @@ def _get_token_dir() -> Path:
 
 
 def _safe_filename(name: str) -> str:
-    """Sanitize a server name for use as a filename (no path separators)."""
+    """将服务器名称净化为可用作文件名的形式（不含路径分隔符）。"""
     return re.sub(r"[^\w\-]", "_", name).strip("_")[:128] or "default"
 
 
 def _find_free_port() -> int:
-    """Find an available TCP port on localhost."""
+    """在 localhost 上查找一个可用的 TCP 端口。"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
 
 def _is_interactive() -> bool:
-    """Return True if we can reasonably expect to interact with a user."""
+    """如果可以合理地期望与用户进行交互，则返回 True。"""
     try:
         return sys.stdin.isatty()
     except (AttributeError, ValueError):
@@ -125,11 +123,11 @@ def _is_interactive() -> bool:
 
 
 def _can_open_browser() -> bool:
-    """Return True if opening a browser is likely to work."""
-    # Explicit SSH session → no local display
+    """如果打开浏览器很可能成功，则返回 True。"""
+    # 显式 SSH 会话 → 没有本地显示器
     if os.environ.get("SSH_CLIENT") or os.environ.get("SSH_TTY"):
         return False
-    # macOS and Windows usually have a display
+    # macOS 和 Windows 通常都有显示器
     if os.name == "nt":
         return True
     try:
@@ -137,14 +135,14 @@ def _can_open_browser() -> bool:
             return True
     except AttributeError:
         pass
-    # Linux/other posix: need DISPLAY or WAYLAND_DISPLAY
+    # Linux/其他 posix：需要 DISPLAY 或 WAYLAND_DISPLAY
     if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
         return True
     return False
 
 
 def _read_json(path: Path) -> dict | None:
-    """Read a JSON file, returning None if it doesn't exist or is invalid."""
+    """读取 JSON 文件，如果不存在或无效则返回 None。"""
     if not path.exists():
         return None
     try:
@@ -155,7 +153,7 @@ def _read_json(path: Path) -> dict | None:
 
 
 def _write_json(path: Path, data: dict) -> None:
-    """Write a dict as JSON with restricted permissions (0o600)."""
+    """以受限权限（0o600）将字典写入 JSON 文件。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     try:
@@ -168,17 +166,17 @@ def _write_json(path: Path, data: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# HermesTokenStorage -- persistent token/client-info on disk
+# HermesTokenStorage -- 将令牌/客户端信息持久化到磁盘
 # ---------------------------------------------------------------------------
 
 
 class HermesTokenStorage:
-    """Persist OAuth tokens and client registration to JSON files.
+    """将 OAuth 令牌和客户端注册信息持久化到 JSON 文件。
 
-    File layout::
+    文件布局::
 
-        HERMES_HOME/mcp-tokens/<server_name>.json         -- tokens
-        HERMES_HOME/mcp-tokens/<server_name>.client.json   -- client info
+        HERMES_HOME/mcp-tokens/<server_name>.json         -- 令牌
+        HERMES_HOME/mcp-tokens/<server_name>.client.json   -- 客户端信息
     """
 
     def __init__(self, server_name: str):
@@ -190,7 +188,7 @@ class HermesTokenStorage:
     def _client_info_path(self) -> Path:
         return _get_token_dir() / f"{self._server_name}.client.json"
 
-    # -- tokens ------------------------------------------------------------
+    # -- 令牌 ------------------------------------------------------------
 
     async def get_tokens(self) -> "OAuthToken | None":
         data = _read_json(self._tokens_path())
@@ -206,7 +204,7 @@ class HermesTokenStorage:
         _write_json(self._tokens_path(), tokens.model_dump(exclude_none=True))
         logger.debug("OAuth tokens saved for %s", self._server_name)
 
-    # -- client info -------------------------------------------------------
+    # -- 客户端信息 -------------------------------------------------------
 
     async def get_client_info(self) -> "OAuthClientInformationFull | None":
         data = _read_json(self._client_info_path())
@@ -222,30 +220,29 @@ class HermesTokenStorage:
         _write_json(self._client_info_path(), client_info.model_dump(exclude_none=True))
         logger.debug("OAuth client info saved for %s", self._server_name)
 
-    # -- cleanup -----------------------------------------------------------
+    # -- 清理 -----------------------------------------------------------
 
     def remove(self) -> None:
-        """Delete all stored OAuth state for this server."""
+        """删除此服务器的所有已存储 OAuth 状态。"""
         for p in (self._tokens_path(), self._client_info_path()):
             p.unlink(missing_ok=True)
 
     def has_cached_tokens(self) -> bool:
-        """Return True if we have tokens on disk (may be expired)."""
+        """如果磁盘上有令牌（可能已过期），返回 True。"""
         return self._tokens_path().exists()
 
 
 # ---------------------------------------------------------------------------
-# Callback handler factory -- each invocation gets its own result dict
+# 回调处理器工厂 -- 每次调用获得自己的结果字典
 # ---------------------------------------------------------------------------
 
 
 def _make_callback_handler() -> tuple[type, dict]:
-    """Create a per-flow callback HTTP handler class with its own result dict.
+    """创建每次流程专用的回调 HTTP 处理器类及其结果字典。
 
-    Returns ``(HandlerClass, result_dict)`` where *result_dict* is a mutable
-    dict that the handler writes ``auth_code`` and ``state`` into when the
-    OAuth redirect arrives.  Each call returns a fresh pair so concurrent
-    flows don't stomp on each other.
+    返回 ``(HandlerClass, result_dict)``，其中 *result_dict* 是一个可变字典，
+    当 OAuth 重定向到达时处理器将 ``auth_code`` 和 ``state`` 写入其中。
+    每次调用返回全新的一对，这样并发流程不会互相覆盖。
     """
     result: dict[str, Any] = {"auth_code": None, "state": None, "error": None}
 
@@ -279,15 +276,15 @@ def _make_callback_handler() -> tuple[type, dict]:
 
 
 # ---------------------------------------------------------------------------
-# Async redirect + callback handlers for OAuthClientProvider
+# OAuthClientProvider 的异步重定向和回调处理器
 # ---------------------------------------------------------------------------
 
 
 async def _redirect_handler(authorization_url: str) -> None:
-    """Show the authorization URL to the user.
+    """向用户展示授权 URL。
 
-    Opens the browser automatically when possible; always prints the URL
-    as a fallback for headless/SSH/gateway environments.
+    在可能的情况下自动打开浏览器；始终打印 URL 作为
+    无头/SSH/网关环境的后备方案。
     """
     msg = (
         f"\n  MCP OAuth: authorization required.\n"
@@ -310,28 +307,27 @@ async def _redirect_handler(authorization_url: str) -> None:
 
 
 async def _wait_for_callback() -> tuple[str, str | None]:
-    """Wait for the OAuth callback to arrive on the local callback server.
+    """等待本地回调服务器上的 OAuth 回调到达。
 
-    Uses the module-level ``_oauth_port`` which is set by ``build_oauth_auth``
-    before this is ever called.  Polls for the result without blocking the
-    event loop.
+    使用模块级 ``_oauth_port``，该端口在此函数被调用之前由
+    ``build_oauth_auth`` 设置。在不阻塞事件循环的情况下轮询结果。
 
-    Raises:
-        OAuthNonInteractiveError: If the callback times out (no user present
-            to complete the browser auth).
+    抛出:
+        OAuthNonInteractiveError: 如果回调超时（没有用户在场
+            完成浏览器授权）。
     """
     assert _oauth_port is not None, "OAuth callback port not set"
 
-    # The callback server is already running (started in build_oauth_auth).
-    # We just need to poll for the result.
+    # 回调服务器已经在运行（在 build_oauth_auth 中启动）。
+    # 我们只需要轮询结果。
     handler_cls, result = _make_callback_handler()
 
-    # Start a temporary server on the known port
+    # 在已知端口上启动临时服务器
     try:
         server = HTTPServer(("127.0.0.1", _oauth_port), handler_cls)
     except OSError:
-        # Port already in use — the server from build_oauth_auth is running.
-        # Fall back to polling the server started by build_oauth_auth.
+        # 端口已被占用——build_oauth_auth 的服务器正在运行。
+        # 回退到轮询 build_oauth_auth 启动的服务器。
         raise OAuthNonInteractiveError(
             "OAuth callback timed out — could not bind callback port. "
             "Complete the authorization in a browser first, then retry."
@@ -364,52 +360,50 @@ async def _wait_for_callback() -> tuple[str, str | None]:
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# 公共 API
 # ---------------------------------------------------------------------------
 
 
 def remove_oauth_tokens(server_name: str) -> None:
-    """Delete stored OAuth tokens and client info for a server."""
+    """删除指定服务器已存储的 OAuth 令牌和客户端信息。"""
     storage = HermesTokenStorage(server_name)
     storage.remove()
     logger.info("OAuth tokens removed for '%s'", server_name)
 
 
 # ---------------------------------------------------------------------------
-# Extracted helpers (Task 3 of MCP OAuth consolidation)
+# 提取的辅助函数（MCP OAuth 整合的第 3 个任务）
 #
-# These compose into ``build_oauth_auth`` below, and are also used by
-# ``tools.mcp_oauth_manager.MCPOAuthManager._build_provider`` so the two
-# construction paths share one implementation.
+# 这些函数组合成下面的 ``build_oauth_auth``，也被
+# ``tools.mcp_oauth_manager.MCPOAuthManager._build_provider`` 使用，
+# 使两条构造路径共享同一套实现。
 # ---------------------------------------------------------------------------
 
 
 def _configure_callback_port(cfg: dict) -> int:
-    """Pick or validate the OAuth callback port.
+    """选择或验证 OAuth 回调端口。
 
-    Stores the resolved port into ``cfg['_resolved_port']`` so sibling
-    helpers (and the manager) can read it from the same dict. Returns the
-    resolved port.
+    将解析后的端口存储到 ``cfg['_resolved_port']``，以便同级辅助函数
+    （和管理器）可以从同一字典中读取。返回解析后的端口。
 
-    NOTE: also sets the legacy module-level ``_oauth_port`` so existing
-    calls to ``_wait_for_callback`` keep working. The legacy global is
-    the root cause of issue #5344 (port collision on concurrent OAuth
-    flows); replacing it with a ContextVar is out of scope for this
-    consolidation PR.
+    注意：也设置了遗留的模块级 ``_oauth_port``，使现有的
+    ``_wait_for_callback`` 调用继续工作。遗留的全局变量是
+    问题 #5344（并发 OAuth 流上的端口冲突）的根本原因；
+    将其替换为 ContextVar 超出了本次整合 PR 的范围。
     """
     global _oauth_port
     requested = int(cfg.get("redirect_port", 0))
     port = _find_free_port() if requested == 0 else requested
     cfg["_resolved_port"] = port
-    _oauth_port = port  # legacy consumer: _wait_for_callback reads this
+    _oauth_port = port  # 遗留消费者：_wait_for_callback 读取此变量
     return port
 
 
 def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
-    """Build OAuthClientMetadata from the oauth config dict.
+    """从 oauth 配置字典构建 OAuthClientMetadata。
 
-    Requires ``cfg['_resolved_port']`` to have been populated by
-    :func:`_configure_callback_port` first.
+    要求 ``cfg['_resolved_port']`` 已由
+    :func:`_configure_callback_port` 填充。
     """
     port = cfg.get("_resolved_port")
     if port is None:
@@ -440,7 +434,7 @@ def _maybe_preregister_client(
     cfg: dict,
     client_metadata: "OAuthClientMetadata",
 ) -> None:
-    """If cfg has a pre-registered client_id, persist it to storage."""
+    """如果 cfg 中有预注册的 client_id，将其持久化到存储中。"""
     client_id = cfg.get("client_id")
     if not client_id:
         return
@@ -467,7 +461,7 @@ def _maybe_preregister_client(
 
 
 def _parse_base_url(server_url: str) -> str:
-    """Strip path component from server URL, returning the base origin."""
+    """从服务器 URL 中去除路径部分，返回基础来源。"""
     parsed = urlparse(server_url)
     return f"{parsed.scheme}://{parsed.netloc}"
 
@@ -477,20 +471,20 @@ def build_oauth_auth(
     server_url: str,
     oauth_config: dict | None = None,
 ) -> "OAuthClientProvider | None":
-    """Build an ``httpx.Auth``-compatible OAuth handler for an MCP server.
+    """为 MCP 服务器构建兼容 ``httpx.Auth`` 的 OAuth 处理器。
 
-    Public API preserved for backwards compatibility. New code should use
-    :func:`tools.mcp_oauth_manager.get_manager` so OAuth state is shared
-    across config-time, runtime, and reconnect paths.
+    保留公共 API 以向后兼容。新代码应使用
+    :func:`tools.mcp_oauth_manager.get_manager`，以便 OAuth 状态在
+    配置时、运行时和重连路径之间共享。
 
-    Args:
-        server_name: Server key in mcp_servers config (used for storage).
-        server_url: MCP server endpoint URL.
-        oauth_config: Optional dict from the ``oauth:`` block in config.yaml.
+    参数:
+        server_name: mcp_servers 配置中的服务器键（用于存储）。
+        server_url: MCP 服务器端点 URL。
+        oauth_config: config.yaml 中 ``oauth:`` 块的可选字典。
 
-    Returns:
-        An ``OAuthClientProvider`` instance, or None if the MCP SDK lacks
-        OAuth support.
+    返回:
+        一个 ``OAuthClientProvider`` 实例，如果 MCP SDK 缺少 OAuth
+        支持则返回 None。
     """
     if not _OAUTH_AVAILABLE:
         logger.warning(
@@ -500,7 +494,7 @@ def build_oauth_auth(
         )
         return None
 
-    cfg = dict(oauth_config or {})  # copy — we mutate _resolved_port
+    cfg = dict(oauth_config or {})  # 复制——我们会修改 _resolved_port
     storage = HermesTokenStorage(server_name)
 
     if not _is_interactive() and not storage.has_cached_tokens():

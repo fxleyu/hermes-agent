@@ -1,8 +1,8 @@
-"""Send Message Tool -- cross-channel messaging via platform APIs.
+"""发送消息工具 -- 通过平台 API 实现的跨渠道消息发送。
 
-Sends a message to a user or channel on any connected messaging platform
-(Telegram, Discord, Slack). Supports listing available targets and resolving
-human-friendly channel names to IDs. Works in both CLI and gateway contexts.
+向任何已连接的消息平台（Telegram、Discord、Slack）上的用户或频道发送消息。
+支持列出可用目标和将人类友好的频道名称解析为 ID。
+在 CLI 和网关上下文中均可工作。
 """
 
 import asyncio
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
-# Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
+# Discord 雪花 ID 是数字，与 Telegram 话题目标使用相同的正则模式。
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
@@ -37,7 +37,7 @@ _GENERIC_SECRET_ASSIGN_RE = re.compile(
 
 
 def _sanitize_error_text(text) -> str:
-    """Redact secrets from error text before surfacing it to users/models."""
+    """在向用户/模型展示错误文本之前，脱敏其中的敏感信息。"""
     redacted = redact_sensitive_text(text)
     redacted = _URL_SECRET_QUERY_RE.sub(lambda m: f"{m.group(1)}***", redacted)
     redacted = _GENERIC_SECRET_ASSIGN_RE.sub(lambda m: f"{m.group(1)}=***", redacted)
@@ -45,7 +45,7 @@ def _sanitize_error_text(text) -> str:
 
 
 def _error(message: str) -> dict:
-    """Build a standardized error payload with redacted content."""
+    """构建带有脱敏内容的标准化错误载荷。"""
     return {"error": _sanitize_error_text(message)}
 
 
@@ -125,7 +125,7 @@ SEND_MESSAGE_SCHEMA = {
 
 
 def send_message_tool(args, **kw):
-    """Handle cross-channel send_message tool calls."""
+    """处理跨渠道 send_message 工具调用。"""
     action = args.get("action", "send")
 
     if action == "list":
@@ -135,7 +135,7 @@ def send_message_tool(args, **kw):
 
 
 def _handle_list():
-    """Return formatted list of available messaging targets."""
+    """返回可用消息目标的格式化列表。"""
     try:
         from gateway.channel_directory import format_directory_for_display
         return json.dumps({"targets": format_directory_for_display()})
@@ -144,7 +144,7 @@ def _handle_list():
 
 
 def _handle_send(args):
-    """Send a message to a platform target."""
+    """向平台目标发送消息。"""
     target = args.get("target", "")
     message = args.get("message", "")
     if not target or not message:
@@ -161,7 +161,7 @@ def _handle_send(args):
     else:
         is_explicit = False
 
-    # Resolve human-friendly channel names to numeric IDs
+    # 将人类友好的频道名称解析为数字 ID
     if target_ref and not is_explicit:
         try:
             from gateway.channel_directory import resolve_channel_name
@@ -254,7 +254,7 @@ def _handle_send(args):
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
 
-        # Mirror the sent message into the target's gateway session
+        # 将发送的消息镜像到目标的网关会话中
         if isinstance(result, dict) and result.get("success") and mirror_text:
             try:
                 from gateway.mirror import mirror_to_session
@@ -273,7 +273,7 @@ def _handle_send(args):
 
 
 def _parse_target_ref(platform_name: str, target_ref: str):
-    """Parse a tool target into chat_id/thread_id and whether it is explicit."""
+    """将工具目标解析为 chat_id/thread_id 以及是否为显式目标。"""
     if platform_name == "telegram":
         match = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -292,14 +292,14 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             return match.group(1), None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
-    # Matrix room IDs (start with !) and user IDs (start with @) are explicit
+    # Matrix 房间 ID（以 ! 开头）和用户 ID（以 @ 开头）是显式的
     if platform_name == "matrix" and (target_ref.startswith("!") or target_ref.startswith("@")):
         return target_ref, None, True
     return None, None, False
 
 
 def _describe_media_for_mirror(media_files):
-    """Return a human-readable mirror summary when a message only contains media."""
+    """当消息只包含媒体时，返回人类可读的镜像摘要。"""
     if not media_files:
         return ""
     if len(media_files) == 1:
@@ -318,7 +318,7 @@ def _describe_media_for_mirror(media_files):
 
 
 def _get_cron_auto_delivery_target():
-    """Return the cron scheduler's auto-delivery target for the current run, if any."""
+    """返回当前运行中 cron 调度器的自动投递目标（如果有）。"""
     platform = os.getenv("HERMES_CRON_AUTO_DELIVER_PLATFORM", "").strip().lower()
     chat_id = os.getenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID", "").strip()
     if not platform or not chat_id:
@@ -332,7 +332,7 @@ def _get_cron_auto_delivery_target():
 
 
 def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id: str | None):
-    """Skip redundant cron send_message calls when the scheduler will auto-deliver there."""
+    """当调度器会自动投递到相同目标时，跳过冗余的 cron send_message 调用。"""
     auto_target = _get_cron_auto_delivery_target()
     if not auto_target:
         return None
@@ -363,10 +363,10 @@ def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id:
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None):
-    """Route a message to the appropriate platform sender.
+    """将消息路由到相应的平台发送器。
 
-    Long messages are automatically chunked to fit within platform limits
-    using the same smart-splitting algorithm as the gateway adapters
+    长消息会自动使用与网关适配器相同的智能分割算法
+    进行分块以适应平台限制
     (preserves code-block boundaries, adds part indicators).
     """
     from gateway.config import Platform
@@ -374,14 +374,14 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.platforms.discord import DiscordAdapter
     from gateway.platforms.slack import SlackAdapter
 
-    # Telegram adapter import is optional (requires python-telegram-bot)
+    # Telegram 适配器导入是可选的（需要 python-telegram-bot）
     try:
         from gateway.platforms.telegram import TelegramAdapter
         _telegram_available = True
     except ImportError:
         _telegram_available = False
 
-    # Feishu adapter import is optional (requires lark-oapi)
+    # 飞书适配器导入是可选的（需要 lark-oapi）
     try:
         from gateway.platforms.feishu import FeishuAdapter
         _feishu_available = True
@@ -397,7 +397,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         except Exception:
             logger.debug("Failed to apply Slack mrkdwn formatting in _send_to_platform", exc_info=True)
 
-    # Platform message length limits (from adapter class attributes)
+    # 各平台消息长度限制（来自适配器类属性）
     _MAX_LENGTHS = {
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH if _telegram_available else 4096,
         Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
@@ -406,9 +406,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if _feishu_available:
         _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH
 
-    # Smart-chunk the message to fit within platform limits.
-    # For short messages or platforms without a known limit this is a no-op.
-    # Telegram measures length in UTF-16 code units, not Unicode codepoints.
+    # 智能分块，使消息适配平台长度限制。
+    # 对于短消息或无已知限制的平台，此操作无效。
+    # Telegram 以 UTF-16 代码单元而非 Unicode 码点计量长度。
     max_len = _MAX_LENGTHS.get(platform)
     if max_len:
         _len_fn = utf16_len if platform == Platform.TELEGRAM else None
@@ -416,7 +416,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     else:
         chunks = [message]
 
-    # --- Telegram: special handling for media attachments ---
+    # --- Telegram：媒体附件的特殊处理 ---
     if platform == Platform.TELEGRAM:
         last_result = None
         disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
@@ -435,11 +435,11 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- Weixin: use the native one-shot adapter helper for text + media ---
+    # --- 微信：使用原生一次性适配器辅助函数处理文本 + 媒体 ---
     if platform == Platform.WEIXIN:
         return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
 
-    # --- Discord: special handling for media attachments ---
+    # --- Discord：媒体附件的特殊处理 ---
     if platform == Platform.DISCORD:
         last_result = None
         for i, chunk in enumerate(chunks):
@@ -456,7 +456,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- Matrix: use the native adapter helper when media is present ---
+    # --- Matrix：当有媒体时使用原生适配器辅助函数 ---
     if platform == Platform.MATRIX and media_files:
         last_result = None
         for i, chunk in enumerate(chunks):
@@ -473,7 +473,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- Non-Telegram/Discord platforms ---
+    # --- 非 Telegram/Discord 平台 ---
     if media_files and not message.strip():
         return {
             "error": (
@@ -531,7 +531,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
 
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False):
-    """Send via Telegram Bot API (one-shot, no polling needed).
+    """通过 Telegram Bot API 发送（单次发送，无需轮询）。
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
     so that bold, links, and headers render correctly.  If the message
@@ -542,21 +542,21 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         from telegram import Bot
         from telegram.constants import ParseMode
 
-        # Auto-detect HTML tags — if present, skip MarkdownV2 and send as HTML.
-        # Inspired by github.com/ashaney — PR #1568.
+        # 自动检测 HTML 标签 -- 如果存在，跳过 MarkdownV2 并以 HTML 发送。
+        # 灵感来自 github.com/ashaney -- PR #1568。
         _has_html = bool(re.search(r'<[a-zA-Z/][^>]*>', message))
 
         if _has_html:
             formatted = message
             send_parse_mode = ParseMode.HTML
         else:
-            # Reuse the gateway adapter's format_message for markdown→MarkdownV2
+            # 复用网关适配器的 format_message 将 markdown 转换为 MarkdownV2
             try:
                 from gateway.platforms.telegram import TelegramAdapter
                 _adapter = TelegramAdapter.__new__(TelegramAdapter)
                 formatted = _adapter.format_message(message)
             except Exception:
-                # Fallback: send as-is if formatting unavailable
+                # 回退：如果格式化不可用则按原样发送
                 formatted = message
             send_parse_mode = ParseMode.MARKDOWN_V2
 
@@ -580,7 +580,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                     parse_mode=send_parse_mode, **thread_kwargs
                 )
             except Exception as md_error:
-                # Parse failed, fall back to plain text
+                # 解析失败，回退到纯文本
                 if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
                     logger.warning(
                         "Parse mode %s failed in _send_telegram, falling back to plain text: %s",
@@ -660,7 +660,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
 
 
 async def _send_discord(token, chat_id, message, thread_id=None, media_files=None):
-    """Send a single message via Discord REST API (no websocket client needed).
+    """通过 Discord REST API 发送单条消息（无需 websocket 客户端）。
 
     Chunking is handled by _send_to_platform() before this is called.
 
@@ -678,7 +678,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
         _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
-        # Thread endpoint: Discord threads are channels; send directly to the thread ID.
+        # 线程端点：Discord 线程就是频道；直接发送到线程 ID。
         if thread_id:
             url = f"https://discord.com/api/v10/channels/{thread_id}/messages"
         else:
@@ -689,7 +689,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
         warnings = []
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
-            # Send text message (skip if empty and media is present)
+            # 发送文本消息（如果消息为空且有媒体则跳过）
             if message.strip() or not media_files:
                 headers = {**auth_headers, "Content-Type": "application/json"}
                 async with session.post(url, headers=headers, json={"content": message}, **_req_kw) as resp:
@@ -698,7 +698,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
                         return _error(f"Discord API error ({resp.status}): {body}")
                     last_data = await resp.json()
 
-            # Send each media file as a separate multipart upload
+            # 将每个媒体文件作为单独的 multipart 上传发送
             for media_path, _is_voice in media_files:
                 if not os.path.exists(media_path):
                     warning = f"Media file not found, skipping: {media_path}"
@@ -738,7 +738,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
 
 
 async def _send_slack(token, chat_id, message):
-    """Send via Slack Web API."""
+    """通过 Slack Web API 发送。"""
     try:
         import aiohttp
     except ImportError:
@@ -761,7 +761,7 @@ async def _send_slack(token, chat_id, message):
 
 
 async def _send_whatsapp(extra, chat_id, message):
-    """Send via the local WhatsApp bridge HTTP API."""
+    """通过本地 WhatsApp 桥接 HTTP API 发送。"""
     try:
         import aiohttp
     except ImportError:
@@ -789,7 +789,7 @@ async def _send_whatsapp(extra, chat_id, message):
 
 
 async def _send_signal(extra, chat_id, message):
-    """Send via signal-cli JSON-RPC API."""
+    """通过 signal-cli JSON-RPC API 发送。"""
     try:
         import httpx
     except ImportError:
@@ -825,7 +825,7 @@ async def _send_signal(extra, chat_id, message):
 
 
 async def _send_email(extra, chat_id, message):
-    """Send via SMTP (one-shot, no persistent connection needed)."""
+    """通过 SMTP 发送（单次发送，无需持久连接）。"""
     import smtplib
     from email.mime.text import MIMEText
 
@@ -857,7 +857,7 @@ async def _send_email(extra, chat_id, message):
 
 
 async def _send_sms(auth_token, chat_id, message):
-    """Send a single SMS via Twilio REST API.
+    """通过 Twilio REST API 发送单条短信。
 
     Uses HTTP Basic auth (Account SID : Auth Token) and form-encoded POST.
     Chunking is handled by _send_to_platform() before this is called.
@@ -874,7 +874,7 @@ async def _send_sms(auth_token, chat_id, message):
     if not account_sid or not auth_token or not from_number:
         return {"error": "SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)"}
 
-    # Strip markdown — SMS renders it as literal characters
+    # 去除 markdown -- SMS 会将其渲染为字面字符
     message = re.sub(r"\*\*(.+?)\*\*", r"\1", message, flags=re.DOTALL)
     message = re.sub(r"\*(.+?)\*", r"\1", message, flags=re.DOTALL)
     message = re.sub(r"__(.+?)__", r"\1", message, flags=re.DOTALL)
@@ -913,7 +913,7 @@ async def _send_sms(auth_token, chat_id, message):
 
 
 async def _send_mattermost(token, extra, chat_id, message):
-    """Send via Mattermost REST API."""
+    """通过 Mattermost REST API 发送。"""
     try:
         import aiohttp
     except ImportError:
@@ -937,7 +937,7 @@ async def _send_mattermost(token, extra, chat_id, message):
 
 
 async def _send_matrix(token, extra, chat_id, message):
-    """Send via Matrix Client-Server API.
+    """通过 Matrix 客户端-服务器 API 发送。
 
     Converts markdown to HTML for rich rendering in Matrix clients.
     Falls back to plain text if the ``markdown`` library is not installed.
@@ -957,12 +957,12 @@ async def _send_matrix(token, extra, chat_id, message):
         url = f"{homeserver}/_matrix/client/v3/rooms/{encoded_room}/send/m.room.message/{txn_id}"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-        # Build message payload with optional HTML formatted_body.
+        # 构建消息负载，带有可选的 HTML formatted_body。
         payload = {"msgtype": "m.text", "body": message}
         try:
             import markdown as _md
             html = _md.markdown(message, extensions=["fenced_code", "tables"])
-            # Convert h1-h6 to bold for Element X compatibility.
+            # 将 h1-h6 转换为粗体以兼容 Element X。
             html = re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html)
             payload["format"] = "org.matrix.custom.html"
             payload["formatted_body"] = html
@@ -981,7 +981,7 @@ async def _send_matrix(token, extra, chat_id, message):
 
 
 async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, thread_id=None):
-    """Send via the Matrix adapter so native Matrix media uploads are preserved."""
+    """通过 Matrix 适配器发送，以保留原生 Matrix 媒体上传。"""
     try:
         from gateway.platforms.matrix import MatrixAdapter
     except ImportError:
@@ -1041,7 +1041,7 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
 
 
 async def _send_homeassistant(token, extra, chat_id, message):
-    """Send via Home Assistant notify service."""
+    """通过 Home Assistant 通知服务发送。"""
     try:
         import aiohttp
     except ImportError:
@@ -1064,7 +1064,7 @@ async def _send_homeassistant(token, extra, chat_id, message):
 
 
 async def _send_dingtalk(extra, chat_id, message):
-    """Send via DingTalk robot webhook.
+    """通过钉钉机器人 webhook 发送。
 
     Note: The gateway's DingTalk adapter uses per-session webhook URLs from
     incoming messages (dingtalk-stream SDK).  For cross-platform send_message
@@ -1095,7 +1095,7 @@ async def _send_dingtalk(extra, chat_id, message):
 
 
 async def _send_wecom(extra, chat_id, message):
-    """Send via WeCom using the adapter's WebSocket send pipeline."""
+    """通过企业微信使用适配器的 WebSocket 发送管道发送。"""
     try:
         from gateway.platforms.wecom import WeComAdapter, check_wecom_requirements
         if not check_wecom_requirements():
@@ -1122,7 +1122,7 @@ async def _send_wecom(extra, chat_id, message):
 
 
 async def _send_weixin(pconfig, chat_id, message, media_files=None):
-    """Send via Weixin iLink using the native adapter helper."""
+    """通过微信 iLink 使用原生适配器辅助方法发送。"""
     try:
         from gateway.platforms.weixin import check_weixin_requirements, send_weixin_direct
         if not check_weixin_requirements():
@@ -1143,7 +1143,7 @@ async def _send_weixin(pconfig, chat_id, message, media_files=None):
 
 
 async def _send_bluebubbles(extra, chat_id, message):
-    """Send via BlueBubbles iMessage server using the adapter's REST API."""
+    """通过 BlueBubbles iMessage 服务器使用适配器的 REST API 发送。"""
     try:
         from gateway.platforms.bluebubbles import BlueBubblesAdapter, check_bluebubbles_requirements
         if not check_bluebubbles_requirements():
@@ -1170,7 +1170,7 @@ async def _send_bluebubbles(extra, chat_id, message):
 
 
 async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):
-    """Send via Feishu/Lark using the adapter's send pipeline."""
+    """通过飞书/Lark 使用适配器的发送管道发送。"""
     try:
         from gateway.platforms.feishu import FeishuAdapter, FEISHU_AVAILABLE
         if not FEISHU_AVAILABLE:
@@ -1227,7 +1227,7 @@ async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=No
 
 
 def _check_send_message():
-    """Gate send_message on gateway running (always available on messaging platforms)."""
+    """send_message 在网关运行时可用（在消息平台上始终可用）。"""
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "")
     if platform and platform != "local":
@@ -1240,7 +1240,7 @@ def _check_send_message():
 
 
 async def _send_qqbot(pconfig, chat_id, message):
-    """Send via QQBot using the REST API directly (no WebSocket needed).
+    """通过 QQBot 使用 REST API 直接发送（无需 WebSocket）。
 
     Uses the QQ Bot Open Platform REST endpoints to get an access token
     and post a message. Works for guild channels without requiring
@@ -1260,7 +1260,7 @@ async def _send_qqbot(pconfig, chat_id, message):
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            # Step 1: Get access token
+            # 步骤 1：获取访问令牌
             token_resp = await client.post(
                 "https://bots.qq.com/app/getAppAccessToken",
                 json={"appId": str(appid), "clientSecret": str(secret)},
@@ -1272,7 +1272,7 @@ async def _send_qqbot(pconfig, chat_id, message):
             if not access_token:
                 return _error(f"QQBot: no access_token in response")
 
-            # Step 2: Send message via REST
+            # 步骤 2：通过 REST 发送消息
             headers = {
                 "Authorization": f"QQBotAccessToken {access_token}",
                 "Content-Type": "application/json",

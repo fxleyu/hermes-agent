@@ -1,12 +1,12 @@
-"""hermes claw — OpenClaw migration commands.
+"""hermes claw —— OpenClaw 迁移命令。
 
-Usage:
-    hermes claw migrate              # Preview then migrate (always shows preview first)
-    hermes claw migrate --dry-run    # Preview only, no changes
-    hermes claw migrate --yes        # Skip confirmation prompt
-    hermes claw migrate --preset full --overwrite  # Full migration, overwrite conflicts
-    hermes claw cleanup              # Archive leftover OpenClaw directories
-    hermes claw cleanup --dry-run    # Preview what would be archived
+用法:
+    hermes claw migrate              # 先预览再迁移（总是先显示预览）
+    hermes claw migrate --dry-run    # 仅预览，不做任何更改
+    hermes claw migrate --yes        # 跳过确认提示
+    hermes claw migrate --preset full --overwrite  # 完整迁移，覆盖冲突项
+    hermes claw cleanup              # 归档残留的 OpenClaw 目录
+    hermes claw cleanup --dry-run    # 预览将被归档的内容
 """
 
 import importlib.util
@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
+# 迁移脚本路径：优先查找可选技能目录中的脚本
 _OPENCLAW_SCRIPT = (
     get_optional_skills_dir(PROJECT_ROOT / "optional-skills")
     / "migration"
@@ -40,7 +41,7 @@ _OPENCLAW_SCRIPT = (
     / "openclaw_to_hermes.py"
 )
 
-# Fallback: user may have installed the skill from the Hub
+# 备选路径：用户可能已从 Hub 安装了该技能
 _OPENCLAW_SCRIPT_INSTALLED = (
     get_hermes_home()
     / "skills"
@@ -50,18 +51,18 @@ _OPENCLAW_SCRIPT_INSTALLED = (
     / "openclaw_to_hermes.py"
 )
 
-# Known OpenClaw directory names (current + legacy)
+# 已知的 OpenClaw 目录名称（当前版本 + 历史版本）
 _OPENCLAW_DIR_NAMES = (".openclaw", ".clawdbot", ".moltbot")
 
 def _detect_openclaw_processes() -> list[str]:
-    """Detect running OpenClaw processes and services.
+    """检测正在运行的 OpenClaw 进程和服务。
 
-    Returns a list of human-readable descriptions of what was found.
-    An empty list means nothing was detected.
+    返回检测到的内容的人类可读描述列表。
+    空列表表示未检测到任何内容。
     """
     found: list[str] = []
 
-    # -- systemd service (Linux) ------------------------------------------
+    # -- systemd 服务（Linux）------------------------------------------
     if sys.platform != "win32":
         try:
             result = subprocess.run(
@@ -73,7 +74,7 @@ def _detect_openclaw_processes() -> list[str]:
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
-    # -- process scan ------------------------------------------------------
+    # -- 进程扫描 ------------------------------------------------------
     if sys.platform == "win32":
         try:
             for exe in ("openclaw.exe", "clawd.exe"):
@@ -84,8 +85,8 @@ def _detect_openclaw_processes() -> list[str]:
                 if exe in result.stdout.lower():
                     found.append(f"process: {exe}")
 
-            # Node.js-hosted OpenClaw — tasklist doesn't show command lines,
-            # so fall back to PowerShell.
+            # Node.js 托管的 OpenClaw —— tasklist 不显示命令行参数，
+            # 因此回退到 PowerShell。
             ps_cmd = (
                 'Get-CimInstance Win32_Process -Filter "Name = \'node.exe\'" | '
                 'Where-Object { $_.CommandLine -match "openclaw|clawd" } | '
@@ -115,11 +116,10 @@ def _detect_openclaw_processes() -> list[str]:
 
 
 def _warn_if_openclaw_running(auto_yes: bool) -> None:
-    """Warn if OpenClaw is still running before migration.
+    """迁移前警告 OpenClaw 是否仍在运行。
 
-    Telegram, Discord, and Slack only allow one active connection per bot
-    token. Migrating while OpenClaw is running causes both to fight for the
-    same token.
+    Telegram、Discord 和 Slack 每个 bot token 只允许一个活跃连接。
+    在 OpenClaw 运行期间迁移会导致两者争夺同一个 token。
     """
     running = _detect_openclaw_processes()
     if not running:
@@ -147,11 +147,11 @@ def _warn_if_openclaw_running(auto_yes: bool) -> None:
 
 
 def _warn_if_gateway_running(auto_yes: bool) -> None:
-    """Check if a Hermes gateway is running with connected platforms.
+    """检查 Hermes 网关是否正在运行并连接了平台。
 
-    Migrating bot tokens while the gateway is polling will cause conflicts
-    (e.g. Telegram 409 "terminated by other getUpdates request"). Warn the
-    user and let them decide whether to continue.
+    在网关正在轮询时迁移 bot token 会导致冲突
+    （例如 Telegram 409 "terminated by other getUpdates request"）。
+    警告用户并让他们决定是否继续。
     """
     from gateway.status import get_running_pid, read_runtime_status
 
@@ -160,6 +160,7 @@ def _warn_if_gateway_running(auto_yes: bool) -> None:
 
     data = read_runtime_status() or {}
     platforms = data.get("platforms") or {}
+    # 找出所有状态为 "connected" 的平台
     connected = [name for name, info in platforms.items()
                  if isinstance(info, dict) and info.get("state") == "connected"]
     if not connected:
@@ -181,8 +182,8 @@ def _warn_if_gateway_running(auto_yes: bool) -> None:
         print_info("Migration cancelled. Stop the gateway and try again.")
         sys.exit(0)
 
-# State files commonly found in OpenClaw workspace directories — listed
-# during cleanup to help the user decide whether to archive
+# OpenClaw 工作区目录中常见的状态文件 —— 清理时列出以帮助用户
+# 决定是否归档
 _WORKSPACE_STATE_GLOBS = (
     "*/todo.json",
     "*/sessions/*",
@@ -192,7 +193,7 @@ _WORKSPACE_STATE_GLOBS = (
 
 
 def _find_migration_script() -> Path | None:
-    """Find the openclaw_to_hermes.py script in known locations."""
+    """在已知位置查找 openclaw_to_hermes.py 迁移脚本。"""
     for candidate in [_OPENCLAW_SCRIPT, _OPENCLAW_SCRIPT_INSTALLED]:
         if candidate.exists():
             return candidate
@@ -200,13 +201,13 @@ def _find_migration_script() -> Path | None:
 
 
 def _load_migration_module(script_path: Path):
-    """Dynamically load the migration script as a module."""
+    """以模块方式动态加载迁移脚本。"""
     spec = importlib.util.spec_from_file_location("openclaw_to_hermes", script_path)
     if spec is None or spec.loader is None:
         return None
     mod = importlib.util.module_from_spec(spec)
-    # Register in sys.modules so @dataclass can resolve the module
-    # (Python 3.11+ requires this for dynamically loaded modules)
+    # 注册到 sys.modules 以便 @dataclass 能正确解析模块
+    # （Python 3.11+ 对动态加载的模块有此要求）
     sys.modules[spec.name] = mod
     try:
         spec.loader.exec_module(mod)
@@ -217,7 +218,7 @@ def _load_migration_module(script_path: Path):
 
 
 def _find_openclaw_dirs() -> list[Path]:
-    """Find all OpenClaw directories on disk."""
+    """查找磁盘上所有的 OpenClaw 目录。"""
     found = []
     for name in _OPENCLAW_DIR_NAMES:
         candidate = Path.home() / name
@@ -227,24 +228,24 @@ def _find_openclaw_dirs() -> list[Path]:
 
 
 def _scan_workspace_state(source_dir: Path) -> list[tuple[Path, str]]:
-    """Scan an OpenClaw directory for workspace state files.
+    """扫描 OpenClaw 目录中的工作区状态文件。
 
-    Returns a list of (path, description) tuples.
+    返回 (路径, 描述) 元组列表。
     """
     findings: list[tuple[Path, str]] = []
 
-    # Direct state files in the root
+    # 根目录中的直接状态文件
     for name in ("todo.json", "sessions", "logs"):
         candidate = source_dir / name
         if candidate.exists():
             kind = "directory" if candidate.is_dir() else "file"
             findings.append((candidate, f"Root {kind}: {name}"))
 
-    # State files inside workspace directories
+    # 工作区子目录中的状态文件
     for child in sorted(source_dir.iterdir()):
         if not child.is_dir() or child.name.startswith("."):
             continue
-        # Check for workspace-like subdirectories
+        # 检查类似工作区的子目录
         for state_name in ("todo.json", "sessions", "logs", "memory"):
             state_path = child / state_name
             if state_path.exists():
@@ -256,20 +257,20 @@ def _scan_workspace_state(source_dir: Path) -> list[tuple[Path, str]]:
 
 
 def _archive_directory(source_dir: Path, dry_run: bool = False) -> Path:
-    """Rename an OpenClaw directory to .pre-migration.
+    """将 OpenClaw 目录重命名为 .pre-migration。
 
-    Returns the archive path.
+    返回归档路径。
     """
     timestamp = datetime.now().strftime("%Y%m%d")
     archive_name = f"{source_dir.name}.pre-migration"
     archive_path = source_dir.parent / archive_name
 
-    # If archive already exists, add timestamp
+    # 如果归档目录已存在，添加时间戳
     if archive_path.exists():
         archive_name = f"{source_dir.name}.pre-migration-{timestamp}"
         archive_path = source_dir.parent / archive_name
 
-    # If still exists (multiple runs same day), add counter
+    # 如果仍然存在（同一天多次运行），添加计数器
     counter = 2
     while archive_path.exists():
         archive_name = f"{source_dir.name}.pre-migration-{timestamp}-{counter}"
@@ -283,7 +284,7 @@ def _archive_directory(source_dir: Path, dry_run: bool = False) -> Path:
 
 
 def claw_command(args):
-    """Route hermes claw subcommands."""
+    """路由 hermes claw 子命令。"""
     action = getattr(args, "claw_action", None)
 
     if action == "migrate":
@@ -301,15 +302,15 @@ def claw_command(args):
 
 
 def _cmd_migrate(args):
-    """Run the OpenClaw → Hermes migration."""
-    # Check current and legacy OpenClaw directories
+    """执行 OpenClaw → Hermes 迁移。"""
+    # 检查当前和历史的 OpenClaw 目录
     explicit_source = getattr(args, "source", None)
     if explicit_source:
         source_dir = Path(explicit_source)
     else:
         source_dir = Path.home() / ".openclaw"
         if not source_dir.is_dir():
-            # Try legacy directory names
+            # 尝试历史版本的目录名
             for legacy in (".clawdbot", ".moltbot"):
                 candidate = Path.home() / legacy
                 if candidate.is_dir():
@@ -322,7 +323,7 @@ def _cmd_migrate(args):
     workspace_target = getattr(args, "workspace_target", None)
     skill_conflict = getattr(args, "skill_conflict", "skip")
 
-    # If using the "full" preset, secrets are included by default
+    # 使用 "full" 预设时，默认包含密钥迁移
     if preset == "full":
         migrate_secrets = True
 
@@ -346,7 +347,7 @@ def _cmd_migrate(args):
         )
     )
 
-    # Check source directory
+    # 检查源目录是否存在
     if not source_dir.is_dir():
         print()
         print_error(f"OpenClaw directory not found: {source_dir}")
@@ -354,7 +355,7 @@ def _cmd_migrate(args):
         print_info("You can specify a custom path: hermes claw migrate --source /path/to/.openclaw")
         return
 
-    # Find the migration script
+    # 查找迁移脚本
     script_path = _find_migration_script()
     if not script_path:
         print()
@@ -365,7 +366,7 @@ def _cmd_migrate(args):
         print_info("Make sure the openclaw-migration skill is installed.")
         return
 
-    # Show what we're doing
+    # 显示迁移设置
     hermes_home = get_hermes_home()
     auto_yes = getattr(args, "yes", False)
     print()
@@ -381,19 +382,19 @@ def _cmd_migrate(args):
         print_info(f"Workspace:   {workspace_target}")
     print()
 
-    # Check if OpenClaw is still running — migrating tokens while both are
-    # active will cause conflicts (e.g. Telegram 409).
+    # 检查 OpenClaw 是否仍在运行 —— 在两者都活跃时迁移 token
+    # 会导致冲突（例如 Telegram 409）
     _warn_if_openclaw_running(auto_yes)
 
-    # Check if a Hermes gateway is running with connected platforms.
+    # 检查 Hermes 网关是否正在运行并连接了平台
     _warn_if_gateway_running(auto_yes)
 
-    # Ensure config.yaml exists before migration tries to read it
+    # 确保 config.yaml 在迁移脚本尝试读取之前已存在
     config_path = get_config_path()
     if not config_path.exists():
         save_config(load_config())
 
-    # Load the migration module
+    # 加载迁移模块
     try:
         mod = _load_migration_module(script_path)
         if mod is None:
@@ -408,7 +409,7 @@ def _cmd_migrate(args):
     selected = mod.resolve_selected_options(None, None, preset=preset)
     ws_target = Path(workspace_target).resolve() if workspace_target else None
 
-    # ── Phase 1: Always preview first ──────────────────────────
+    # ── 阶段 1：始终先预览 ──────────────────────────
     try:
         preview = mod.Migrator(
             source_root=source_dir.resolve(),
@@ -443,11 +444,11 @@ def _cmd_migrate(args):
     print_info("No changes have been made yet. Review the list below:")
     _print_migration_report(preview_report, dry_run=True)
 
-    # If --dry-run, stop here
+    # 如果是 --dry-run 模式，到此结束
     if dry_run:
         return
 
-    # ── Phase 2: Confirm and execute ───────────────────────────
+    # ── 阶段 2：确认并执行 ───────────────────────────
     print()
     if not auto_yes:
         if not sys.stdin.isatty():
@@ -478,19 +479,18 @@ def _cmd_migrate(args):
         logger.debug("OpenClaw migration error", exc_info=True)
         return
 
-    # Print results
+    # 打印结果
     _print_migration_report(report, dry_run=False)
 
-    # Source directory is left untouched — archiving is not the migration
-    # tool's responsibility.  Users who want to clean up can run
-    # 'hermes claw cleanup' separately.
+    # 源目录保持不动 —— 归档不是迁移工具的职责。
+    # 需要清理的用户可以单独运行 'hermes claw cleanup'。
 
 
 def _cmd_cleanup(args):
-    """Archive leftover OpenClaw directories after migration.
+    """迁移后归档残留的 OpenClaw 目录。
 
-    Scans for OpenClaw directories that still exist after migration and offers
-    to rename them to .pre-migration to free disk space.
+    扫描迁移后仍存在的 OpenClaw 目录，并提供将它们重命名
+    为 .pre-migration 以释放磁盘空间的选项。
     """
     dry_run = getattr(args, "dry_run", False)
     auto_yes = getattr(args, "yes", False)
@@ -516,7 +516,7 @@ def _cmd_cleanup(args):
         )
     )
 
-    # Find OpenClaw directories
+    # 查找 OpenClaw 目录
     if explicit_source:
         dirs_to_check = [Path(explicit_source)]
     else:
@@ -527,8 +527,8 @@ def _cmd_cleanup(args):
         print_success("No OpenClaw directories found. Nothing to clean up.")
         return
 
-    # Warn if OpenClaw is still running — archiving while the service is
-    # active causes it to recreate an empty skeleton directory (#8502).
+    # 警告 OpenClaw 是否仍在运行 —— 在服务活跃时归档会导致
+    # 它立即重建一个空的骨架目录（#8502）
     running = _detect_openclaw_processes()
     if running:
         print()
@@ -555,10 +555,10 @@ def _cmd_cleanup(args):
         print()
         print_header(f"Found: {source_dir}")
 
-        # Scan for state files
+        # 扫描状态文件
         state_files = _scan_workspace_state(source_dir)
 
-        # Show directory stats
+        # 显示目录统计信息
         try:
             workspace_dirs = [
                 d for d in source_dir.iterdir()
@@ -613,7 +613,7 @@ def _cmd_cleanup(args):
             else:
                 print_info("Skipped.")
 
-    # Summary
+    # 摘要
     print()
     if dry_run:
         print_info(f"Dry run complete. {len(dirs_to_check)} directory(ies) would be archived.")
@@ -626,7 +626,7 @@ def _cmd_cleanup(args):
 
 
 def _print_migration_report(report: dict, dry_run: bool):
-    """Print a formatted migration report."""
+    """打印格式化的迁移报告。"""
     summary = report.get("summary", {})
     migrated = summary.get("migrated", 0)
     skipped = summary.get("skipped", 0)
@@ -642,10 +642,10 @@ def _print_migration_report(report: dict, dry_run: bool):
 
     print()
 
-    # Detailed items
+    # 详细条目
     items = report.get("items", [])
     if items:
-        # Group by status
+        # 按状态分组
         migrated_items = [i for i in items if i.get("status") == "migrated"]
         skipped_items = [i for i in items if i.get("status") == "skipped"]
         conflict_items = [i for i in items if i.get("status") == "conflict"]
@@ -688,7 +688,7 @@ def _print_migration_report(report: dict, dry_run: bool):
                 print(f"      {kind:<22s}  {reason}")
             print()
 
-    # Summary line
+    # 汇总行
     parts = []
     if migrated:
         action = "would migrate" if dry_run else "migrated"
@@ -705,7 +705,7 @@ def _print_migration_report(report: dict, dry_run: bool):
     else:
         print_info("Nothing to migrate.")
 
-    # Output directory
+    # 输出目录
     output_dir = report.get("output_dir")
     if output_dir:
         print_info(f"Full report saved to: {output_dir}")
@@ -717,7 +717,7 @@ def _print_migration_report(report: dict, dry_run: bool):
     elif migrated:
         print()
         print_success("Migration complete!")
-        # Warn if API keys were skipped (migrate_secrets not enabled)
+        # 如果 API 密钥被跳过（未启用密钥迁移），发出警告
         skipped_keys = [
             i for i in report.get("items", [])
             if i.get("kind") == "provider-keys" and i.get("status") == "skipped"

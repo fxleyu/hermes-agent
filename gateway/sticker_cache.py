@@ -1,11 +1,11 @@
 """
-Sticker description cache for Telegram.
+Telegram 贴纸描述缓存。
 
-When users send stickers, we describe them via the vision tool and cache
-the descriptions keyed by file_unique_id so we don't re-analyze the same
-sticker image on every send. Descriptions are concise (1-2 sentences).
+当用户发送贴纸时，我们通过视觉工具对其进行描述，并以
+file_unique_id 为键缓存描述结果，避免每次发送同一贴纸时
+重复分析。描述内容简洁（1-2 句话）。
 
-Cache location: ~/.hermes/sticker_cache.json
+缓存位置：~/.hermes/sticker_cache.json
 """
 
 import json
@@ -17,7 +17,7 @@ from hermes_cli.config import get_hermes_home
 
 CACHE_PATH = get_hermes_home() / "sticker_cache.json"
 
-# Vision prompt for describing stickers -- kept concise to save tokens
+# 用于描述贴纸的视觉提示词 -- 保持简洁以节省 token
 STICKER_VISION_PROMPT = (
     "Describe this sticker in 1-2 sentences. Focus on what it depicts -- "
     "character, action, emotion. Be concise and objective."
@@ -25,7 +25,7 @@ STICKER_VISION_PROMPT = (
 
 
 def _load_cache() -> dict:
-    """Load the sticker cache from disk."""
+    """从磁盘加载贴纸缓存。"""
     if CACHE_PATH.exists():
         try:
             return json.loads(CACHE_PATH.read_text(encoding="utf-8"))
@@ -35,7 +35,7 @@ def _load_cache() -> dict:
 
 
 def _save_cache(cache: dict) -> None:
-    """Save the sticker cache to disk."""
+    """将贴纸缓存保存到磁盘。"""
     CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     CACHE_PATH.write_text(
         json.dumps(cache, indent=2, ensure_ascii=False),
@@ -45,10 +45,10 @@ def _save_cache(cache: dict) -> None:
 
 def get_cached_description(file_unique_id: str) -> Optional[dict]:
     """
-    Look up a cached sticker description.
+    查找已缓存的贴纸描述。
 
-    Returns:
-        dict with keys {description, emoji, set_name, cached_at} or None.
+    返回：
+        包含 {description, emoji, set_name, cached_at} 键的字典，或 None。
     """
     cache = _load_cache()
     return cache.get(file_unique_id)
@@ -61,13 +61,13 @@ def cache_sticker_description(
     set_name: str = "",
 ) -> None:
     """
-    Store a sticker description in the cache.
+    将贴纸描述存入缓存。
 
-    Args:
-        file_unique_id: Telegram's stable sticker identifier.
-        description:    Vision-generated description text.
-        emoji:          Associated emoji (e.g. "😀").
-        set_name:       Sticker set name if available.
+    参数：
+        file_unique_id: Telegram 的稳定贴纸标识符。
+        description:    视觉工具生成的描述文本。
+        emoji:          关联的表情符号（如 "😀"）。
+        set_name:       贴纸集名称（如有）。
     """
     cache = _load_cache()
     cache[file_unique_id] = {
@@ -85,9 +85,9 @@ def build_sticker_injection(
     set_name: str = "",
 ) -> str:
     """
-    Build the warm-style injection text for a sticker description.
+    构建贴纸描述的暖风格注入文本。
 
-    Returns a string like:
+    返回类似如下的字符串：
       [The user sent a sticker 😀 from "MyPack"~ It shows: "A cat waving" (=^.w.^=)]
     """
     context = ""
@@ -101,7 +101,7 @@ def build_sticker_injection(
 
 def build_animated_sticker_injection(emoji: str = "") -> str:
     """
-    Build injection text for animated/video stickers we can't analyze.
+    为无法分析的动画/视频贴纸构建注入文本。
     """
     if emoji:
         return (

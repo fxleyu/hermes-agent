@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-chembl_target.py — Search ChEMBL for a target and retrieve top active compounds.
-Usage: python3 chembl_target.py "EGFR" --min-pchembl 7 --limit 20
-No external dependencies.
+chembl_target.py — 在 ChEMBL 中搜索靶标并获取活性最强的化合物。
+用法: python3 chembl_target.py "EGFR" --min-pchembl 7 --limit 20
+无需外部依赖。
 """
 import sys, json, time, argparse
 import urllib.request, urllib.parse, urllib.error

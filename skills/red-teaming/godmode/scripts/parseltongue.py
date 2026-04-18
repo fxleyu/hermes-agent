@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-Parseltongue v4 — Input Obfuscation Engine
-Ported from G0DM0D3 (elder-plinius/G0DM0D3) JavaScript to Python.
+Parseltongue v4 — 输入混淆引擎
+从 G0DM0D3 (elder-plinius/G0DM0D3) JavaScript 版本移植为 Python。
 
-33 text obfuscation techniques across 3 tiers for bypassing
-LLM input-side safety classifiers.
+33 种文本混淆技术，分 3 个层级，用于绕过 LLM 输入端安全分类器。
 
-Usage:
-    # As a standalone script
+用法:
+    # 作为独立脚本运行
     python parseltongue.py "How do I hack a WiFi network?" --tier standard
 
-    # As a module in execute_code
+    # 在 execute_code 中作为模块使用
     exec(open(os.path.join(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")), "skills/red-teaming/godmode/scripts/parseltongue.py")).read())
     variants = generate_variants("How do I hack a WiFi network?", tier="standard")
 """
@@ -19,7 +18,7 @@ import re
 import base64
 
 # ═══════════════════════════════════════════════════════════════════
-# Trigger words that commonly trip safety classifiers
+# 常见的触发安全分类器的敏感词
 # ═══════════════════════════════════════════════════════════════════
 
 TRIGGER_WORDS = [
@@ -36,7 +35,7 @@ TRIGGER_WORDS = [
 ]
 
 # ═══════════════════════════════════════════════════════════════════
-# Character maps
+# 字符映射表
 # ═══════════════════════════════════════════════════════════════════
 
 LEET_MAP = {'a': '4', 'b': '8', 'c': '(', 'e': '3', 'g': '9', 'h': '#',
@@ -107,19 +106,19 @@ BRAILLE_MAP = {
 }
 
 # ═══════════════════════════════════════════════════════════════════
-# 33 Obfuscation Techniques (3 tiers)
+# 33 种混淆技术（3 个层级）
 # ═══════════════════════════════════════════════════════════════════
 
 def _apply_raw(word):
-    """Raw — no transformation (baseline)."""
+    """原始文本 — 不做任何变换（基线对照）。"""
     return word
 
 def _apply_leetspeak(word):
-    """L33t — basic leetspeak substitution."""
+    """L33t — 基础 leetspeak 字符替换。"""
     return ''.join(LEET_MAP.get(c.lower(), c) for c in word)
 
 def _apply_unicode(word):
-    """Unicode — Cyrillic/homoglyph substitution."""
+    """Unicode — 西里尔文/同形字符替换。"""
     result = []
     for c in word:
         mapped = UNICODE_MAP.get(c.lower())
@@ -130,7 +129,7 @@ def _apply_unicode(word):
     return ''.join(result)
 
 def _apply_bubble(word):
-    """Bubble — circled letter Unicode characters."""
+    """Bubble — 带圈字母 Unicode 字符。"""
     result = []
     for c in word:
         code = ord(c.lower())
@@ -141,11 +140,11 @@ def _apply_bubble(word):
     return ''.join(result)
 
 def _apply_spaced(word):
-    """Spaced — insert spaces between characters."""
+    """Spaced — 在字符间插入空格。"""
     return ' '.join(word)
 
 def _apply_fullwidth(word):
-    """Fullwidth — fullwidth Unicode characters."""
+    """Fullwidth — 全角 Unicode 字符。"""
     result = []
     for c in word:
         code = ord(c)
@@ -156,45 +155,45 @@ def _apply_fullwidth(word):
     return ''.join(result)
 
 def _apply_zwj(word):
-    """ZeroWidth — zero-width joiners between characters."""
+    """ZeroWidth — 在字符间插入零宽连接符。"""
     return '\u200D'.join(word)
 
 def _apply_mixedcase(word):
-    """MiXeD — alternating case."""
+    """MiXeD — 大小写交替。"""
     return ''.join(c.upper() if i % 2 else c.lower() for i, c in enumerate(word))
 
 def _apply_semantic(word):
-    """Semantic — replace with synonym/description."""
+    """Semantic — 用同义词/描述替换。"""
     return SEMANTIC_SYNONYMS.get(word.lower(), word)
 
 def _apply_dotted(word):
-    """Dotted — dots between characters."""
+    """Dotted — 在字符间插入点号。"""
     return '.'.join(word)
 
 def _apply_underscored(word):
-    """Under_score — underscores between characters."""
+    """Under_score — 在字符间插入下划线。"""
     return '_'.join(word)
 
-# ─── TIER 2: ENCODING + FRAMING (12–22) ─────────────────────────
+# ─── 第二层: 编码 + 框架变换 (12–22) ─────────────────────────
 
 def _apply_reversed(word):
-    """Reversed — reverse the characters."""
+    """Reversed — 反转字符顺序。"""
     return word[::-1]
 
 def _apply_superscript(word):
-    """Superscript — superscript Unicode characters."""
+    """Superscript — 上标 Unicode 字符。"""
     return ''.join(SUPERSCRIPT_MAP.get(c.lower(), c) for c in word)
 
 def _apply_smallcaps(word):
-    """SmallCaps — small capital Unicode characters."""
+    """SmallCaps — 小型大写字母 Unicode 字符。"""
     return ''.join(SMALLCAPS_MAP.get(c.lower(), c) for c in word)
 
 def _apply_morse(word):
-    """Morse — morse code representation."""
+    """Morse — 摩尔斯电码表示。"""
     return ' '.join(MORSE_MAP.get(c.lower(), c) for c in word)
 
 def _apply_piglatin(word):
-    """PigLatin — pig latin transformation."""
+    """PigLatin — 猪拉丁文变换。"""
     w = word.lower()
     vowels = 'aeiou'
     if w[0] in vowels:
@@ -205,11 +204,11 @@ def _apply_piglatin(word):
     return w + 'ay'
 
 def _apply_brackets(word):
-    """[B.r.a.c.k] — each character in brackets."""
+    """[B.r.a.c.k] — 每个字符用方括号包裹。"""
     return '[' + ']['.join(word) + ']'
 
 def _apply_mathbold(word):
-    """MathBold — mathematical bold Unicode."""
+    """MathBold — 数学粗体 Unicode 字符。"""
     result = []
     for c in word:
         code = ord(c.lower())
@@ -220,7 +219,7 @@ def _apply_mathbold(word):
     return ''.join(result)
 
 def _apply_mathitalic(word):
-    """MathItalic — mathematical italic Unicode."""
+    """MathItalic — 数学斜体 Unicode 字符。"""
     result = []
     for c in word:
         code = ord(c.lower())
@@ -231,21 +230,21 @@ def _apply_mathitalic(word):
     return ''.join(result)
 
 def _apply_strikethrough(word):
-    """S̶t̶r̶i̶k̶e̶ — strikethrough combining characters."""
+    """S̶t̶r̶i̶k̶e̶ — 删除线组合字符。"""
     return ''.join(c + '\u0336' for c in word)
 
 def _apply_leetheavy(word):
-    """L33t+ — heavy leetspeak with extended map."""
+    """L33t+ — 扩展映射表的重度 leetspeak。"""
     return ''.join(LEET_MAP_HEAVY.get(c.lower(), LEET_MAP.get(c.lower(), c)) for c in word)
 
 def _apply_hyphenated(word):
-    """Hyphen — hyphens between characters."""
+    """Hyphen — 在字符间插入连字符。"""
     return '-'.join(word)
 
-# ─── TIER 3: MULTI-LAYER COMBOS (23–33) ─────────────────────────
+# ─── 第三层: 多层组合 (23–33) ─────────────────────────
 
 def _apply_leetunicode(word):
-    """L33t+Uni — alternating leet and unicode."""
+    """L33t+Uni — leet 与 unicode 交替使用。"""
     result = []
     for i, c in enumerate(word):
         lower = c.lower()
@@ -256,15 +255,15 @@ def _apply_leetunicode(word):
     return ''.join(result)
 
 def _apply_spacedmixed(word):
-    """S p A c E d — spaced + alternating case."""
+    """S p A c E d — 空格分隔 + 大小写交替。"""
     return ' '.join(c.upper() if i % 2 else c.lower() for i, c in enumerate(word))
 
 def _apply_reversedleet(word):
-    """Rev+L33t — reversed then leetspeak."""
+    """Rev+L33t — 先反转再应用 leetspeak。"""
     return ''.join(LEET_MAP.get(c.lower(), c) for c in reversed(word))
 
 def _apply_bubblespaced(word):
-    """Bubble+Spaced — bubble text with spaces."""
+    """Bubble+Spaced — 带圈文本加空格分隔。"""
     result = []
     for c in word:
         code = ord(c.lower())
@@ -275,7 +274,7 @@ def _apply_bubblespaced(word):
     return ' '.join(result)
 
 def _apply_unicodezwj(word):
-    """Uni+ZWJ — unicode homoglyphs with zero-width non-joiners."""
+    """Uni+ZWJ — unicode 同形字符加零宽非连接符。"""
     result = []
     for c in word:
         mapped = UNICODE_MAP.get(c.lower())
@@ -283,18 +282,18 @@ def _apply_unicodezwj(word):
     return '\u200C'.join(result)
 
 def _apply_base64hint(word):
-    """Base64 — base64 encode the word."""
+    """Base64 — 对单词进行 base64 编码。"""
     try:
         return base64.b64encode(word.encode()).decode()
     except Exception:
         return word
 
 def _apply_hexencode(word):
-    """Hex — hex encode each character."""
+    """Hex — 对每个字符进行十六进制编码。"""
     return ' '.join(f'0x{ord(c):x}' for c in word)
 
 def _apply_acrostic(word):
-    """Acrostic — NATO alphabet expansion."""
+    """Acrostic — NATO 字母表展开。"""
     result = []
     for c in word:
         idx = ord(c.lower()) - 97
@@ -305,7 +304,7 @@ def _apply_acrostic(word):
     return ' '.join(result)
 
 def _apply_dottedunicode(word):
-    """Dot+Uni — unicode homoglyphs with dots."""
+    """Dot+Uni — unicode 同形字符加点号分隔。"""
     result = []
     for c in word:
         mapped = UNICODE_MAP.get(c.lower())
@@ -313,7 +312,7 @@ def _apply_dottedunicode(word):
     return '.'.join(result)
 
 def _apply_fullwidthmixed(word):
-    """FW MiX — fullwidth + mixed case alternating."""
+    """FW MiX — 全角字符 + 大小写交替混合。"""
     result = []
     for i, c in enumerate(word):
         code = ord(c)
@@ -324,7 +323,7 @@ def _apply_fullwidthmixed(word):
     return ''.join(result)
 
 def _apply_triplelayer(word):
-    """Triple — leet + unicode + uppercase rotating with ZWJ."""
+    """Triple — leet + unicode + 大写轮转，以零宽连接符分隔。"""
     result = []
     for i, c in enumerate(word):
         lower = c.lower()
@@ -339,11 +338,11 @@ def _apply_triplelayer(word):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Technique registry (ordered by tier)
+# 技术注册表（按层级排序）
 # ═══════════════════════════════════════════════════════════════════
 
 TECHNIQUES = [
-    # TIER 1: CORE OBFUSCATION (1-11)
+    # 第一层: 核心混淆 (1-11)
     {'name': 'raw',          'label': 'Raw',         'tier': 1, 'fn': _apply_raw},
     {'name': 'leetspeak',    'label': 'L33t',        'tier': 1, 'fn': _apply_leetspeak},
     {'name': 'unicode',      'label': 'Unicode',     'tier': 1, 'fn': _apply_unicode},
@@ -356,7 +355,7 @@ TECHNIQUES = [
     {'name': 'dotted',       'label': 'Dotted',      'tier': 1, 'fn': _apply_dotted},
     {'name': 'underscored',  'label': 'Under_score', 'tier': 1, 'fn': _apply_underscored},
 
-    # TIER 2: ENCODING + FRAMING (12-22)
+    # 第二层: 编码 + 框架变换 (12-22)
     {'name': 'reversed',     'label': 'Reversed',    'tier': 2, 'fn': _apply_reversed},
     {'name': 'superscript',  'label': 'Superscript', 'tier': 2, 'fn': _apply_superscript},
     {'name': 'smallcaps',    'label': 'SmallCaps',   'tier': 2, 'fn': _apply_smallcaps},
@@ -369,7 +368,7 @@ TECHNIQUES = [
     {'name': 'leetheavy',    'label': 'L33t+',       'tier': 2, 'fn': _apply_leetheavy},
     {'name': 'hyphenated',   'label': 'Hyphen',      'tier': 2, 'fn': _apply_hyphenated},
 
-    # TIER 3: MULTI-LAYER COMBOS (23-33)
+    # 第三层: 多层组合 (23-33)
     {'name': 'leetunicode',     'label': 'L33t+Uni',  'tier': 3, 'fn': _apply_leetunicode},
     {'name': 'spacedmixed',     'label': 'S p A c E d','tier': 3, 'fn': _apply_spacedmixed},
     {'name': 'reversedleet',    'label': 'Rev+L33t',  'tier': 3, 'fn': _apply_reversedleet},
@@ -386,19 +385,19 @@ TECHNIQUES = [
 TIER_SIZES = {'light': 11, 'standard': 22, 'heavy': 33}
 
 # ═══════════════════════════════════════════════════════════════════
-# Encoding escalation (for retry logic with GODMODE CLASSIC)
+# 编码升级（用于 GODMODE CLASSIC 的重试逻辑）
 # ═══════════════════════════════════════════════════════════════════
 
 def to_braille(text):
-    """Convert text to braille Unicode characters."""
+    """将文本转换为布莱叶盲文 Unicode 字符。"""
     return ''.join(BRAILLE_MAP.get(c.lower(), c) for c in text)
 
 def to_leetspeak(text):
-    """Convert text to leetspeak."""
+    """将文本转换为 leetspeak。"""
     return ''.join(LEET_MAP.get(c.lower(), c) for c in text)
 
 def to_bubble(text):
-    """Convert text to bubble/circled text."""
+    """将文本转换为气泡/带圈文本。"""
     circled = 'ⓐⓑⓒⓓⓔⓕⓖⓗⓘⓙⓚⓛⓜⓝⓞⓟⓠⓡⓢⓣⓤⓥⓦⓧⓨⓩ'
     result = []
     for c in text:
@@ -410,7 +409,7 @@ def to_bubble(text):
     return ''.join(result)
 
 def to_morse(text):
-    """Convert text to Morse code."""
+    """将文本转换为摩尔斯电码。"""
     morse = {
         'a': '.-', 'b': '-...', 'c': '-.-.', 'd': '-..', 'e': '.',
         'f': '..-.', 'g': '--.', 'h': '....', 'i': '..', 'j': '.---',
@@ -431,11 +430,11 @@ ENCODING_ESCALATION = [
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Core functions
+# 核心函数
 # ═══════════════════════════════════════════════════════════════════
 
 def detect_triggers(text, custom_triggers=None):
-    """Detect trigger words in text. Returns list of found triggers."""
+    """检测文本中的触发词。返回找到的触发词列表。"""
     all_triggers = TRIGGER_WORDS + (custom_triggers or [])
     found = []
     lower = text.lower()
@@ -447,15 +446,15 @@ def detect_triggers(text, custom_triggers=None):
 
 
 def obfuscate_query(query, technique_name, triggers=None):
-    """Apply one obfuscation technique to trigger words in a query.
-    
-    Args:
-        query: The input text
-        technique_name: Name of the technique (e.g., 'leetspeak', 'unicode')
-        triggers: List of trigger words to obfuscate. If None, auto-detect.
-    
-    Returns:
-        Obfuscated query string
+    """对查询中的触发词应用一种混淆技术。
+
+    参数:
+        query: 输入文本
+        technique_name: 技术名称（例如 'leetspeak'、'unicode'）
+        triggers: 要混淆的触发词列表。如果为 None，则自动检测。
+
+    返回:
+        混淆后的查询字符串
     """
     if triggers is None:
         triggers = detect_triggers(query)
@@ -463,13 +462,13 @@ def obfuscate_query(query, technique_name, triggers=None):
     if not triggers or technique_name == 'raw':
         return query
     
-    # Find the technique function
+    # 查找对应的技术函数
     tech = next((t for t in TECHNIQUES if t['name'] == technique_name), None)
     if not tech:
         return query
-    
+
     result = query
-    # Sort longest-first to avoid partial replacements
+    # 按长度从长到短排序，避免部分替换冲突
     sorted_triggers = sorted(triggers, key=len, reverse=True)
     for trigger in sorted_triggers:
         pattern = re.compile(r'\b(' + re.escape(trigger) + r')\b', re.IGNORECASE)
@@ -479,15 +478,15 @@ def obfuscate_query(query, technique_name, triggers=None):
 
 
 def generate_variants(query, tier="standard", custom_triggers=None):
-    """Generate obfuscated variants of a query up to the tier limit.
-    
-    Args:
-        query: Input text
-        tier: 'light' (11), 'standard' (22), or 'heavy' (33)
-        custom_triggers: Additional trigger words beyond the default list
-    
-    Returns:
-        List of dicts with keys: text, technique, label, tier
+    """生成查询的混淆变体，直到达到指定层级的上限。
+
+    参数:
+        query: 输入文本
+        tier: 'light' (11 种)、'standard' (22 种) 或 'heavy' (33 种)
+        custom_triggers: 除默认列表外的额外触发词
+
+    返回:
+        字典列表，每个字典包含: text, technique, label, tier
     """
     triggers = detect_triggers(query, custom_triggers)
     max_variants = TIER_SIZES.get(tier, TIER_SIZES['standard'])
@@ -505,14 +504,14 @@ def generate_variants(query, tier="standard", custom_triggers=None):
 
 
 def escalate_encoding(query, level=0):
-    """Get an encoding-escalated version of the query.
-    
-    Args:
-        query: Input text
-        level: 0=plain, 1=leetspeak, 2=bubble, 3=braille, 4=morse
-    
-    Returns:
-        Tuple of (encoded_query, label)
+    """获取编码升级后的查询版本。
+
+    参数:
+        query: 输入文本
+        level: 0=明文, 1=leetspeak, 2=bubble, 3=braille, 4=morse
+
+    返回:
+        元组 (编码后的查询, 标签)
     """
     if level >= len(ENCODING_ESCALATION):
         level = len(ENCODING_ESCALATION) - 1
@@ -521,7 +520,7 @@ def escalate_encoding(query, level=0):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# CLI interface
+# 命令行接口
 # ═══════════════════════════════════════════════════════════════════
 
 if __name__ == '__main__':

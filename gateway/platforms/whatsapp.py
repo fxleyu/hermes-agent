@@ -1,18 +1,18 @@
 """
-WhatsApp platform adapter.
+WhatsApp 平台适配器。
 
-WhatsApp integration is more complex than Telegram/Discord because:
-- No official bot API for personal accounts
-- Business API requires Meta Business verification
-- Most solutions use web-based automation
+WhatsApp 集成比 Telegram/Discord 更复杂，原因如下：
+- 个人账户没有官方 Bot API
+- 商业 API 需要 Meta 商业认证
+- 大多数方案使用基于 Web 的自动化
 
-This adapter supports multiple backends:
-1. WhatsApp Business API (requires Meta verification)
-2. whatsapp-web.js (via Node.js subprocess) - for personal accounts
-3. Baileys (via Node.js subprocess) - alternative for personal accounts
+本适配器支持多种后端：
+1. WhatsApp Business API（需要 Meta 认证）
+2. whatsapp-web.js（通过 Node.js 子进程）— 用于个人账户
+3. Baileys（通过 Node.js 子进程）— 个人账户的替代方案
 
-For simplicity, we'll implement a generic interface that can work
-with different backends via a bridge pattern.
+为简化实现，我们采用通用接口，通过桥接模式
+对接不同的后端。
 """
 
 import asyncio
@@ -33,10 +33,10 @@ logger = logging.getLogger(__name__)
 
 
 def _kill_port_process(port: int) -> None:
-    """Kill any process listening on the given TCP port."""
+    """终止监听指定 TCP 端口的所有进程。"""
     try:
         if _IS_WINDOWS:
-            # Use netstat to find the PID bound to this port, then taskkill
+            # 使用 netstat 查找绑定到此端口的 PID，然后用 taskkill 终止
             result = subprocess.run(
                 ["netstat", "-ano", "-p", "TCP"],
                 capture_output=True, text=True, timeout=5,
@@ -83,11 +83,11 @@ from gateway.platforms.base import (
 
 def check_whatsapp_requirements() -> bool:
     """
-    Check if WhatsApp dependencies are available.
-    
-    WhatsApp requires a Node.js bridge for most implementations.
+    检查 WhatsApp 依赖项是否可用。
+
+    WhatsApp 的大多数实现方式需要 Node.js 桥接。
     """
-    # Check for Node.js
+    # 检查 Node.js 是否已安装
     try:
         result = subprocess.run(
             ["node", "--version"],
@@ -102,29 +102,29 @@ def check_whatsapp_requirements() -> bool:
 
 class WhatsAppAdapter(BasePlatformAdapter):
     """
-    WhatsApp adapter.
-    
-    This implementation uses a simple HTTP bridge pattern where:
-    1. A Node.js process runs the WhatsApp Web client
-    2. Messages are forwarded via HTTP/IPC to this Python adapter
-    3. Responses are sent back through the bridge
-    
-    The actual Node.js bridge implementation can vary:
-    - whatsapp-web.js based
-    - Baileys based
-    - Business API based
-    
-    Configuration:
-    - bridge_script: Path to the Node.js bridge script
-    - bridge_port: Port for HTTP communication (default: 3000)
-    - session_path: Path to store WhatsApp session data
+    WhatsApp 适配器。
+
+    本实现使用简单的 HTTP 桥接模式，工作流程如下：
+    1. Node.js 进程运行 WhatsApp Web 客户端
+    2. 消息通过 HTTP/IPC 转发到本 Python 适配器
+    3. 响应通过桥接返回
+
+    实际的 Node.js 桥接实现可以有多种选择：
+    - 基于 whatsapp-web.js
+    - 基于 Baileys
+    - 基于 Business API
+
+    配置项：
+    - bridge_script: Node.js 桥接脚本的路径
+    - bridge_port: HTTP 通信端口（默认：3000）
+    - session_path: WhatsApp 会话数据的存储路径
     """
-    
-    # WhatsApp message limits — practical UX limit, not protocol max.
-    # WhatsApp allows ~65K but long messages are unreadable on mobile.
+
+    # WhatsApp 消息长度限制 - 实际用户体验限制，非协议最大值。
+    # WhatsApp 允许约 65K 字符，但长消息在手机上难以阅读。
     MAX_MESSAGE_LENGTH = 4096
-    
-    # Default bridge location relative to the hermes-agent install
+
+    # 相对于 hermes-agent 安装目录的默认桥接位置
     _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
 
     def __init__(self, config: PlatformConfig):
@@ -273,9 +273,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
     
     async def connect(self) -> bool:
         """
-        Start the WhatsApp bridge.
-        
-        This launches the Node.js bridge process and waits for it to be ready.
+        启动 WhatsApp 桥接。
+
+        启动 Node.js 桥接进程并等待其就绪。
         """
         if not check_whatsapp_requirements():
             logger.warning("[%s] Node.js not found. WhatsApp requires Node.js.", self.name)
@@ -288,14 +288,14 @@ class WhatsAppAdapter(BasePlatformAdapter):
         
         logger.info("[%s] Bridge found at %s", self.name, bridge_path)
         
-        # Acquire scoped lock to prevent duplicate sessions
+        # 获取作用域锁，防止重复会话
         try:
             if not self._acquire_platform_lock('whatsapp-session', str(self._session_path), 'WhatsApp session'):
                 return False
         except Exception as e:
             logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
 
-        # Auto-install npm dependencies if node_modules doesn't exist
+        # 如果 node_modules 不存在，自动安装 npm 依赖
         bridge_dir = bridge_path.parent
         if not (bridge_dir / "node_modules").exists():
             print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
@@ -316,10 +316,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 return False
         
         try:
-            # Ensure session directory exists
+            # 确保会话目录存在
             self._session_path.mkdir(parents=True, exist_ok=True)
             
-            # Check if bridge is already running and connected
+            # 检查桥接是否已在运行且已连接
             import aiohttp
             import asyncio
             try:
@@ -334,30 +334,30 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             if bridge_status == "connected":
                                 print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
                                 self._mark_connected()
-                                self._bridge_process = None  # Not managed by us
+                                self._bridge_process = None  # 不由我们管理
                                 self._http_session = aiohttp.ClientSession()
                                 self._poll_task = asyncio.create_task(self._poll_messages())
                                 return True
                             else:
                                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
             except Exception:
-                pass  # Bridge not running, start a new one
+                pass  # 桥接未运行，启动新的
             
-            # Kill any orphaned bridge from a previous gateway run
+            # 终止上一次网关运行残留的孤儿桥接进程
             _kill_port_process(self._bridge_port)
             await asyncio.sleep(1)
             
-            # Start the bridge process in its own process group.
-            # Route output to a log file so QR codes, errors, and reconnection
-            # messages are preserved for troubleshooting.
+            # 在独立进程组中启动桥接进程。
+            # 将输出路由到日志文件，以便保留二维码、错误和重连
+            # 消息，方便故障排查。
             whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
             self._bridge_log = self._session_path.parent / "bridge.log"
             bridge_log_fh = open(self._bridge_log, "a")
             self._bridge_log_fh = bridge_log_fh
 
-            # Build bridge subprocess environment.
-            # Pass WHATSAPP_REPLY_PREFIX from config.yaml so the Node bridge
-            # can use it without the user needing to set a separate env var.
+            # 构建桥接子进程环境变量。
+            # 从 config.yaml 传递 WHATSAPP_REPLY_PREFIX，使 Node 桥接
+            # 无需用户额外设置环境变量即可使用。
             bridge_env = os.environ.copy()
             if self._reply_prefix is not None:
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
@@ -376,9 +376,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 env=bridge_env,
             )
             
-            # Wait for the bridge to connect to WhatsApp.
-            # Phase 1: wait for the HTTP server to come up (up to 15s).
-            # Phase 2: wait for WhatsApp status: connected (up to 15s more).
+            # 等待桥接连接到 WhatsApp。
+            # 阶段1：等待 HTTP 服务器启动（最多 15 秒）。
+            # 阶段2：等待 WhatsApp 状态变为 connected（最多再等 15 秒）。
             import aiohttp
             http_ready = False
             data = {}
@@ -410,8 +410,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 self._close_bridge_log()
                 return False
             
-            # Phase 2: HTTP is up but WhatsApp may still be connecting.
-            # Give it more time to authenticate with saved credentials.
+            # 阶段2：HTTP 已就绪但 WhatsApp 可能仍在连接中。
+            # 给予更多时间使用已保存的凭据进行认证。
             if data.get("status") != "connected":
                 print(f"[{self.name}] Bridge HTTP ready, waiting for WhatsApp connection...")
                 for attempt in range(15):
@@ -435,16 +435,16 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     except Exception:
                         continue
                 else:
-                    # Still not connected — warn but proceed (bridge may
-                    # auto-reconnect later, e.g. after a code 515 restart).
+                    # 仍未连接 - 发出警告但继续（桥接可能
+                    # 稍后自动重连，如 515 错误码重启后）。
                     print(f"[{self.name}] ⚠ WhatsApp not connected after 30s")
                     print(f"[{self.name}]   Bridge log: {self._bridge_log}")
                     print(f"[{self.name}]   If session expired, re-pair: hermes whatsapp")
             
-            # Create a persistent HTTP session for all bridge communication
+            # 创建持久化 HTTP 会话用于所有桥接通信
             self._http_session = aiohttp.ClientSession()
 
-            # Start message polling task
+            # 启动消息轮询任务
             self._poll_task = asyncio.create_task(self._poll_messages())
             
             self._mark_connected()
@@ -458,7 +458,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return False
     
     def _close_bridge_log(self) -> None:
-        """Close the bridge log file handle if open."""
+        """关闭桥接日志文件句柄（如果已打开）。"""
         if self._bridge_log_fh:
             try:
                 self._bridge_log_fh.close()
@@ -467,7 +467,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             self._bridge_log_fh = None
 
     async def _check_managed_bridge_exit(self) -> Optional[str]:
-        """Return a fatal error message if the managed bridge child exited."""
+        """如果受管理的桥接子进程已退出，返回致命错误消息。"""
         if self._bridge_process is None:
             return None
 
@@ -484,10 +484,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
         return self.fatal_error_message or message
 
     async def disconnect(self) -> None:
-        """Stop the WhatsApp bridge and clean up any orphaned processes."""
+        """停止 WhatsApp 桥接并清理所有孤儿进程。"""
         if self._bridge_process:
             try:
-                # Kill the entire process group so child node processes die too
+                # 终止整个进程组，使子 node 进程也被终止
                 import signal
                 try:
                     if _IS_WINDOWS:
@@ -508,10 +508,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
             except Exception as e:
                 print(f"[{self.name}] Error stopping bridge: {e}")
         else:
-            # Bridge was not started by us, don't kill it
+            # 桥接不是由我们启动的，不终止它
             print(f"[{self.name}] Disconnecting (external bridge left running)")
 
-        # Cancel the poll task explicitly
+        # 显式取消轮询任务
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
             try:
@@ -520,7 +520,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 pass
         self._poll_task = None
 
-        # Close the persistent HTTP session
+        # 关闭持久化 HTTP 会话
         if self._http_session and not self._http_session.closed:
             await self._http_session.close()
         self._http_session = None
@@ -533,19 +533,19 @@ class WhatsAppAdapter(BasePlatformAdapter):
         print(f"[{self.name}] Disconnected")
     
     def format_message(self, content: str) -> str:
-        """Convert standard markdown to WhatsApp-compatible formatting.
+        """将标准 Markdown 转换为 WhatsApp 兼容的格式。
 
-        WhatsApp supports: *bold*, _italic_, ~strikethrough~, ```code```,
-        and monospaced `inline`. Standard markdown uses different syntax
-        for bold/italic/strikethrough, so we convert here.
+        WhatsApp 支持：*粗体*、_斜体_、~删除线~、```代码块```
+        和等宽 `行内代码`。标准 Markdown 对粗体/斜体/删除线
+        使用不同的语法，因此在此进行转换。
 
-        Code blocks (``` fenced) and inline code (`) are protected from
-        conversion via placeholder substitution.
+        代码块（``` 围栏式）和行内代码（`）通过占位符替换
+        保护，不受转换影响。
         """
         if not content:
             return content
 
-        # --- 1. Protect fenced code blocks from formatting changes ---
+        # --- 1. 保护围栏式代码块不受格式转换影响 ---
         _FENCE_PH = "\x00FENCE"
         fences: list[str] = []
 
@@ -555,7 +555,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
         result = re.sub(r"```[\s\S]*?```", _save_fence, content)
 
-        # --- 2. Protect inline code ---
+        # --- 2. 保护行内代码 ---
         _CODE_PH = "\x00CODE"
         codes: list[str] = []
 
@@ -565,23 +565,23 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
         result = re.sub(r"`[^`\n]+`", _save_code, result)
 
-        # --- 3. Convert markdown formatting to WhatsApp syntax ---
-        # Bold: **text** or __text__ → *text*
+        # --- 3. 将 Markdown 格式转换为 WhatsApp 语法 ---
+        # 粗体：**text** 或 __text__ -> *text*
         result = re.sub(r"\*\*(.+?)\*\*", r"*\1*", result)
         result = re.sub(r"__(.+?)__", r"*\1*", result)
-        # Strikethrough: ~~text~~ → ~text~
+        # 删除线：~~text~~ -> ~text~
         result = re.sub(r"~~(.+?)~~", r"~\1~", result)
-        # Italic: *text* is already WhatsApp italic — leave as-is
-        # _text_ is already WhatsApp italic — leave as-is
+        # 斜体：*text* 在 WhatsApp 中已是斜体 - 保持不变
+        # _text_ 在 WhatsApp 中已是斜体 - 保持不变
 
-        # --- 4. Convert markdown headers to bold text ---
-        # # Header → *Header*
+        # --- 4. 将 Markdown 标题转换为粗体文本 ---
+        # # 标题 -> *标题*
         result = re.sub(r"^#{1,6}\s+(.+)$", r"*\1*", result, flags=re.MULTILINE)
 
-        # --- 5. Convert markdown links: [text](url) → text (url) ---
+        # --- 5. 将 Markdown 链接转换为：[text](url) -> text (url) ---
         result = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", result)
 
-        # --- 6. Restore protected sections ---
+        # --- 6. 恢复受保护的代码区域 ---
         for i, fence in enumerate(fences):
             result = result.replace(f"{_FENCE_PH}{i}\x00", fence)
         for i, code in enumerate(codes):
@@ -596,10 +596,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None
     ) -> SendResult:
-        """Send a message via the WhatsApp bridge.
+        """通过 WhatsApp 桥接发送消息。
 
-        Formats markdown for WhatsApp, splits long messages into chunks
-        that preserve code block boundaries, and sends each chunk sequentially.
+        将 Markdown 格式转换为 WhatsApp 格式，将长消息按代码块边界
+        拆分成多个片段，然后依次发送每个片段。
         """
         if not self._running or not self._http_session:
             return SendResult(success=False, error="Not connected")
@@ -613,7 +613,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         try:
             import aiohttp
 
-            # Format and chunk the message
+            # 格式化并分片消息
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
@@ -624,7 +624,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     "message": chunk,
                 }
                 if reply_to and last_message_id is None:
-                    # Only reply-to on the first chunk
+                    # 仅在第一个片段上使用 reply-to
                     payload["replyTo"] = reply_to
 
                 async with self._http_session.post(
@@ -639,7 +639,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         error = await resp.text()
                         return SendResult(success=False, error=error)
 
-                # Small delay between chunks to avoid rate limiting
+                # 片段之间添加短暂延迟以避免触发限流
                 if len(chunks) > 1:
                     await asyncio.sleep(0.3)
 
@@ -656,7 +656,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         message_id: str,
         content: str,
     ) -> SendResult:
-        """Edit a previously sent message via the WhatsApp bridge."""
+        """通过 WhatsApp 桥接编辑已发送的消息。"""
         if not self._running or not self._http_session:
             return SendResult(success=False, error="Not connected")
         bridge_exit = await self._check_managed_bridge_exit()
@@ -689,7 +689,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
     ) -> SendResult:
-        """Send any media file via bridge /send-media endpoint."""
+        """通过桥接 /send-media 端点发送任意媒体文件。"""
         if not self._running or not self._http_session:
             return SendResult(success=False, error="Not connected")
         bridge_exit = await self._check_managed_bridge_exit()
@@ -737,7 +737,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
     ) -> SendResult:
-        """Download image URL to cache, send natively via bridge."""
+        """下载图片 URL 到缓存，通过桥接原生发送。"""
         try:
             local_path = await cache_image_from_url(image_url)
             return await self._send_media_to_bridge(chat_id, local_path, "image", caption)
@@ -752,7 +752,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         **kwargs,
     ) -> SendResult:
-        """Send a local image file natively via bridge."""
+        """通过桥接原生发送本地图片文件。"""
         return await self._send_media_to_bridge(chat_id, image_path, "image", caption)
 
     async def send_video(
@@ -763,7 +763,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         **kwargs,
     ) -> SendResult:
-        """Send a video natively via bridge — plays inline in WhatsApp."""
+        """通过桥接原生发送视频 - 在 WhatsApp 中内联播放。"""
         return await self._send_media_to_bridge(chat_id, video_path, "video", caption)
 
     async def send_document(
@@ -775,14 +775,14 @@ class WhatsAppAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         **kwargs,
     ) -> SendResult:
-        """Send a document/file as a downloadable attachment via bridge."""
+        """通过桥接发送文档/文件作为可下载附件。"""
         return await self._send_media_to_bridge(
             chat_id, file_path, "document", caption,
             file_name or os.path.basename(file_path),
         )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Send typing indicator via bridge."""
+        """通过桥接发送正在输入指示器。"""
         if not self._running or not self._http_session:
             return
         if await self._check_managed_bridge_exit():
@@ -797,10 +797,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 timeout=aiohttp.ClientTimeout(total=5)
             )
         except Exception:
-            pass  # Ignore typing indicator failures
+            pass  # 忽略输入指示器发送失败
     
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
-        """Get information about a WhatsApp chat."""
+        """获取 WhatsApp 聊天的信息。"""
         if not self._running or not self._http_session:
             return {"name": "Unknown", "type": "dm"}
         if await self._check_managed_bridge_exit():
@@ -826,7 +826,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         return {"name": chat_id, "type": "dm"}
     
     async def _poll_messages(self) -> None:
-        """Poll the bridge for incoming messages."""
+        """轮询桥接以获取传入的消息。"""
         import aiohttp
 
         while self._running:
@@ -857,15 +857,15 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 print(f"[{self.name}] Poll error: {e}")
                 await asyncio.sleep(5)
             
-            await asyncio.sleep(1)  # Poll interval
+            await asyncio.sleep(1)  # 轮询间隔
     
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
-        """Build a MessageEvent from bridge message data, downloading images to cache."""
+        """根据桥接消息数据构建 MessageEvent，并将图片下载到缓存。"""
         try:
             if not self._should_process_message(data):
                 return None
 
-            # Determine message type
+            # 判断消息类型
             msg_type = MessageType.TEXT
             if data.get("hasMedia"):
                 media_type = data.get("mediaType", "")
@@ -873,16 +873,16 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     msg_type = MessageType.PHOTO
                 elif "video" in media_type:
                     msg_type = MessageType.VIDEO
-                elif "audio" in media_type or "ptt" in media_type:  # ptt = voice note
+                elif "audio" in media_type or "ptt" in media_type:  # ptt = 语音消息
                     msg_type = MessageType.VOICE
                 else:
                     msg_type = MessageType.DOCUMENT
             
-            # Determine chat type
+            # 判断聊天类型
             is_group = data.get("isGroup", False)
             chat_type = "group" if is_group else "dm"
             
-            # Build source
+            # 构建来源信息
             source = self.build_source(
                 chat_id=data.get("chatId", ""),
                 chat_name=data.get("chatName"),
@@ -891,8 +891,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 user_name=data.get("senderName"),
             )
             
-            # Download media URLs to the local cache so agent tools
-            # can access them reliably regardless of URL expiration.
+            # 将媒体 URL 下载到本地缓存，使代理工具
+            # 无论 URL 是否过期都能可靠访问。
             raw_urls = data.get("mediaUrls", [])
             cached_urls = []
             media_types = []
@@ -908,7 +908,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         cached_urls.append(url)
                         media_types.append("image/jpeg")
                 elif msg_type == MessageType.PHOTO and os.path.isabs(url):
-                    # Local file path — bridge already downloaded the image
+                    # 本地文件路径 - 桥接已下载了图片
                     cached_urls.append(url)
                     media_types.append("image/jpeg")
                     print(f"[{self.name}] Using bridge-cached image: {url}", flush=True)
@@ -923,12 +923,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         cached_urls.append(url)
                         media_types.append("audio/ogg")
                 elif msg_type == MessageType.VOICE and os.path.isabs(url):
-                    # Local file path — bridge already downloaded the audio
+                    # 本地文件路径 - 桥接已下载了音频
                     cached_urls.append(url)
                     media_types.append("audio/ogg")
                     print(f"[{self.name}] Using bridge-cached audio: {url}", flush=True)
                 elif msg_type == MessageType.DOCUMENT and os.path.isabs(url):
-                    # Local file path — bridge already downloaded the document
+                    # 本地文件路径 - 桥接已下载了文档
                     cached_urls.append(url)
                     ext = Path(url).suffix.lower()
                     mime = SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")
@@ -942,9 +942,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     cached_urls.append(url)
                     media_types.append("unknown")
 
-            # For text-readable documents, inject file content directly into
-            # the message text so the agent can read it inline.
-            # Cap at 100KB to match Telegram/Discord/Slack behaviour.
+            # 对于文本可读的文档，将文件内容直接注入到
+            # 消息文本中，使代理可以内联读取。
+            # 限制为 100KB，与 Telegram/Discord/Slack 行为一致。
             body = data.get("body", "")
             if data.get("isGroup"):
                 body = self._clean_bot_mention_text(body, data)
@@ -960,7 +960,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                                 continue
                             content = Path(doc_path).read_text(errors="replace")
                             fname = Path(doc_path).name
-                            # Remove the doc_<hex>_ prefix for display
+                            # 移除 doc_<hex>_ 前缀用于显示
                             display_name = fname
                             if "_" in fname:
                                 parts = fname.split("_", 2)

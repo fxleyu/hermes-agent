@@ -1,19 +1,17 @@
-"""Context engine plugin discovery.
+"""上下文引擎插件发现模块。
 
-Scans ``plugins/context_engine/<name>/`` directories for context engine
-plugins.  Each subdirectory must contain ``__init__.py`` with a class
-implementing the ContextEngine ABC.
+扫描 ``plugins/context_engine/<name>/`` 目录以查找上下文引擎插件。
+每个子目录必须包含 ``__init__.py``，其中有一个实现了 ContextEngine 抽象基类的类。
 
-Context engines are separate from the general plugin system — they live
-in the repo and are always available without user installation.  Only ONE
-can be active at a time, selected via ``context.engine`` in config.yaml.
-The default engine is ``"compressor"`` (the built-in ContextCompressor).
+上下文引擎与通用插件系统分离 — 它们存放在代码仓库中，无需用户安装即可使用。
+同一时间只能激活一个引擎，通过 config.yaml 中的 ``context.engine`` 选项选择。
+默认引擎为 ``"compressor"``（内置的 ContextCompressor）。
 
-Usage:
+用法:
     from plugins.context_engine import discover_context_engines, load_context_engine
 
-    available = discover_context_engines()   # [(name, desc, available), ...]
-    engine = load_context_engine("lcm")      # ContextEngine instance
+    available = discover_context_engines()   # [(名称, 描述, 是否可用), ...]
+    engine = load_context_engine("lcm")      # ContextEngine 实例
 """
 
 from __future__ import annotations
@@ -31,24 +29,25 @@ _CONTEXT_ENGINE_PLUGINS_DIR = Path(__file__).parent
 
 
 def discover_context_engines() -> List[Tuple[str, str, bool]]:
-    """Scan plugins/context_engine/ for available engines.
+    """扫描 plugins/context_engine/ 目录以查找可用引擎。
 
-    Returns list of (name, description, is_available) tuples.
-    Does NOT import the engines — just reads plugin.yaml for metadata
-    and does a lightweight availability check.
+    返回 (名称, 描述, 是否可用) 元组的列表。
+    不会导入引擎模块 — 仅读取 plugin.yaml 获取元数据，
+    并进行轻量级的可用性检查。
     """
     results = []
     if not _CONTEXT_ENGINE_PLUGINS_DIR.is_dir():
         return results
 
     for child in sorted(_CONTEXT_ENGINE_PLUGINS_DIR.iterdir()):
+        # 跳过以下划线或点号开头的目录（私有目录/隐藏目录）
         if not child.is_dir() or child.name.startswith(("_", ".")):
             continue
         init_file = child / "__init__.py"
         if not init_file.exists():
             continue
 
-        # Read description from plugin.yaml if available
+        # 如果有 plugin.yaml，从中读取描述信息
         desc = ""
         yaml_file = child / "plugin.yaml"
         if yaml_file.exists():
@@ -60,7 +59,7 @@ def discover_context_engines() -> List[Tuple[str, str, bool]]:
             except Exception:
                 pass
 
-        # Quick availability check — try loading and calling is_available()
+        # 快速可用性检查 — 尝试加载并调用 is_available()
         available = True
         try:
             engine = _load_engine_from_dir(child)
@@ -77,9 +76,9 @@ def discover_context_engines() -> List[Tuple[str, str, bool]]:
 
 
 def load_context_engine(name: str) -> Optional["ContextEngine"]:
-    """Load and return a ContextEngine instance by name.
+    """根据名称加载并返回 ContextEngine 实例。
 
-    Returns None if the engine is not found or fails to load.
+    如果引擎未找到或加载失败，返回 None。
     """
     engine_dir = _CONTEXT_ENGINE_PLUGINS_DIR / name
     if not engine_dir.is_dir():
@@ -98,11 +97,11 @@ def load_context_engine(name: str) -> Optional["ContextEngine"]:
 
 
 def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
-    """Import an engine module and extract the ContextEngine instance.
+    """导入引擎模块并提取 ContextEngine 实例。
 
-    The module must have either:
-    - A register(ctx) function (plugin-style) — we simulate a ctx
-    - A top-level class that extends ContextEngine — we instantiate it
+    模块必须具有以下其一：
+    - register(ctx) 函数（插件风格）— 我们模拟一个 ctx 对象
+    - 继承 ContextEngine 的顶层类 — 我们将其实例化
     """
     name = engine_dir.name
     module_name = f"plugins.context_engine.{name}"
@@ -111,12 +110,12 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
     if not init_file.exists():
         return None
 
-    # Check if already loaded
+    # 检查是否已加载过该模块
     if module_name in sys.modules:
         mod = sys.modules[module_name]
     else:
-        # Handle relative imports within the plugin
-        # First ensure the parent packages are registered
+        # 处理插件内的相对导入
+        # 首先确保父包已注册到 sys.modules
         for parent in ("plugins", "plugins.context_engine"):
             if parent not in sys.modules:
                 parent_path = Path(__file__).parent
@@ -136,7 +135,7 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
                         except Exception:
                             pass
 
-        # Now load the engine module
+        # 现在加载引擎模块本身
         spec = importlib.util.spec_from_file_location(
             module_name, str(init_file),
             submodule_search_locations=[str(engine_dir)]
@@ -147,7 +146,7 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
         mod = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = mod
 
-        # Register submodules so relative imports work
+        # 注册子模块以便相对导入能正常工作
         for sub_file in engine_dir.glob("*.py"):
             if sub_file.name == "__init__.py":
                 continue
@@ -172,7 +171,7 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
             sys.modules.pop(module_name, None)
             return None
 
-    # Try register(ctx) pattern first (how plugins are written)
+    # 首先尝试 register(ctx) 模式（插件的标准编写方式）
     if hasattr(mod, "register"):
         collector = _EngineCollector()
         try:
@@ -182,7 +181,7 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
         except Exception as e:
             logger.debug("register() failed for %s: %s", name, e)
 
-    # Fallback: find a ContextEngine subclass and instantiate it
+    # 回退方案：查找 ContextEngine 子类并实例化
     from agent.context_engine import ContextEngine
     for attr_name in dir(mod):
         attr = getattr(mod, attr_name, None)
@@ -197,7 +196,7 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
 
 
 class _EngineCollector:
-    """Fake plugin context that captures register_context_engine calls."""
+    """模拟的插件上下文对象，用于捕获 register_context_engine 调用。"""
 
     def __init__(self):
         self.engine = None
@@ -205,7 +204,7 @@ class _EngineCollector:
     def register_context_engine(self, engine):
         self.engine = engine
 
-    # No-op for other registration methods
+    # 其他注册方法的空操作实现
     def register_tool(self, *args, **kwargs):
         pass
 

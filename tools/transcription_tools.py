@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-Transcription Tools Module
+转录工具模块
 
-Provides speech-to-text transcription with three providers:
+提供语音转文字转录功能，支持多种提供商：
 
-  - **local** (default, free) — faster-whisper running locally, no API key needed.
-    Auto-downloads the model (~150 MB for ``base``) on first use.
-  - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
-  - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
+  - **local**（默认，免费）—— 本地运行 faster-whisper，无需 API 密钥。
+    首次使用时自动下载模型（``base`` 约 150 MB）。
+  - **groq**（免费层级）—— Groq Whisper API，需要 ``GROQ_API_KEY``。
+  - **openai**（付费）—— OpenAI Whisper API，需要 ``VOICE_TOOLS_OPENAI_KEY``。
 
-Used by the messaging gateway to automatically transcribe voice messages
-sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
+由消息网关用于自动转录 Telegram、Discord、WhatsApp、Slack 和 Signal
+上用户发送的语音消息。
 
-Supported input formats: mp3, mp4, mpeg, mpga, m4a, wav, webm, ogg, aac
+支持的输入格式：mp3, mp4, mpeg, mpga, m4a, wav, webm, ogg, aac
 
-Usage::
+用法::
 
     from tools.transcription_tools import transcribe_audio
 
@@ -40,7 +40,7 @@ from tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_opena
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Optional imports — graceful degradation
+# 可选导入 —— 优雅降级
 # ---------------------------------------------------------------------------
 
 import importlib.util as _ilu
@@ -58,7 +58,7 @@ _HAS_OPENAI = _safe_find_spec("openai")
 _HAS_MISTRAL = _safe_find_spec("mistralai")
 
 # ---------------------------------------------------------------------------
-# Constants
+# 常量
 # ---------------------------------------------------------------------------
 
 DEFAULT_PROVIDER = "local"
@@ -78,22 +78,22 @@ SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", 
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
-# Known model sets for auto-correction
+# 已知模型集，用于自动修正
 OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}
 GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
 
-# Singleton for the local model — loaded once, reused across calls
+# 本地模型单例 —— 加载一次，跨调用复用
 _local_model: Optional[object] = None
 _local_model_name: Optional[str] = None
 
 # ---------------------------------------------------------------------------
-# Config helpers
+# 配置辅助函数
 # ---------------------------------------------------------------------------
 
 
 
 def _load_stt_config() -> dict:
-    """Load the ``stt`` section from user config, falling back to defaults."""
+    """从用户配置加载 ``stt`` 部分，回退到默认值。"""
     try:
         from hermes_cli.config import load_config
         return load_config().get("stt", {})
@@ -102,7 +102,7 @@ def _load_stt_config() -> dict:
 
 
 def is_stt_enabled(stt_config: Optional[dict] = None) -> bool:
-    """Return whether STT is enabled in config."""
+    """返回配置中 STT 是否已启用。"""
     if stt_config is None:
         stt_config = _load_stt_config()
     enabled = stt_config.get("enabled", True)
@@ -110,7 +110,7 @@ def is_stt_enabled(stt_config: Optional[dict] = None) -> bool:
 
 
 def _has_openai_audio_backend() -> bool:
-    """Return True when OpenAI audio can use config credentials, env credentials, or the managed gateway."""
+    """当 OpenAI 音频可使用配置凭证、环境变量凭证或托管网关时返回 True。"""
     try:
         _resolve_openai_audio_client_config()
         return True
@@ -119,7 +119,7 @@ def _has_openai_audio_backend() -> bool:
 
 
 def _find_binary(binary_name: str) -> Optional[str]:
-    """Find a local binary, checking common Homebrew/local prefixes as well as PATH."""
+    """查找本地二进制文件，同时检查常见的 Homebrew/本地前缀和 PATH。"""
     for directory in COMMON_LOCAL_BIN_DIRS:
         candidate = Path(directory) / binary_name
         if candidate.exists() and os.access(candidate, os.X_OK):
@@ -161,11 +161,11 @@ def _normalize_local_command_model(model_name: Optional[str]) -> str:
 
 
 def _get_provider(stt_config: dict) -> str:
-    """Determine which STT provider to use.
+    """确定使用哪个 STT 提供商。
 
-    When ``stt.provider`` is explicitly set in config, that choice is
-    honoured — no silent cloud fallback.  When no provider is configured,
-    auto-detect tries: local > groq (free) > openai (paid).
+    当在配置中明确设置 ``stt.provider`` 时，该选择会被尊重——
+    不会静默回退到云端。当未配置提供商时，
+    自动检测尝试：local > groq（免费）> openai（付费）。
     """
     if not is_stt_enabled(stt_config):
         return "none"
@@ -173,7 +173,7 @@ def _get_provider(stt_config: dict) -> str:
     explicit = "provider" in stt_config
     provider = stt_config.get("provider", DEFAULT_PROVIDER)
 
-    # --- Explicit provider: respect the user's choice ----------------------
+    # --- 明确提供商：尊重用户的选择 ----------------------
 
     if explicit:
         if provider == "local":
@@ -223,9 +223,9 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
-        return provider  # Unknown — let it fail downstream
+        return provider  # 未知 —— 让下游处理失败
 
-    # --- Auto-detect (no explicit provider): local > groq > openai > mistral -
+    # --- 自动检测（无明确提供商）：local > groq > openai > mistral -
 
     if _HAS_FASTER_WHISPER:
         return "local"
@@ -243,12 +243,12 @@ def _get_provider(stt_config: dict) -> str:
     return "none"
 
 # ---------------------------------------------------------------------------
-# Shared validation
+# 共享验证
 # ---------------------------------------------------------------------------
 
 
 def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
-    """Validate the audio file.  Returns an error dict or None if OK."""
+    """验证音频文件。返回错误字典或 None（表示正常）。"""
     audio_path = Path(file_path)
 
     if not audio_path.exists():

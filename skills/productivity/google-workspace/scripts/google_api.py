@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Google Workspace API CLI for Hermes Agent.
+"""Hermes Agent 的 Google Workspace API 命令行接口。
 
-Uses the Google Workspace CLI (`gws`) when available, but preserves the
-existing Hermes-facing JSON contract and falls back to the Python client
-libraries if `gws` is not installed.
+优先使用 Google Workspace CLI (`gws`)，同时保留现有的面向 Hermes 的 JSON 接口，
+如果未安装 `gws` 则回退到 Python 客户端库。
 
-Usage:
+用法:
   python google_api.py gmail search "is:unread" [--max 10]
   python google_api.py gmail get MESSAGE_ID
   python google_api.py gmail send --to user@example.com --subject "Hi" --body "Hello"
@@ -168,7 +167,7 @@ def _datetime_with_timezone(value: str) -> str:
 
 
 def get_credentials():
-    """Load and refresh credentials from token file."""
+    """从令牌文件加载并刷新凭据。"""
     _ensure_authenticated()
 
     from google.oauth2.credentials import Credentials
@@ -196,7 +195,7 @@ def build_service(api, version):
 
 
 # =========================================================================
-# Gmail
+# Gmail 邮件
 # =========================================================================
 
 
@@ -446,7 +445,7 @@ def gmail_modify(args):
 
 
 # =========================================================================
-# Calendar
+# 日历
 # =========================================================================
 
 
@@ -554,7 +553,7 @@ def calendar_delete(args):
 
 
 # =========================================================================
-# Drive
+# 云端硬盘
 # =========================================================================
 
 
@@ -581,7 +580,7 @@ def drive_search(args):
 
 
 # =========================================================================
-# Contacts
+# 联系人
 # =========================================================================
 
 
@@ -628,7 +627,7 @@ def contacts_list(args):
 
 
 # =========================================================================
-# Sheets
+# 电子表格
 # =========================================================================
 
 
@@ -702,7 +701,7 @@ def sheets_append(args):
 
 
 # =========================================================================
-# Docs
+# 文档
 # =========================================================================
 
 
@@ -728,7 +727,7 @@ def docs_get(args):
 
 
 # =========================================================================
-# CLI parser
+# 命令行解析器
 # =========================================================================
 
 
@@ -736,7 +735,7 @@ def main():
     parser = argparse.ArgumentParser(description="Google Workspace API for Hermes Agent")
     sub = parser.add_subparsers(dest="service", required=True)
 
-    # --- Gmail ---
+    # --- Gmail 邮件 ---
     gmail = sub.add_parser("gmail")
     gmail_sub = gmail.add_subparsers(dest="action", required=True)
 
@@ -774,7 +773,7 @@ def main():
     p.add_argument("--remove-labels", default="", help="Comma-separated label IDs to remove")
     p.set_defaults(func=gmail_modify)
 
-    # --- Calendar ---
+    # --- 日历 ---
     cal = sub.add_parser("calendar")
     cal_sub = cal.add_subparsers(dest="action", required=True)
 
@@ -800,7 +799,7 @@ def main():
     p.add_argument("--calendar", default="primary")
     p.set_defaults(func=calendar_delete)
 
-    # --- Drive ---
+    # --- 云端硬盘 ---
     drv = sub.add_parser("drive")
     drv_sub = drv.add_subparsers(dest="action", required=True)
 
@@ -810,7 +809,7 @@ def main():
     p.add_argument("--raw-query", action="store_true", help="Use query as raw Drive API query")
     p.set_defaults(func=drive_search)
 
-    # --- Contacts ---
+    # --- 联系人 ---
     con = sub.add_parser("contacts")
     con_sub = con.add_subparsers(dest="action", required=True)
 
@@ -818,7 +817,7 @@ def main():
     p.add_argument("--max", type=int, default=50)
     p.set_defaults(func=contacts_list)
 
-    # --- Sheets ---
+    # --- 电子表格 ---
     sh = sub.add_parser("sheets")
     sh_sub = sh.add_subparsers(dest="action", required=True)
 
@@ -839,7 +838,7 @@ def main():
     p.add_argument("--values", required=True, help="JSON array of arrays")
     p.set_defaults(func=sheets_append)
 
-    # --- Docs ---
+    # --- 文档 ---
     docs = sub.add_parser("docs")
     docs_sub = docs.add_subparsers(dest="action", required=True)
 

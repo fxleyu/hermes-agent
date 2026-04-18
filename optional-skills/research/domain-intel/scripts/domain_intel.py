@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Domain Intelligence — Passive OSINT via Python stdlib.
+域名情报 — 通过 Python 标准库进行被动 OSINT。
 
-Usage:
+用法:
     python domain_intel.py subdomains example.com
     python domain_intel.py ssl example.com
     python domain_intel.py whois example.com
@@ -10,8 +10,8 @@ Usage:
     python domain_intel.py available example.com
     python domain_intel.py bulk example.com github.com google.com --checks ssl,dns
 
-All output is structured JSON. No dependencies beyond Python stdlib.
-Works on Linux, macOS, and Windows.
+所有输出为结构化 JSON。无需 Python 标准库以外的依赖。
+支持 Linux、macOS 和 Windows。
 """
 
 import json
@@ -25,10 +25,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 
-# ─── Subdomain Discovery (crt.sh) ──────────────────────────────────────────
+# ─── 子域名发现 (crt.sh) ──────────────────────────────────────────
 
 def subdomains(domain, include_expired=False, limit=200):
-    """Find subdomains via Certificate Transparency logs."""
+    """通过证书透明度日志查找子域名。"""
     url = f"https://crt.sh/?q=%25.{urllib.parse.quote(domain)}&output=json"
     req = urllib.request.Request(url, headers={
         "User-Agent": "domain-intel-skill/1.0", "Accept": "application/json",
@@ -61,10 +61,10 @@ def subdomains(domain, include_expired=False, limit=200):
     return {"domain": domain, "count": min(len(results), limit), "subdomains": results[:limit]}
 
 
-# ─── SSL Certificate Inspection ────────────────────────────────────────────
+# ─── SSL 证书检查 ────────────────────────────────────────────
 
 def check_ssl(host, port=443, timeout=10):
-    """Inspect the TLS certificate of a host."""
+    """检查主机的 TLS 证书。"""
     def flat(rdns):
         r = {}
         for rdn in rdns:
@@ -125,7 +125,7 @@ def check_ssl(host, port=443, timeout=10):
     }
 
 
-# ─── WHOIS Lookup ──────────────────────────────────────────────────────────
+# ─── WHOIS 查询 ──────────────────────────────────────────────────────────
 
 WHOIS_SERVERS = {
     "com": "whois.verisign-grs.com", "net": "whois.verisign-grs.com",
@@ -153,7 +153,7 @@ WHOIS_SERVERS = {
 
 
 def whois_lookup(domain):
-    """Query WHOIS servers for domain registration info."""
+    """通过 WHOIS 服务器查询域名注册信息。"""
     parts = domain.split(".")
     server = WHOIS_SERVERS.get(".".join(parts[-2:])) or WHOIS_SERVERS.get(parts[-1])
     if not server:
@@ -206,10 +206,10 @@ def whois_lookup(domain):
     return result
 
 
-# ─── DNS Records ───────────────────────────────────────────────────────────
+# ─── DNS 记录 ───────────────────────────────────────────────────────────
 
 def dns_records(domain, types=None):
-    """Resolve DNS records using system DNS + Google DoH."""
+    """使用系统 DNS + Google DoH 解析 DNS 记录。"""
     if not types:
         types = ["A", "AAAA", "MX", "NS", "TXT", "CNAME"]
     records = {}
@@ -245,10 +245,10 @@ def dns_records(domain, types=None):
     return {"domain": domain, "records": records}
 
 
-# ─── Domain Availability Check ─────────────────────────────────────────────
+# ─── 域名可用性检查 ─────────────────────────────────────────────
 
 def check_available(domain):
-    """Check domain availability using passive signals (DNS + WHOIS + SSL)."""
+    """通过被动信号（DNS + WHOIS + SSL）检查域名可用性。"""
     signals = {}
 
     # DNS
@@ -324,7 +324,7 @@ def check_available(domain):
     return {"domain": domain, "verdict": verdict, "confidence": conf, "signals": signals}
 
 
-# ─── Bulk Analysis ─────────────────────────────────────────────────────────
+# ─── 批量分析 ─────────────────────────────────────────────────────────
 
 COMMAND_MAP = {
     "subdomains": subdomains,
@@ -336,7 +336,7 @@ COMMAND_MAP = {
 
 
 def bulk_check(domains, checks=None, max_workers=5):
-    """Run multiple checks across multiple domains in parallel."""
+    """对多个域名并行执行多项检查。"""
     if not checks:
         checks = ["ssl", "whois", "dns"]
 
@@ -360,7 +360,7 @@ def bulk_check(domains, checks=None, max_workers=5):
     return {"total": len(results), "checks": checks, "results": results}
 
 
-# ─── CLI Entry Point ───────────────────────────────────────────────────────
+# ─── 命令行入口 ───────────────────────────────────────────────────────
 
 def main():
     if len(sys.argv) < 3:

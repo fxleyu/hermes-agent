@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Skills Hub CLI — Unified interface for the Hermes Skills Hub.
+Skills Hub CLI —— Hermes 技能中心的统一接口。
 
-Powers both:
-  - `hermes skills <subcommand>` (CLI argparse entry point)
-  - `/skills <subcommand>` (slash command in the interactive chat)
+同时为以下两种调用方式提供支持：
+  - `hermes skills <subcommand>`（CLI argparse 入口点）
+  - `/skills <subcommand>`（交互式聊天中的斜杠命令）
 
-All logic lives in shared do_* functions. The CLI entry point and slash command
-handler are thin wrappers that parse args and delegate.
+所有逻辑都存在于共享的 do_* 函数中。CLI 入口点和斜杠命令
+处理程序是薄包装器，负责解析参数并委托给相应函数。
 """
 
 import json
@@ -19,23 +19,23 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-# Lazy imports to avoid circular dependencies and slow startup.
-# tools.skills_hub and tools.skills_guard are imported inside functions.
+# 延迟导入以避免循环依赖和启动缓慢。
+# tools.skills_hub 和 tools.skills_guard 在函数内部导入。
 from hermes_constants import display_hermes_home
 
 _console = Console()
 
 
 # ---------------------------------------------------------------------------
-# Shared do_* functions
+# 共享的 do_* 函数
 # ---------------------------------------------------------------------------
 
 def _resolve_short_name(name: str, sources, console: Console) -> str:
     """
-    Resolve a short skill name (e.g. 'pptx') to a full identifier by searching
-    all sources. If exactly one match is found, returns its identifier. If multiple
-    matches exist, shows them and asks the user to use the full identifier.
-    Returns empty string if nothing found or ambiguous.
+    将简短技能名称（例如 'pptx'）解析为完整标识符，方法是搜索所有来源。
+    如果找到恰好一个匹配项，返回其标识符。如果存在多个匹配项，
+    显示它们并要求用户使用完整标识符。
+    如果未找到或存在歧义，返回空字符串。
     """
     from tools.skills_hub import unified_search
 
@@ -44,7 +44,7 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
 
     results = unified_search(name, sources, source_filter="all", limit=20)
 
-    # Filter to exact name matches (case-insensitive)
+    # 过滤出精确名称匹配（不区分大小写）
     exact = [r for r in results if r.name.lower() == name.lower()]
 
     if len(exact) == 1:
@@ -65,6 +65,7 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
         c.print("[bold]Use the full identifier to install a specific one.[/]\n")
         return ""
 
+    # 没有精确匹配——检查是否有部分匹配可以建议
     # No exact match — check if there are partial matches to suggest
     if results:
         c.print(f"[yellow]No exact match for '{name}'. Did you mean one of these?[/]")
@@ -106,7 +107,7 @@ def _format_extra_metadata_lines(extra: Dict[str, Any]) -> list[str]:
 
 
 def _resolve_source_meta_and_bundle(identifier: str, sources):
-    """Resolve metadata and bundle for a specific identifier."""
+    """为指定标识符解析元数据和包。"""
     meta = None
     bundle = None
     matched_source = None
@@ -143,7 +144,7 @@ def _derive_category_from_install_path(install_path: str) -> str:
 
 def do_search(query: str, source: str = "all", limit: int = 10,
               console: Optional[Console] = None) -> None:
-    """Search registries and display results as a Rich table."""
+    """搜索注册表并将结果显示为 Rich 表格。"""
     from tools.skills_hub import GitHubAuth, create_source_router, unified_search
 
     c = console or _console
@@ -183,14 +184,15 @@ def do_search(query: str, source: str = "all", limit: int = 10,
 
 def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
               console: Optional[Console] = None) -> None:
-    """Browse all available skills across registries, paginated.
+    """浏览所有注册表中可用的技能，带分页功能。
 
-    Official skills are always shown first, regardless of source filter.
+    官方技能始终优先显示，无论来源过滤器如何设置。
     """
     from tools.skills_hub import (
         GitHubAuth, create_source_router, parallel_search_sources,
     )
 
+    # 将 page_size 限制在安全范围内
     # Clamp page_size to safe range
     page_size = max(1, min(page_size, 100))
 
@@ -199,6 +201,8 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     auth = GitHubAuth()
     sources = create_source_router(auth)
 
+    # 从所有（或过滤的）来源并行收集结果。
+    # 每个来源的限制较宽松——并行 + 30 秒超时上限可防止挂起。
     # Collect results from all (or filtered) sources in parallel.
     # Per-source limits are generous — parallelism + 30s timeout cap prevents hangs.
     _TRUST_RANK = {"builtin": 3, "trusted": 2, "community": 1}
@@ -221,6 +225,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
         c.print("[dim]No skills found in the Skills Hub.[/]\n")
         return
 
+    # 按名称去重，优先保留信任级别更高的
     # Deduplicate by name, preferring higher trust
     seen: dict = {}
     for r in all_results:
@@ -229,6 +234,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
             seen[r.name] = r
     deduped = list(seen.values())
 
+    # 排序：官方优先，然后按信任级别降序，最后按字母排序
     # Sort: official first, then by trust level (desc), then alphabetically
     deduped.sort(key=lambda r: (
         -_TRUST_RANK.get(r.trust_level, 0),
@@ -236,6 +242,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
         r.name.lower(),
     ))
 
+    # 分页
     # Paginate
     total = len(deduped)
     total_pages = max(1, (total + page_size - 1) // page_size)
@@ -244,9 +251,11 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     end = min(start + page_size, total)
     page_items = deduped[start:end]
 
+    # 统计官方与其他来源的数量
     # Count official vs other
     official_count = sum(1 for r in deduped if r.source == "official")
 
+    # 构建表头
     # Build header
     source_label = f"— {source}" if source != "all" else "— all sources"
     loaded_label = f"{total} skills loaded"
@@ -258,6 +267,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
         c.print(f"[bright_cyan]★ {official_count} official optional skill(s) from Nous Research[/]")
     c.print()
 
+    # 构建表格
     # Build table
     table = Table(show_header=True, header_style="bold")
     table.add_column("#", style="dim", width=4, justify="right")
@@ -285,6 +295,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
 
     c.print(table)
 
+    # 导航提示
     # Navigation hints
     nav_parts = []
     if page > 1:
@@ -295,6 +306,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     if nav_parts:
         c.print(f"  {' | '.join(nav_parts)}")
 
+    # 来源摘要
     # Source summary
     if source == "all" and source_counts:
         parts = [f"{sid}: {ct}" for sid, ct in sorted(source_counts.items())]
@@ -310,7 +322,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True) -> None:
-    """Fetch, quarantine, scan, confirm, and install a skill."""
+    """获取、隔离、扫描、确认并安装一个技能。"""
     from tools.skills_hub import (
         GitHubAuth, create_source_router, ensure_hub_dirs,
         quarantine_bundle, install_from_quarantine, HubLockFile,
@@ -320,10 +332,12 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     c = console or _console
     ensure_hub_dirs()
 
+    # 解析由哪个来源适配器处理此标识符
     # Resolve which source adapter handles this identifier
     auth = GitHubAuth()
     sources = create_source_router(auth)
 
+    # 如果标识符看起来像简短名称（不含斜杠），则通过搜索解析
     # If identifier looks like a short name (no slashes), resolve it via search
     if "/" not in identifier:
         identifier = _resolve_short_name(identifier, sources, c)
@@ -335,6 +349,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
 
     if not bundle:
+        # 检查是否有来源触发了 GitHub API 速率限制
         # Check if any source hit GitHub API rate limit
         rate_limited = any(
             getattr(src, "is_rate_limited", False)
@@ -354,12 +369,14 @@ def do_install(identifier: str, category: str = "", force: bool = False,
             c.print()
         return
 
+    # 自动检测官方技能的分类（例如 "official/autonomous-ai-agents/blackbox"）
     # Auto-detect category for official skills (e.g. "official/autonomous-ai-agents/blackbox")
     if bundle.source == "official" and not category:
         id_parts = bundle.identifier.split("/")  # ["official", "category", "skill"]
         if len(id_parts) >= 3:
             category = id_parts[1]
 
+    # 检查是否已安装
     # Check if already installed
     lock = HubLockFile()
     existing = lock.get_installed(bundle.name)
@@ -372,6 +389,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     extra_metadata = dict(getattr(meta, "extra", {}) or {})
     extra_metadata.update(getattr(bundle, "metadata", {}) or {})
 
+    # 隔离包
     # Quarantine the bundle
     try:
         q_path = quarantine_bundle(bundle)
@@ -383,12 +401,14 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         return
     c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parent.parent.parent)}[/]")
 
+    # 扫描
     # Scan
     c.print("[bold]Running security scan...[/]")
     scan_source = getattr(bundle, "identifier", "") or getattr(meta, "identifier", "") or identifier
     result = scan_skill(q_path, source=scan_source)
     c.print(format_scan_report(result))
 
+    # 检查安装策略
     # Check install policy
     allowed, reason = should_allow_install(result, force=force)
     if not allowed:
@@ -406,6 +426,8 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         if metadata_lines:
             c.print(Panel("\n".join(metadata_lines), title="Upstream Metadata", border_style="blue"))
 
+    # 与用户确认——根据来源显示相应的警告
+    # skip_confirm 跳过提示（TUI 模式中 input() 会挂起时需要）
     # Confirm with user — show appropriate warning based on source
     # skip_confirm bypasses the prompt (needed in TUI mode where input() hangs)
     if not force and not skip_confirm:
@@ -439,7 +461,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
             shutil.rmtree(q_path, ignore_errors=True)
             return
 
-    # Install
+    # 安装
     try:
         install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
     except ValueError as exc:
@@ -454,6 +476,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
 
     if invalidate_cache:
+        # 使技能提示缓存失效，以便新技能立即可见
         # Invalidate the skills prompt cache so the new skill appears immediately
         try:
             from agent.prompt_builder import clear_skills_system_prompt_cache
@@ -466,7 +489,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
 
 def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
-    """Preview a skill's SKILL.md content without installing."""
+    """预览技能的 SKILL.md 内容，无需安装。"""
     from tools.skills_hub import GitHubAuth, create_source_router
 
     c = console or _console
@@ -505,6 +528,7 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
         content = bundle.files["SKILL.md"]
         if isinstance(content, bytes):
             content = content.decode("utf-8", errors="replace")
+        # 显示前 50 行作为预览
         # Show first 50 lines as preview
         lines = content.split("\n")
         preview = "\n".join(lines[:50])
@@ -516,7 +540,7 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
 
 
 def do_list(source_filter: str = "all", console: Optional[Console] = None) -> None:
-    """List installed skills, distinguishing hub, builtin, and local skills."""
+    """列出已安装的技能，区分 hub、内置和本地技能。"""
     from tools.skills_hub import HubLockFile, ensure_hub_dirs
     from tools.skills_sync import _read_manifest
     from tools.skills_tool import _find_all_skills
@@ -574,7 +598,7 @@ def do_list(source_filter: str = "all", console: Optional[Console] = None) -> No
 
 
 def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> None:
-    """Check hub-installed skills for upstream updates."""
+    """检查 hub 安装的技能是否有上游更新。"""
     from tools.skills_hub import check_for_skill_updates
 
     c = console or _console
@@ -597,7 +621,7 @@ def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> N
 
 
 def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> None:
-    """Update hub-installed skills with upstream changes."""
+    """用上游更改更新 hub 安装的技能。"""
     from tools.skills_hub import HubLockFile, check_for_skill_updates
 
     c = console or _console
@@ -617,7 +641,7 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
 
 
 def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> None:
-    """Re-run security scan on installed hub skills."""
+    """对已安装的 hub 技能重新运行安全扫描。"""
     from tools.skills_hub import HubLockFile, SKILLS_DIR
     from tools.skills_guard import scan_skill, format_scan_report
 
@@ -652,12 +676,12 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> N
 def do_uninstall(name: str, console: Optional[Console] = None,
                  skip_confirm: bool = False,
                  invalidate_cache: bool = True) -> None:
-    """Remove a hub-installed skill with confirmation."""
+    """带确认的卸载 hub 安装的技能。"""
     from tools.skills_hub import uninstall_skill
 
     c = console or _console
 
-    # skip_confirm bypasses the prompt (needed in TUI mode where input() hangs)
+    # skip_confirm 跳过提示（TUI 模式中 input() 会挂起时需要）
     if not skip_confirm:
         c.print(f"\n[bold]Uninstall '{name}'?[/]")
         try:
@@ -688,7 +712,7 @@ def do_reset(name: str, restore: bool = False,
              console: Optional[Console] = None,
              skip_confirm: bool = False,
              invalidate_cache: bool = True) -> None:
-    """Reset a bundled skill's manifest tracking (+ optionally restore from bundled)."""
+    """重置内置技能的清单跟踪（并可选择从内置版本恢复）。"""
     from tools.skills_sync import reset_bundled_skill
 
     c = console or _console
@@ -730,7 +754,7 @@ def do_reset(name: str, restore: bool = False,
 
 
 def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> None:
-    """Manage taps (custom GitHub repo sources)."""
+    """管理 tap（自定义 GitHub 仓库来源）。"""
     from tools.skills_hub import TapsManager
 
     c = console or _console
@@ -774,13 +798,14 @@ def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> No
 
 def do_publish(skill_path: str, target: str = "github", repo: str = "",
                console: Optional[Console] = None) -> None:
-    """Publish a local skill to a registry (GitHub PR or ClawHub submission)."""
+    """将本地技能发布到注册表（GitHub PR 或 ClawHub 提交）。"""
     from tools.skills_hub import GitHubAuth, SKILLS_DIR
     from tools.skills_guard import scan_skill, format_scan_report
 
     c = console or _console
     path = Path(skill_path)
 
+    # 如果不是绝对路径，相对于技能目录解析
     # Resolve relative to skills dir if not absolute
     if not path.is_absolute():
         path = SKILLS_DIR / path
@@ -788,6 +813,7 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
         c.print(f"[bold red]Error:[/] No SKILL.md found at {path}\n")
         return
 
+    # 验证技能
     # Validate the skill
     import yaml
     skill_md = (path / "SKILL.md").read_text(encoding="utf-8")
@@ -807,6 +833,7 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
         c.print("[bold red]Error:[/] SKILL.md must have a 'description' in frontmatter.\n")
         return
 
+    # 发布前自我扫描
     # Self-scan before publishing
     c.print(f"[bold]Scanning '{name}' before publish...[/]")
     result = scan_skill(path, source="self")
@@ -843,12 +870,12 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
 
 def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
                     auth) -> tuple:
-    """Create a PR to a GitHub repo with the skill. Returns (success, message)."""
+    """通过创建 PR 将技能发布到 GitHub 仓库。返回 (success, message)。"""
     import httpx
 
     headers = auth.get_headers()
 
-    # 1. Fork the repo
+    # 1. Fork 仓库
     try:
         resp = httpx.post(
             f"https://api.github.com/repos/{target_repo}/forks",
@@ -864,7 +891,7 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
     except httpx.HTTPError as e:
         return False, f"Network error forking repo: {e}"
 
-    # 2. Get default branch
+    # 2. 获取默认分支
     try:
         resp = httpx.get(
             f"https://api.github.com/repos/{target_repo}",
@@ -874,7 +901,7 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
     except Exception:
         default_branch = "main"
 
-    # 3. Get the base tree SHA
+    # 3. 获取基础树 SHA
     try:
         resp = httpx.get(
             f"https://api.github.com/repos/{fork_repo}/git/refs/heads/{default_branch}",
@@ -884,7 +911,7 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
     except Exception as e:
         return False, f"Failed to get base branch: {e}"
 
-    # 4. Create a new branch
+    # 4. 创建新分支
     branch_name = f"add-skill-{skill_name}"
     try:
         httpx.post(
@@ -895,7 +922,7 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
     except Exception as e:
         return False, f"Failed to create branch: {e}"
 
-    # 5. Upload skill files
+    # 5. 上传技能文件
     for f in skill_path.rglob("*"):
         if not f.is_file():
             continue
@@ -916,7 +943,7 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
         except Exception as e:
             return False, f"Failed to upload {rel}: {e}"
 
-    # 6. Create PR
+    # 6. 创建 PR
     try:
         resp = httpx.post(
             f"https://api.github.com/repos/{target_repo}/pulls",
@@ -939,7 +966,7 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
 
 
 def do_snapshot_export(output_path: str, console: Optional[Console] = None) -> None:
-    """Export current hub skill configuration to a portable JSON file."""
+    """将当前 hub 技能配置导出为可移植的 JSON 文件。"""
     from tools.skills_hub import HubLockFile, TapsManager
 
     c = console or _console
@@ -980,7 +1007,7 @@ def do_snapshot_export(output_path: str, console: Optional[Console] = None) -> N
 
 def do_snapshot_import(input_path: str, force: bool = False,
                        console: Optional[Console] = None) -> None:
-    """Re-install skills from a snapshot file."""
+    """从快照文件重新安装技能。"""
     from tools.skills_hub import TapsManager
 
     c = console or _console
@@ -995,6 +1022,7 @@ def do_snapshot_import(input_path: str, force: bool = False,
         c.print(f"[bold red]Error:[/] Invalid JSON in {inp}\n")
         return
 
+    # 先恢复 tap
     # Restore taps first
     taps = snapshot.get("taps", [])
     if taps:
@@ -1005,6 +1033,7 @@ def do_snapshot_import(input_path: str, force: bool = False,
                 mgr.add(repo, tap.get("path", "skills/"))
         c.print(f"[dim]Restored {len(taps)} tap(s)[/]")
 
+    # 安装技能
     # Install skills
     skills = snapshot.get("skills", [])
     if not skills:
@@ -1026,11 +1055,11 @@ def do_snapshot_import(input_path: str, force: bool = False,
 
 
 # ---------------------------------------------------------------------------
-# CLI argparse entry point
+# CLI argparse 入口点
 # ---------------------------------------------------------------------------
 
 def skills_command(args) -> None:
-    """Router for `hermes skills <subcommand>` — called from hermes_cli/main.py."""
+    """`hermes skills <subcommand>` 的路由器——由 hermes_cli/main.py 调用。"""
     action = getattr(args, "skills_action", None)
 
     if action == "browse":
@@ -1082,14 +1111,14 @@ def skills_command(args) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Slash command entry point (/skills in chat)
+# 斜杠命令入口点（聊天中的 /skills）
 # ---------------------------------------------------------------------------
 
 def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
     """
-    Parse and dispatch `/skills <subcommand> [args]` from the chat interface.
+    解析并分发聊天界面中的 `/skills <subcommand> [args]`。
 
-    Examples:
+    示例：
         /skills search kubernetes
         /skills install openai/skills/skill-creator
         /skills install openai/skills/skill-creator --force
@@ -1108,6 +1137,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
     c = console or _console
     parts = cmd.strip().split()
 
+    # 如果存在，去除开头的 "/skills"
     # Strip the leading "/skills" if present
     if parts and parts[0].lower() == "/skills":
         parts = parts[1:]
@@ -1173,10 +1203,14 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
             return
         identifier = args[0]
         category = ""
+        # 斜杠命令在 prompt_toolkit 内运行，input() 会挂起。
+        # 始终跳过确认——用户输入命令即为隐式同意。
         # Slash commands run inside prompt_toolkit where input() hangs.
         # Always skip confirmation — the user typing the command is implicit consent.
         skip_confirm = True
         force = "--force" in args
+        # --now 立即使提示缓存失效（花费更多费用）。
+        # 默认：推迟到下一个会话以保留缓存。
         # --now invalidates prompt cache immediately (costs more money).
         # Default: defer to next session to preserve cache.
         invalidate_cache = "--now" in args
@@ -1217,6 +1251,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         if not args:
             c.print("[bold red]Usage:[/] /skills uninstall <name> [--now]\n")
             return
+        # 斜杠命令在 prompt_toolkit 内运行，input() 会挂起。
         # Slash commands run inside prompt_toolkit where input() hangs.
         skip_confirm = True
         invalidate_cache = "--now" in args
@@ -1232,6 +1267,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         name = args[0]
         restore = "--restore" in args
         invalidate_cache = "--now" in args
+        # 斜杠命令无法弹出提示——在斜杠模式下 --restore 为隐式同意。
         # Slash commands can't prompt — --restore in slash mode is implicit consent.
         do_reset(name, restore=restore, console=c, skip_confirm=True,
                  invalidate_cache=invalidate_cache)
@@ -1280,7 +1316,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
 
 def _print_skills_help(console: Console) -> None:
-    """Print help for the /skills slash command."""
+    """打印 /skills 斜杠命令的帮助信息。"""
     console.print(Panel(
         "[bold]Skills Hub Commands:[/]\n\n"
         "  [cyan]browse[/] [--source official]   Browse all available skills (paginated)\n"

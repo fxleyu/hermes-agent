@@ -1,13 +1,13 @@
-"""hermes webhook — manage dynamic webhook subscriptions from the CLI.
+"""hermes webhook —— 从 CLI 管理动态 webhook 订阅。
 
-Usage:
+用法:
     hermes webhook subscribe <name> [options]
     hermes webhook list
     hermes webhook remove <name>
     hermes webhook test <name> [--payload '{"key": "value"}']
 
-Subscriptions persist to ~/.hermes/webhook_subscriptions.json and are
-hot-reloaded by the webhook adapter without a gateway restart.
+订阅持久化到 ~/.hermes/webhook_subscriptions.json，
+webhook 适配器会热加载这些订阅，无需重启网关。
 """
 
 import json
@@ -25,15 +25,18 @@ _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
 
 
 def _hermes_home() -> Path:
+    """获取 Hermes 主目录路径。"""
     from hermes_constants import get_hermes_home
     return get_hermes_home()
 
 
 def _subscriptions_path() -> Path:
+    """获取订阅配置文件的路径。"""
     return _hermes_home() / _SUBSCRIPTIONS_FILENAME
 
 
 def _load_subscriptions() -> Dict[str, dict]:
+    """从文件中加载所有 webhook 订阅。"""
     path = _subscriptions_path()
     if not path.exists():
         return {}
@@ -45,6 +48,7 @@ def _load_subscriptions() -> Dict[str, dict]:
 
 
 def _save_subscriptions(subs: Dict[str, dict]) -> None:
+    """将 webhook 订阅保存到文件（使用临时文件 + 原子替换确保安全）。"""
     path = _subscriptions_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(".tmp")
@@ -56,7 +60,7 @@ def _save_subscriptions(subs: Dict[str, dict]) -> None:
 
 
 def _get_webhook_config() -> dict:
-    """Load webhook platform config. Returns {} if not configured."""
+    """加载 webhook 平台配置。未配置时返回 {}。"""
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
@@ -66,18 +70,22 @@ def _get_webhook_config() -> dict:
 
 
 def _is_webhook_enabled() -> bool:
+    """检查 webhook 平台是否已启用。"""
     return bool(_get_webhook_config().get("enabled"))
 
 
 def _get_webhook_base_url() -> str:
+    """获取 webhook 服务的基础 URL。"""
     wh = _get_webhook_config().get("extra", {})
     host = wh.get("host", "0.0.0.0")
     port = wh.get("port", 8644)
+    # 将 0.0.0.0 显示为 localhost 更加友好
     display_host = "localhost" if host == "0.0.0.0" else host
     return f"http://{display_host}:{port}"
 
 
 def _setup_hint() -> str:
+    """返回 webhook 设置指南文本。"""
     _dhh = display_hermes_home()
     return f"""
   Webhook platform is not enabled. To set it up:
@@ -104,7 +112,7 @@ def _setup_hint() -> str:
 
 
 def _require_webhook_enabled() -> bool:
-    """Check webhook is enabled. Print setup guide and return False if not."""
+    """检查 webhook 是否已启用。未启用时打印设置指南并返回 False。"""
     if _is_webhook_enabled():
         return True
     print(_setup_hint())
@@ -112,7 +120,7 @@ def _require_webhook_enabled() -> bool:
 
 
 def webhook_command(args):
-    """Entry point for 'hermes webhook' subcommand."""
+    """'hermes webhook' 子命令的入口点。"""
     sub = getattr(args, "webhook_action", None)
 
     if not sub:
@@ -123,6 +131,7 @@ def webhook_command(args):
     if not _require_webhook_enabled():
         return
 
+    # 根据子命令分发到对应的处理函数
     if sub in ("subscribe", "add"):
         _cmd_subscribe(args)
     elif sub in ("list", "ls"):
@@ -134,6 +143,8 @@ def webhook_command(args):
 
 
 def _cmd_subscribe(args):
+    """创建或更新一个 webhook 订阅。"""
+    # 将名称标准化为小写、连字符格式
     name = args.name.strip().lower().replace(" ", "-")
     if not re.match(r'^[a-z0-9][a-z0-9_-]*$', name):
         print(f"Error: Invalid name '{name}'. Use lowercase alphanumeric with hyphens/underscores.")
@@ -142,9 +153,11 @@ def _cmd_subscribe(args):
     subs = _load_subscriptions()
     is_update = name in subs
 
+    # 如果未提供密钥，则自动生成一个安全的随机密钥
     secret = args.secret or secrets.token_urlsafe(32)
     events = [e.strip() for e in args.events.split(",")] if args.events else []
 
+    # 构建订阅路由配置
     route = {
         "description": args.description or f"Agent-created subscription: {name}",
         "events": events,
@@ -181,6 +194,7 @@ def _cmd_subscribe(args):
 
 
 def _cmd_list(args):
+    """列出所有动态 webhook 订阅。"""
     subs = _load_subscriptions()
     if not subs:
         print("  No dynamic webhook subscriptions.")
@@ -203,6 +217,7 @@ def _cmd_list(args):
 
 
 def _cmd_remove(args):
+    """删除一个 webhook 订阅。"""
     name = args.name.strip().lower()
     subs = _load_subscriptions()
 
@@ -217,7 +232,7 @@ def _cmd_remove(args):
 
 
 def _cmd_test(args):
-    """Send a test POST to a webhook route."""
+    """向 webhook 路由发送测试 POST 请求。"""
     name = args.name.strip().lower()
     subs = _load_subscriptions()
 
@@ -232,6 +247,7 @@ def _cmd_test(args):
 
     payload = args.payload or '{"test": true, "event_type": "test", "message": "Hello from hermes webhook test"}'
 
+    # 使用 HMAC-SHA256 生成签名用于请求验证
     import hmac
     import hashlib
     sig = "sha256=" + hmac.new(

@@ -1,22 +1,22 @@
-"""Per-platform display/verbosity configuration resolver.
+"""各平台显示/详细程度配置解析器。
 
-Provides ``resolve_display_setting()`` — the single entry-point for reading
-display settings with platform-specific overrides and sensible defaults.
+提供 ``resolve_display_setting()`` — 读取显示设置的唯一入口点，
+支持平台特定覆盖和合理的默认值。
 
-Resolution order (first non-None wins):
-    1. ``display.platforms.<platform>.<key>``  — explicit per-platform user override
-    2. ``display.<key>``                       — global user setting
-    3. ``_PLATFORM_DEFAULTS[<platform>][<key>]``  — built-in sensible default
-    4. ``_GLOBAL_DEFAULTS[<key>]``              — built-in global default
+解析顺序（第一个非 None 值生效）：
+    1. ``display.platforms.<platform>.<key>``  — 显式的平台级用户覆盖
+    2. ``display.<key>``                       — 全局用户设置
+    3. ``_PLATFORM_DEFAULTS[<platform>][<key>]``  — 内置的合理默认值
+    4. ``_GLOBAL_DEFAULTS[<key>]``              — 内置的全局默认值
 
-Exception: ``display.streaming`` is CLI-only.  Gateway streaming follows the
-top-level ``streaming`` config unless ``display.platforms.<platform>.streaming``
-sets an explicit per-platform override.
+例外：``display.streaming`` 仅限 CLI。网关的流式传输遵循
+顶级 ``streaming`` 配置，除非 ``display.platforms.<platform>.streaming``
+设置了显式的平台级覆盖。
 
-Backward compatibility: ``display.tool_progress_overrides`` is still read as a
-fallback for ``tool_progress`` when no ``display.platforms`` entry exists.  A
-config migration (version bump) automatically moves the old format into the new
-``display.platforms`` structure.
+向后兼容：当不存在 ``display.platforms`` 条目时，
+``display.tool_progress_overrides`` 仍作为 ``tool_progress`` 的后备读取。
+配置迁移（版本升级）会自动将旧格式移入新的
+``display.platforms`` 结构。
 """
 
 from __future__ import annotations
@@ -24,26 +24,26 @@ from __future__ import annotations
 from typing import Any
 
 # ---------------------------------------------------------------------------
-# Overrideable display settings and their global defaults
+# 可覆盖的显示设置及其全局默认值
 # ---------------------------------------------------------------------------
-# These are the settings that can be configured per-platform.
-# Other display settings (compact, personality, skin, etc.) are CLI-only
-# and don't participate in per-platform resolution.
+# 这些是可以按平台配置的设置。
+# 其他显示设置（compact、personality、skin 等）仅限 CLI，
+# 不参与平台级解析。
 
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
     "show_reasoning": False,
     "tool_preview_length": 0,
-    "streaming": None,  # None = follow top-level streaming config
+    "streaming": None,  # None = 跟随顶级 streaming 配置
 }
 
 # ---------------------------------------------------------------------------
-# Sensible per-platform defaults — tiered by platform capability
+# 各平台合理的默认值 — 按平台能力分层
 # ---------------------------------------------------------------------------
-# Tier 1 (high): Supports message editing, typically personal/team use
-# Tier 2 (medium): Supports editing but often workspace/customer-facing
-# Tier 3 (low): No edit support — each progress msg is permanent
-# Tier 4 (minimal): Batch/non-interactive delivery
+# 第 1 层（高）：支持消息编辑，通常用于个人/团队
+# 第 2 层（中）：支持编辑但通常面向工作区/客户
+# 第 3 层（低）：不支持编辑 — 每条进度消息都是永久的
+# 第 4 层（最低）：批量/非交互式投递
 
 _TIER_HIGH = {
     "tool_progress": "all",
@@ -78,22 +78,22 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "telegram":    _TIER_HIGH,
     "discord":     _TIER_HIGH,
 
-    # Tier 2 — edit support, often customer/workspace channels
+    # 第 2 层 — 编辑支持，通常是客户/工作区频道
     "slack":           _TIER_MEDIUM,
     "mattermost":      _TIER_MEDIUM,
     "matrix":          _TIER_MEDIUM,
     "feishu":          _TIER_MEDIUM,
 
-    # Tier 3 — no edit support, progress messages are permanent
+    # 第 3 层 — 不支持编辑，进度消息是永久的
     "signal":          _TIER_LOW,
-    "whatsapp":        _TIER_MEDIUM,  # Baileys bridge supports /edit
+    "whatsapp":        _TIER_MEDIUM,  # Baileys 桥接支持 /edit
     "bluebubbles":     _TIER_LOW,
     "weixin":          _TIER_LOW,
     "wecom":           _TIER_LOW,
     "wecom_callback":  _TIER_LOW,
     "dingtalk":        _TIER_LOW,
 
-    # Tier 4 — batch or non-interactive delivery
+    # 第 4 层 — 批量或非交互式投递
     "email":           _TIER_MINIMAL,
     "sms":             _TIER_MINIMAL,
     "webhook":         _TIER_MINIMAL,
@@ -101,7 +101,7 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "api_server":      {**_TIER_HIGH, "tool_preview_length": 0},
 }
 
-# Canonical set of per-platform overrideable keys (for validation).
+# 可按平台覆盖的键的规范集合（用于校验）。
 OVERRIDEABLE_KEYS = frozenset(_GLOBAL_DEFAULTS.keys())
 
 
@@ -111,27 +111,27 @@ def resolve_display_setting(
     setting: str,
     fallback: Any = None,
 ) -> Any:
-    """Resolve a display setting with per-platform override support.
+    """解析带有平台级覆盖支持的显示设置。
 
-    Parameters
+    参数
     ----------
     user_config : dict
-        The full parsed config.yaml dict.
+        完整的已解析 config.yaml 字典。
     platform_key : str
-        Platform config key (e.g. ``"telegram"``, ``"slack"``).  Use
-        ``_platform_config_key(source.platform)`` from gateway/run.py.
+        平台配置键（例如 ``"telegram"``、``"slack"``）。使用
+        gateway/run.py 中的 ``_platform_config_key(source.platform)``。
     setting : str
-        Display setting name (e.g. ``"tool_progress"``, ``"show_reasoning"``).
+        显示设置名称（例如 ``"tool_progress"``、``"show_reasoning"``）。
     fallback : Any
-        Fallback value when the setting isn't found anywhere.
+        在所有位置都找不到该设置时的兜底值。
 
-    Returns
+    返回
     -------
-    The resolved value, or *fallback* if nothing is configured.
+    解析后的值，或在未配置时返回 *fallback*。
     """
     display_cfg = user_config.get("display") or {}
 
-    # 1. Explicit per-platform override (display.platforms.<platform>.<key>)
+    # 1. 显式平台级覆盖（display.platforms.<platform>.<key>）
     platforms = display_cfg.get("platforms") or {}
     plat_overrides = platforms.get(platform_key)
     if isinstance(plat_overrides, dict):
@@ -139,7 +139,7 @@ def resolve_display_setting(
         if val is not None:
             return _normalise(setting, val)
 
-    # 1b. Backward compat: display.tool_progress_overrides.<platform>
+    # 1b. 向后兼容：display.tool_progress_overrides.<platform>
     if setting == "tool_progress":
         legacy = display_cfg.get("tool_progress_overrides")
         if isinstance(legacy, dict):
@@ -147,22 +147,22 @@ def resolve_display_setting(
             if val is not None:
                 return _normalise(setting, val)
 
-    # 2. Global user setting (display.<key>).  Skip display.streaming because
-    # that key controls only CLI terminal streaming; gateway token streaming is
-    # governed by the top-level streaming config plus per-platform overrides.
+    # 2. 全局用户设置（display.<key>）。跳过 display.streaming 因为
+    # 该键仅控制 CLI 终端流式传输；网关 token 流式传输由
+    # 顶级 streaming 配置加平台级覆盖控制。
     if setting != "streaming":
         val = display_cfg.get(setting)
         if val is not None:
             return _normalise(setting, val)
 
-    # 3. Built-in platform default
+    # 3. 内置平台默认值
     plat_defaults = _PLATFORM_DEFAULTS.get(platform_key)
     if plat_defaults:
         val = plat_defaults.get(setting)
         if val is not None:
             return val
 
-    # 4. Built-in global default
+    # 4. 内置全局默认值
     val = _GLOBAL_DEFAULTS.get(setting)
     if val is not None:
         return val
@@ -171,11 +171,11 @@ def resolve_display_setting(
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# 辅助函数
 # ---------------------------------------------------------------------------
 
 def _normalise(setting: str, value: Any) -> Any:
-    """Normalise YAML quirks (bare ``off`` → False in YAML 1.1)."""
+    """规范化 YAML 的特殊行为（裸 ``off`` 在 YAML 1.1 中变为 False）。"""
     if setting == "tool_progress":
         if value is False:
             return "off"

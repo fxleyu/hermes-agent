@@ -1,21 +1,21 @@
 """
-DM Pairing System
+DM 配对系统
 
-Code-based approval flow for authorizing new users on messaging platforms.
-Instead of static allowlists with user IDs, unknown users receive a one-time
-pairing code that the bot owner approves via the CLI.
+基于验证码的新用户授权流程，用于消息平台上的用户审批。
+替代使用用户 ID 的静态白名单，未知用户会收到一次性配对码，
+由机器人所有者通过 CLI 审批。
 
-Security features (based on OWASP + NIST SP 800-63-4 guidance):
-  - 8-char codes from 32-char unambiguous alphabet (no 0/O/1/I)
-  - Cryptographic randomness via secrets.choice()
-  - 1-hour code expiry
-  - Max 3 pending codes per platform
-  - Rate limiting: 1 request per user per 10 minutes
-  - Lockout after 5 failed approval attempts (1 hour)
-  - File permissions: chmod 0600 on all data files
-  - Codes are never logged to stdout
+安全特性（基于 OWASP 和 NIST SP 800-63-4 指南）：
+  - 8 字符码来自 32 字符无歧义字母表（排除 0/O/1/I）
+  - 通过 secrets.choice() 使用加密随机数
+  - 验证码 1 小时过期
+  - 每个平台最多 3 个待审批的配对码
+  - 限速：每个用户每 10 分钟 1 次请求
+  - 5 次审批失败后锁定（1 小时）
+  - 文件权限：所有数据文件 chmod 0600
+  - 验证码绝不输出到标准输出
 
-Storage: ~/.hermes/pairing/
+存储位置：~/.hermes/pairing/
 """
 
 import json
@@ -30,27 +30,27 @@ from typing import Optional
 from hermes_constants import get_hermes_dir
 
 
-# Unambiguous alphabet -- excludes 0/O, 1/I to prevent confusion
+# 无歧义字母表 — 排除 0/O、1/I 以防混淆
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 CODE_LENGTH = 8
 
-# Timing constants
-CODE_TTL_SECONDS = 3600             # Codes expire after 1 hour
-RATE_LIMIT_SECONDS = 600            # 1 request per user per 10 minutes
-LOCKOUT_SECONDS = 3600              # Lockout duration after too many failures
+# 时间常量
+CODE_TTL_SECONDS = 3600             # 验证码 1 小时后过期
+RATE_LIMIT_SECONDS = 600            # 每个用户每 10 分钟限 1 次请求
+LOCKOUT_SECONDS = 3600              # 失败过多后的锁定时长
 
-# Limits
-MAX_PENDING_PER_PLATFORM = 3        # Max pending codes per platform
-MAX_FAILED_ATTEMPTS = 5             # Failed approvals before lockout
+# 限制值
+MAX_PENDING_PER_PLATFORM = 3        # 每个平台最多待审批验证码数
+MAX_FAILED_ATTEMPTS = 5             # 锁定前的最大失败审批次数
 
 PAIRING_DIR = get_hermes_dir("platforms/pairing", "pairing")
 
 
 def _secure_write(path: Path, data: str) -> None:
-    """Write data to file with restrictive permissions (owner read/write only).
+    """以严格权限（仅所有者读写）将数据写入文件。
 
-    Uses a temp-file + atomic rename so readers always see either the old
-    complete file or the new one — never a partial write.
+    使用临时文件 + 原子重命名，确保读取者始终看到旧的完整文件
+    或新的完整文件 — 绝不会看到部分写入。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
@@ -63,7 +63,7 @@ def _secure_write(path: Path, data: str) -> None:
         try:
             os.chmod(path, 0o600)
         except OSError:
-            pass  # Windows doesn't support chmod the same way
+            pass  # Windows 不支持相同方式的 chmod
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -74,18 +74,18 @@ def _secure_write(path: Path, data: str) -> None:
 
 class PairingStore:
     """
-    Manages pairing codes and approved user lists.
+    管理配对验证码和已审批用户列表。
 
-    Data files per platform:
-      - {platform}-pending.json   : pending pairing requests
-      - {platform}-approved.json  : approved (paired) users
-      - _rate_limits.json         : rate limit tracking
+    每个平台的数据文件：
+      - {platform}-pending.json   : 待审批的配对请求
+      - {platform}-approved.json  : 已审批（已配对）的用户
+      - _rate_limits.json         : 限速跟踪
     """
 
     def __init__(self):
         PAIRING_DIR.mkdir(parents=True, exist_ok=True)
-        # Protects all read-modify-write cycles. The gateway runs multiple
-        # platform adapters concurrently in threads sharing one PairingStore.
+        # 保护所有读-修改-写循环。网关在线程中并发运行多个
+        # 平台适配器，共享一个 PairingStore。
         self._lock = threading.RLock()
 
     def _pending_path(self, platform: str) -> Path:
@@ -108,15 +108,15 @@ class PairingStore:
     def _save_json(self, path: Path, data: dict) -> None:
         _secure_write(path, json.dumps(data, indent=2, ensure_ascii=False))
 
-    # ----- Approved users -----
+    # ----- 已审批用户 -----
 
     def is_approved(self, platform: str, user_id: str) -> bool:
-        """Check if a user is approved (paired) on a platform."""
+        """检查用户在某个平台上是否已审批（已配对）。"""
         approved = self._load_json(self._approved_path(platform))
         return user_id in approved
 
     def list_approved(self, platform: str = None) -> list:
-        """List approved users, optionally filtered by platform."""
+        """列出已审批的用户，可选按平台筛选。"""
         results = []
         platforms = [platform] if platform else self._all_platforms("approved")
         for p in platforms:
@@ -126,7 +126,7 @@ class PairingStore:
         return results
 
     def _approve_user(self, platform: str, user_id: str, user_name: str = "") -> None:
-        """Add a user to the approved list. Must be called under self._lock."""
+        """将用户添加到已审批列表。必须在 self._lock 下调用。"""
         approved = self._load_json(self._approved_path(platform))
         approved[user_id] = {
             "user_name": user_name,
@@ -135,7 +135,7 @@ class PairingStore:
         self._save_json(self._approved_path(platform), approved)
 
     def revoke(self, platform: str, user_id: str) -> bool:
-        """Remove a user from the approved list. Returns True if found."""
+        """从已审批列表中移除用户。如果找到则返回 True。"""
         path = self._approved_path(platform)
         with self._lock:
             approved = self._load_json(path)
@@ -145,39 +145,39 @@ class PairingStore:
                 return True
         return False
 
-    # ----- Pending codes -----
+    # ----- 待审批验证码 -----
 
     def generate_code(
         self, platform: str, user_id: str, user_name: str = ""
     ) -> Optional[str]:
         """
-        Generate a pairing code for a new user.
+        为新用户生成配对验证码。
 
-        Returns the code string, or None if:
-          - User is rate-limited (too recent request)
-          - Max pending codes reached for this platform
-          - User/platform is in lockout due to failed attempts
+        返回验证码字符串，或在以下情况返回 None：
+          - 用户被限速（请求太频繁）
+          - 该平台达到最大待审批验证码数
+          - 用户/平台因失败次数过多而被锁定
         """
         with self._lock:
             self._cleanup_expired(platform)
 
-            # Check lockout
+            # 检查锁定状态
             if self._is_locked_out(platform):
                 return None
 
-            # Check rate limit for this specific user
+            # 检查该用户的限速
             if self._is_rate_limited(platform, user_id):
                 return None
 
-            # Check max pending
+            # 检查最大待审批数
             pending = self._load_json(self._pending_path(platform))
             if len(pending) >= MAX_PENDING_PER_PLATFORM:
                 return None
 
-            # Generate cryptographically random code
+            # 生成加密随机验证码
             code = "".join(secrets.choice(ALPHABET) for _ in range(CODE_LENGTH))
 
-            # Store pending request
+            # 存储待审批请求
             pending[code] = {
                 "user_id": user_id,
                 "user_name": user_name,
@@ -185,16 +185,16 @@ class PairingStore:
             }
             self._save_json(self._pending_path(platform), pending)
 
-            # Record rate limit
+            # 记录限速
             self._record_rate_limit(platform, user_id)
 
             return code
 
     def approve_code(self, platform: str, code: str) -> Optional[dict]:
         """
-        Approve a pairing code. Adds the user to the approved list.
+        审批配对验证码。将用户添加到已审批列表。
 
-        Returns {user_id, user_name} on success, None if code is invalid/expired.
+        成功返回 {user_id, user_name}，验证码无效/过期返回 None。
         """
         with self._lock:
             self._cleanup_expired(platform)
@@ -208,7 +208,7 @@ class PairingStore:
             entry = pending.pop(code)
             self._save_json(self._pending_path(platform), pending)
 
-            # Add to approved list
+            # 添加到已审批列表
             self._approve_user(platform, entry["user_id"], entry.get("user_name", ""))
 
             return {
@@ -217,7 +217,7 @@ class PairingStore:
             }
 
     def list_pending(self, platform: str = None) -> list:
-        """List pending pairing requests, optionally filtered by platform."""
+        """列出待审批的配对请求，可选按平台筛选。"""
         results = []
         platforms = [platform] if platform else self._all_platforms("pending")
         for p in platforms:
@@ -235,7 +235,7 @@ class PairingStore:
         return results
 
     def clear_pending(self, platform: str = None) -> int:
-        """Clear all pending requests. Returns count removed."""
+        """清除所有待审批请求。返回清除的数量。"""
         with self._lock:
             count = 0
             platforms = [platform] if platform else self._all_platforms("pending")
@@ -245,31 +245,31 @@ class PairingStore:
                 self._save_json(self._pending_path(p), {})
         return count
 
-    # ----- Rate limiting and lockout -----
+    # ----- 限速和锁定 -----
 
     def _is_rate_limited(self, platform: str, user_id: str) -> bool:
-        """Check if a user has requested a code too recently."""
+        """检查用户是否最近请求过验证码（限速检查）。"""
         limits = self._load_json(self._rate_limit_path())
         key = f"{platform}:{user_id}"
         last_request = limits.get(key, 0)
         return (time.time() - last_request) < RATE_LIMIT_SECONDS
 
     def _record_rate_limit(self, platform: str, user_id: str) -> None:
-        """Record the time of a pairing request for rate limiting."""
+        """记录配对请求的时间用于限速。"""
         limits = self._load_json(self._rate_limit_path())
         key = f"{platform}:{user_id}"
         limits[key] = time.time()
         self._save_json(self._rate_limit_path(), limits)
 
     def _is_locked_out(self, platform: str) -> bool:
-        """Check if a platform is in lockout due to failed approval attempts."""
+        """检查平台是否因审批失败次数过多而被锁定。"""
         limits = self._load_json(self._rate_limit_path())
         lockout_key = f"_lockout:{platform}"
         lockout_until = limits.get(lockout_key, 0)
         return time.time() < lockout_until
 
     def _record_failed_attempt(self, platform: str) -> None:
-        """Record a failed approval attempt. Triggers lockout after MAX_FAILED_ATTEMPTS."""
+        """记录失败的审批尝试。达到 MAX_FAILED_ATTEMPTS 后触发锁定。"""
         limits = self._load_json(self._rate_limit_path())
         fail_key = f"_failures:{platform}"
         fails = limits.get(fail_key, 0) + 1
@@ -282,10 +282,10 @@ class PairingStore:
                   f"after {MAX_FAILED_ATTEMPTS} failed attempts", flush=True)
         self._save_json(self._rate_limit_path(), limits)
 
-    # ----- Cleanup -----
+    # ----- 清理 -----
 
     def _cleanup_expired(self, platform: str) -> None:
-        """Remove expired pending codes."""
+        """清除已过期的待审批验证码。"""
         path = self._pending_path(platform)
         pending = self._load_json(path)
         now = time.time()
@@ -299,7 +299,7 @@ class PairingStore:
             self._save_json(path, pending)
 
     def _all_platforms(self, suffix: str) -> list:
-        """List all platforms that have data files of a given suffix."""
+        """列出具有指定后缀数据文件的所有平台。"""
         platforms = []
         for f in PAIRING_DIR.iterdir():
             if f.name.endswith(f"-{suffix}.json"):

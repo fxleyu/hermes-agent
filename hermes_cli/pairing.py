@@ -1,20 +1,21 @@
 """
-CLI commands for the DM pairing system.
+DM 配对系统的 CLI 命令。
 
-Usage:
-    hermes pairing list              # Show all pending + approved users
-    hermes pairing approve <platform> <code>  # Approve a pairing code
-    hermes pairing revoke <platform> <user_id> # Revoke user access
-    hermes pairing clear-pending     # Clear all expired/pending codes
+用法:
+    hermes pairing list              # 显示所有待审核和已批准的用户
+    hermes pairing approve <platform> <code>  # 批准一个配对码
+    hermes pairing revoke <platform> <user_id> # 撤销用户访问权限
+    hermes pairing clear-pending     # 清除所有过期/待处理的配对码
 """
 
 def pairing_command(args):
-    """Handle hermes pairing subcommands."""
+    """处理 hermes pairing 子命令。"""
     from gateway.pairing import PairingStore
 
     store = PairingStore()
     action = getattr(args, "pairing_action", None)
 
+    # 根据子命令分发到对应的处理函数
     if action == "list":
         _cmd_list(store)
     elif action == "approve":
@@ -29,7 +30,7 @@ def pairing_command(args):
 
 
 def _cmd_list(store):
-    """List all pending and approved users."""
+    """列出所有待审核和已批准的用户。"""
     pending = store.list_pending()
     approved = store.list_approved()
 
@@ -37,6 +38,7 @@ def _cmd_list(store):
         print("No pairing data found. No one has tried to pair yet~")
         return
 
+    # 显示待审核的配对请求
     if pending:
         print(f"\n  Pending Pairing Requests ({len(pending)}):")
         print(f"  {'Platform':<12} {'Code':<10} {'User ID':<20} {'Name':<20} {'Age'}")
@@ -49,6 +51,7 @@ def _cmd_list(store):
     else:
         print("\n  No pending pairing requests.")
 
+    # 显示已批准的用户
     if approved:
         print(f"\n  Approved Users ({len(approved)}):")
         print(f"  {'Platform':<12} {'User ID':<20} {'Name':<20}")
@@ -62,7 +65,8 @@ def _cmd_list(store):
 
 
 def _cmd_approve(store, platform: str, code: str):
-    """Approve a pairing code."""
+    """批准一个配对码。"""
+    # 统一转换为小写和大写以进行匹配
     platform = platform.lower().strip()
     code = code.upper().strip()
 
@@ -79,7 +83,7 @@ def _cmd_approve(store, platform: str, code: str):
 
 
 def _cmd_revoke(store, platform: str, user_id: str):
-    """Revoke a user's access."""
+    """撤销用户的访问权限。"""
     platform = platform.lower().strip()
 
     if store.revoke(platform, user_id):
@@ -89,7 +93,7 @@ def _cmd_revoke(store, platform: str, user_id: str):
 
 
 def _cmd_clear_pending(store):
-    """Clear all pending pairing codes."""
+    """清除所有待处理的配对码。"""
     count = store.clear_pending()
     if count:
         print(f"\n  Cleared {count} pending pairing request(s).\n")

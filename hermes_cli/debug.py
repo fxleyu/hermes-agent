@@ -1,8 +1,8 @@
-"""``hermes debug`` — debug tools for Hermes Agent.
+"""``hermes debug`` —— Hermes Agent 的调试工具。
 
-Currently supports:
-    hermes debug share    Upload debug report (system info + logs) to a
-                          paste service and print a shareable URL.
+目前支持:
+    hermes debug share    上传调试报告（系统信息 + 日志）到
+                          粘贴服务并打印可分享的 URL。
 """
 
 import io
@@ -17,22 +17,22 @@ from hermes_constants import get_hermes_home
 
 
 # ---------------------------------------------------------------------------
-# Paste services — try paste.rs first, dpaste.com as fallback.
+# 粘贴服务 — 优先尝试 paste.rs，dpaste.com 作为回退。
 # ---------------------------------------------------------------------------
 
 _PASTE_RS_URL = "https://paste.rs/"
 _DPASTE_COM_URL = "https://dpaste.com/api/"
 
-# Maximum bytes to read from a single log file for upload.
-# paste.rs caps at ~1 MB; we stay under that with headroom.
+# 单个日志文件上传时读取的最大字节数。
+# paste.rs 上限约 1 MB；我们留有余量保持在此之下。
 _MAX_LOG_BYTES = 512_000
 
-# Auto-delete pastes after this many seconds (6 hours).
+# 粘贴在此秒数后自动删除（6 小时）。
 _AUTO_DELETE_SECONDS = 21600
 
 
 # ---------------------------------------------------------------------------
-# Privacy / delete helpers
+# 隐私 / 删除辅助函数
 # ---------------------------------------------------------------------------
 
 _PRIVACY_NOTICE = """\
@@ -57,9 +57,9 @@ _GATEWAY_PRIVACY_NOTICE = (
 
 
 def _extract_paste_id(url: str) -> Optional[str]:
-    """Extract the paste ID from a paste.rs or dpaste.com URL.
+    """从 paste.rs 或 dpaste.com URL 中提取粘贴 ID。
 
-    Returns the ID string, or None if the URL doesn't match a known service.
+    返回 ID 字符串，若 URL 不匹配已知服务则返回 None。
     """
     url = url.strip().rstrip("/")
     for prefix in ("https://paste.rs/", "http://paste.rs/"):
@@ -69,10 +69,10 @@ def _extract_paste_id(url: str) -> Optional[str]:
 
 
 def delete_paste(url: str) -> bool:
-    """Delete a paste from paste.rs.  Returns True on success.
+    """从 paste.rs 删除粘贴。成功时返回 True。
 
-    Only paste.rs supports unauthenticated DELETE.  dpaste.com pastes
-    expire automatically but cannot be deleted via API.
+    仅 paste.rs 支持未认证的 DELETE。dpaste.com 的粘贴
+    会自动过期但无法通过 API 删除。
     """
     paste_id = _extract_paste_id(url)
     if not paste_id:
@@ -90,11 +90,11 @@ def delete_paste(url: str) -> bool:
 
 
 def _schedule_auto_delete(urls: list[str], delay_seconds: int = _AUTO_DELETE_SECONDS):
-    """Spawn a detached process to delete paste.rs pastes after *delay_seconds*.
+    """启动一个分离进程，在 *delay_seconds* 秒后删除 paste.rs 粘贴。
 
-    The child process is fully detached (``start_new_session=True``) so it
-    survives the parent exiting (important for CLI mode).  Only paste.rs
-    URLs are attempted — dpaste.com pastes auto-expire on their own.
+    子进程完全分离（``start_new_session=True``），因此在父进程
+    退出后仍然存活（对 CLI 模式很重要）。仅尝试 paste.rs URL ——
+    dpaste.com 的粘贴会自行过期。
     """
     import subprocess
 
@@ -102,7 +102,7 @@ def _schedule_auto_delete(urls: list[str], delay_seconds: int = _AUTO_DELETE_SEC
     if not paste_rs_urls:
         return
 
-    # Build a tiny inline Python script.  No imports beyond stdlib.
+    # 构建一个小型内联 Python 脚本。仅需标准库导入。
     url_list = ", ".join(f'"{u}"' for u in paste_rs_urls)
     script = (
         "import time, urllib.request; "
@@ -120,22 +120,22 @@ def _schedule_auto_delete(urls: list[str], delay_seconds: int = _AUTO_DELETE_SEC
             stderr=subprocess.DEVNULL,
         )
     except Exception:
-        pass  # Best-effort; manual delete still available.
+        pass  # 尽力而为；手动删除仍然可用。
 
 
 def _delete_hint(url: str) -> str:
-    """Return a one-liner delete command for the given paste URL."""
+    """返回给定粘贴 URL 的一行删除命令。"""
     paste_id = _extract_paste_id(url)
     if paste_id:
         return f"hermes debug delete {url}"
-    # dpaste.com — no API delete, expires on its own.
+    # dpaste.com — 无 API 删除，按其策略自动过期。
     return "(auto-expires per dpaste.com policy)"
 
 
 def _upload_paste_rs(content: str) -> str:
-    """Upload to paste.rs.  Returns the paste URL.
+    """上传到 paste.rs。返回粘贴 URL。
 
-    paste.rs accepts a plain POST body and returns the URL directly.
+    paste.rs 接受纯文本 POST 正文并直接返回 URL。
     """
     data = content.encode("utf-8")
     req = urllib.request.Request(
@@ -153,9 +153,9 @@ def _upload_paste_rs(content: str) -> str:
 
 
 def _upload_dpaste_com(content: str, expiry_days: int = 7) -> str:
-    """Upload to dpaste.com.  Returns the paste URL.
+    """上传到 dpaste.com。返回粘贴 URL。
 
-    dpaste.com uses multipart form data.
+    dpaste.com 使用 multipart 表单数据。
     """
     boundary = "----HermesDebugBoundary9f3c"
 
@@ -189,19 +189,19 @@ def _upload_dpaste_com(content: str, expiry_days: int = 7) -> str:
 
 
 def upload_to_pastebin(content: str, expiry_days: int = 7) -> str:
-    """Upload *content* to a paste service, trying paste.rs then dpaste.com.
+    """将 *content* 上传到粘贴服务，先尝试 paste.rs 再尝试 dpaste.com。
 
-    Returns the paste URL on success, raises on total failure.
+    成功时返回粘贴 URL，全部失败时抛出异常。
     """
     errors: list[str] = []
 
-    # Try paste.rs first (simple, fast)
+    # 先尝试 paste.rs（简单、快速）
     try:
         return _upload_paste_rs(content)
     except Exception as exc:
         errors.append(f"paste.rs: {exc}")
 
-    # Fallback: dpaste.com (supports expiry)
+    # 回退：dpaste.com（支持过期时间）
     try:
         return _upload_dpaste_com(content, expiry_days=expiry_days)
     except Exception as exc:
@@ -213,13 +213,13 @@ def upload_to_pastebin(content: str, expiry_days: int = 7) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Log file reading
+# 日志文件读取
 # ---------------------------------------------------------------------------
 
 def _resolve_log_path(log_name: str) -> Optional[Path]:
-    """Find the log file for *log_name*, falling back to the .1 rotation.
+    """查找 *log_name* 的日志文件，回退到 .1 轮转文件。
 
-    Returns the path if found, or None.
+    找到时返回路径，否则返回 None。
     """
     from hermes_cli.logs import LOG_FILES
 
@@ -232,7 +232,7 @@ def _resolve_log_path(log_name: str) -> Optional[Path]:
     if primary.exists() and primary.stat().st_size > 0:
         return primary
 
-    # Fall back to the most recent rotated file (.1).
+    # 回退到最近的轮转文件（.1）。
     rotated = log_dir / f"{filename}.1"
     if rotated.exists() and rotated.stat().st_size > 0:
         return rotated
@@ -241,7 +241,7 @@ def _resolve_log_path(log_name: str) -> Optional[Path]:
 
 
 def _read_log_tail(log_name: str, num_lines: int) -> str:
-    """Read the last *num_lines* from a log file, or return a placeholder."""
+    """读取日志文件的最后 *num_lines* 行，或返回占位符。"""
     from hermes_cli.logs import _read_last_n_lines
 
     log_path = _resolve_log_path(log_name)
@@ -256,10 +256,10 @@ def _read_log_tail(log_name: str, num_lines: int) -> str:
 
 
 def _read_full_log(log_name: str, max_bytes: int = _MAX_LOG_BYTES) -> Optional[str]:
-    """Read a log file for standalone upload.
+    """读取日志文件用于独立上传。
 
-    Returns the file content (last *max_bytes* if truncated), or None if the
-    file doesn't exist or is empty.
+    返回文件内容（若截断则为最后 *max_bytes* 字节），
+    若文件不存在或为空则返回 None。
     """
     log_path = _resolve_log_path(log_name)
     if log_path is None:
@@ -273,10 +273,10 @@ def _read_full_log(log_name: str, max_bytes: int = _MAX_LOG_BYTES) -> Optional[s
         if size <= max_bytes:
             return log_path.read_text(encoding="utf-8", errors="replace")
 
-        # File is larger than max_bytes — read the tail.
+        # 文件大于 max_bytes — 读取尾部。
         with open(log_path, "rb") as f:
             f.seek(size - max_bytes)
-            # Skip partial line at the seek point.
+            # 跳过定位点处的不完整行。
             f.readline()
             content = f.read().decode("utf-8", errors="replace")
         return f"[... truncated — showing last ~{max_bytes // 1024}KB ...]\n{content}"
@@ -285,11 +285,11 @@ def _read_full_log(log_name: str, max_bytes: int = _MAX_LOG_BYTES) -> Optional[s
 
 
 # ---------------------------------------------------------------------------
-# Debug report collection
+# 调试报告收集
 # ---------------------------------------------------------------------------
 
 def _capture_dump() -> str:
-    """Run ``hermes dump`` and return its stdout as a string."""
+    """运行 ``hermes dump`` 并将其标准输出作为字符串返回。"""
     from hermes_cli.dump import run_dump
 
     class _FakeArgs:
@@ -308,17 +308,16 @@ def _capture_dump() -> str:
 
 
 def collect_debug_report(*, log_lines: int = 200, dump_text: str = "") -> str:
-    """Build the summary debug report: system dump + log tails.
+    """构建摘要调试报告：系统转储 + 日志尾部。
 
-    Parameters
+    参数
     ----------
     log_lines
-        Number of recent lines to include per log file.
+        每个日志文件包含的最近行数。
     dump_text
-        Pre-captured dump output.  If empty, ``hermes dump`` is run
-        internally.
+        预先捕获的转储输出。若为空，则内部运行 ``hermes dump``。
 
-    Returns the report as a plain-text string ready for upload.
+    返回可直接上传的纯文本报告字符串。
     """
     buf = io.StringIO()
 
@@ -326,7 +325,7 @@ def collect_debug_report(*, log_lines: int = 200, dump_text: str = "") -> str:
         dump_text = _capture_dump()
     buf.write(dump_text)
 
-    # ── Recent log tails (summary only) ──────────────────────────────────
+    # ── 最近的日志尾部（仅摘要）──────────────────────────────────
     buf.write("\n\n")
     buf.write(f"--- agent.log (last {log_lines} lines) ---\n")
     buf.write(_read_log_tail("agent", log_lines))
@@ -345,11 +344,11 @@ def collect_debug_report(*, log_lines: int = 200, dump_text: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
-# CLI entry points
+# CLI 入口点
 # ---------------------------------------------------------------------------
 
 def run_debug_share(args):
-    """Collect debug report + full logs, upload each, print URLs."""
+    """收集调试报告 + 完整日志，逐个上传，打印 URL。"""
     log_lines = getattr(args, "lines", 200)
     expiry = getattr(args, "expire", 7)
     local_only = getattr(args, "local", False)

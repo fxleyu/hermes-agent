@@ -1,4 +1,4 @@
-"""Default SOUL.md template seeded into HERMES_HOME on first run."""
+"""首次运行时写入 HERMES_HOME 的默认 SOUL.md 模板。"""
 
 DEFAULT_SOUL_MD = (
     "You are Hermes Agent, an intelligent AI assistant created by Nous Research. "

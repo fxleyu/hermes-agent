@@ -1,25 +1,25 @@
-"""OpenViking memory plugin — full bidirectional MemoryProvider interface.
+"""OpenViking 记忆插件 — 完整双向 MemoryProvider 接口。
 
-Context database by Volcengine (ByteDance) that organizes agent knowledge
-into a filesystem hierarchy (viking:// URIs) with tiered context loading,
-automatic memory extraction, and session management.
+由火山引擎（字节跳动）开发的上下文数据库，将智能体知识
+组织为文件系统层级结构（viking:// URI），具有分层上下文加载、
+自动记忆提取和会话管理功能。
 
-Original PR #3369 by Mibayy, rewritten to use the full OpenViking session
-lifecycle instead of read-only search endpoints.
+原始 PR #3369 由 Mibayy 提交，重写为使用完整的 OpenViking 会话
+生命周期，而非只读搜索端点。
 
-Config via environment variables (profile-scoped via each profile's .env):
-  OPENVIKING_ENDPOINT  — Server URL (default: http://127.0.0.1:1933)
-  OPENVIKING_API_KEY   — API key (required for authenticated servers)
-  OPENVIKING_ACCOUNT   — Tenant account (default: default)
-  OPENVIKING_USER      — Tenant user (default: default)
-  OPENVIKING_AGENT   — Tenant agent (default: hermes)
+通过环境变量配置（通过每个配置文件的 .env 实现配置文件作用域）：
+  OPENVIKING_ENDPOINT  — 服务器 URL（默认：http://127.0.0.1:1933）
+  OPENVIKING_API_KEY   — API 密钥（认证服务器需要）
+  OPENVIKING_ACCOUNT   — 租户账户（默认：default）
+  OPENVIKING_USER      — 租户用户（默认：default）
+  OPENVIKING_AGENT   — 租户智能体（默认：hermes）
 
-Capabilities:
-  - Automatic memory extraction on session commit (6 categories)
-  - Tiered context: L0 (~100 tokens), L1 (~2k), L2 (full)
-  - Semantic search with hierarchical directory retrieval
-  - Filesystem-style browsing via viking:// URIs
-  - Resource ingestion (URLs, docs, code)
+能力：
+  - 会话提交时自动记忆提取（6 个类别）
+  - 分层上下文：L0（~100 token）、L1（~2k）、L2（完整）
+  - 带层级目录检索的语义搜索
+  - 通过 viking:// URI 的文件系统式浏览
+  - 资源摄入（URL、文档、代码）
 """
 
 from __future__ import annotations
@@ -41,15 +41,15 @@ _TIMEOUT = 30.0
 
 
 # ---------------------------------------------------------------------------
-# Process-level atexit safety net — ensures pending sessions are committed
-# even if shutdown_memory_provider is never called (e.g. gateway crash,
-# SIGKILL, or exception in _async_flush_memories preventing shutdown).
+# 进程级 atexit 安全网 —— 确保即使 shutdown_memory_provider 未被调用
+# （例如网关崩溃、SIGKILL 或 _async_flush_memories 中的异常阻止关闭），
+# 待处理的会话也能被提交。
 # ---------------------------------------------------------------------------
 _last_active_provider: Optional["OpenVikingMemoryProvider"] = None
 
 
 def _atexit_commit_sessions():
-    """Fire on_session_end for the last active provider on process exit."""
+    """在进程退出时为最后活跃的 provider 触发 on_session_end。"""
     global _last_active_provider
     provider = _last_active_provider
     if provider is None:
@@ -58,18 +58,18 @@ def _atexit_commit_sessions():
     try:
         provider.on_session_end([])
     except Exception:
-        pass  # best-effort at shutdown time
+        pass  # 关闭时尽力执行
 
 
 atexit.register(_atexit_commit_sessions)
 
 
 # ---------------------------------------------------------------------------
-# HTTP helper — uses httpx to avoid requiring the openviking SDK
+# HTTP 辅助工具 —— 使用 httpx 以避免依赖 openviking SDK
 # ---------------------------------------------------------------------------
 
 def _get_httpx():
-    """Lazy import httpx."""
+    """延迟导入 httpx。"""
     try:
         import httpx
         return httpx
@@ -78,7 +78,7 @@ def _get_httpx():
 
 
 class _VikingClient:
-    """Thin HTTP client for the OpenViking REST API."""
+    """OpenViking REST API 的轻量 HTTP 客户端。"""
 
     def __init__(self, endpoint: str, api_key: str = "",
                  account: str = "", user: str = "", agent: str = ""):
@@ -131,7 +131,7 @@ class _VikingClient:
 
 
 # ---------------------------------------------------------------------------
-# Tool schemas
+# 工具 schema
 # ---------------------------------------------------------------------------
 
 SEARCH_SCHEMA = {
@@ -249,11 +249,11 @@ ADD_RESOURCE_SCHEMA = {
 
 
 # ---------------------------------------------------------------------------
-# MemoryProvider implementation
+# MemoryProvider 实现
 # ---------------------------------------------------------------------------
 
 class OpenVikingMemoryProvider(MemoryProvider):
-    """Full bidirectional memory via OpenViking context database."""
+    """通过 OpenViking 上下文数据库实现的完整双向记忆。"""
 
     def __init__(self):
         self._client: Optional[_VikingClient] = None
@@ -271,7 +271,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return "openviking"
 
     def is_available(self) -> bool:
-        """Check if OpenViking endpoint is configured. No network calls."""
+        """检查 OpenViking 端点是否已配置。不发起网络调用。"""
         return bool(os.environ.get("OPENVIKING_ENDPOINT"))
 
     def get_config_schema(self):
@@ -330,16 +330,16 @@ class OpenVikingMemoryProvider(MemoryProvider):
             logger.warning("httpx not installed — OpenViking plugin disabled")
             self._client = None
 
-        # Register as the last active provider for atexit safety net
+        # 注册为最后活跃的 provider，用于 atexit 安全网
         global _last_active_provider
         _last_active_provider = self
 
     def system_prompt_block(self) -> str:
         if not self._client:
             return ""
-        # Provide brief info about the knowledge base
+        # 提供关于知识库的简要信息
         try:
-            # Check what's in the knowledge base via a root listing
+            # 通过根目录列表检查知识库中的内容
             resp = self._client.get("/api/v1/fs/ls", params={"uri": "viking://"})
             result = resp.get("result", [])
             children = len(result) if isinstance(result, list) else 0
@@ -362,7 +362,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Return prefetched results from the background thread."""
+        """返回后台线程的预取结果。"""
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=3.0)
         with self._prefetch_lock:
@@ -373,7 +373,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return f"## OpenViking Context\n{result}"
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        """Fire a background search to pre-load relevant context."""
+        """触发后台搜索以预加载相关上下文。"""
         if not self._client or not query:
             return
 
@@ -409,7 +409,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._prefetch_thread.start()
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        """Record the conversation turn in OpenViking's session (non-blocking)."""
+        """将对话轮次记录到 OpenViking 的会话中（非阻塞）。"""
         if not self._client:
             return
 
@@ -423,12 +423,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 )
                 sid = self._session_id
 
-                # Add user message
+                # 添加用户消息
                 client.post(f"/api/v1/sessions/{sid}/messages", {
                     "role": "user",
-                    "content": user_content[:4000],  # trim very long messages
+                    "content": user_content[:4000],  # 截断过长的消息
                 })
-                # Add assistant message
+                # 添加助手消息
                 client.post(f"/api/v1/sessions/{sid}/messages", {
                     "role": "assistant",
                     "content": assistant_content[:4000],
@@ -436,7 +436,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             except Exception as e:
                 logger.debug("OpenViking sync_turn failed: %s", e)
 
-        # Wait for any previous sync to finish before starting a new one
+        # 在启动新同步之前等待上一次同步完成
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=5.0)
 
@@ -446,17 +446,16 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._sync_thread.start()
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        """Commit the session to trigger memory extraction.
+        """提交会话以触发记忆提取。
 
-        OpenViking automatically extracts 6 categories of memories:
-        profile, preferences, entities, events, cases, and patterns.
+        OpenViking 自动提取 6 类记忆：
+        画像、偏好、实体、事件、案例和模式。
         """
         if not self._client:
             return
 
-        # Wait for any pending sync to finish first — do this before the
-        # turn_count check so the last turn's messages are flushed even if
-        # the count hasn't been incremented yet.
+        # 先等待待处理的同步完成 —— 在 turn_count 检查之前执行，
+        # 这样即使计数尚未递增，最后一轮的消息也能被刷新。
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=10.0)
 
@@ -470,7 +469,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             logger.warning("OpenViking session commit failed: %s", e)
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
-        """Mirror built-in memory writes to OpenViking as explicit memories."""
+        """将内置记忆写入镜像到 OpenViking 作为显式记忆。"""
         if not self._client or action != "add" or not content:
             return
 
@@ -480,8 +479,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
                     self._endpoint, self._api_key,
                     account=self._account, user=self._user, agent=self._agent,
                 )
-                # Add as a user message with memory context so the commit
-                # picks it up as an explicit memory during extraction
+                # 作为带记忆上下文的用户消息添加，使提交时的
+                # 提取过程能将其识别为显式记忆
                 client.post(f"/api/v1/sessions/{self._session_id}/messages", {
                     "role": "user",
                     "parts": [
@@ -517,16 +516,16 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return tool_error(str(e))
 
     def shutdown(self) -> None:
-        # Wait for background threads to finish
+        # 等待后台线程完成
         for t in (self._sync_thread, self._prefetch_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
-        # Clear atexit reference so it doesn't double-commit
+        # 清除 atexit 引用以避免重复提交
         global _last_active_provider
         if _last_active_provider is self:
             _last_active_provider = None
 
-    # -- Tool implementations ------------------------------------------------
+    # -- 工具实现 ------------------------------------------------
 
     def _tool_search(self, args: dict) -> str:
         query = args.get("query", "")
@@ -545,7 +544,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         resp = self._client.post("/api/v1/search/find", payload)
         result = resp.get("result", {})
 
-        # Format results for the model — keep it concise
+        # 为模型格式化结果 —— 保持简洁
         scored_entries = []
         for ctx_type in ("memories", "resources", "skills"):
             items = result.get(ctx_type, [])
@@ -576,19 +575,19 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return tool_error("uri is required")
 
         level = args.get("level", "overview")
-        # Map our level names to OpenViking GET endpoints
+        # 将我们的级别名称映射到 OpenViking GET 端点
         if level == "abstract":
             resp = self._client.get("/api/v1/content/abstract", params={"uri": uri})
         elif level == "full":
             resp = self._client.get("/api/v1/content/read", params={"uri": uri})
-        else:  # overview
+        else:  # 概览
             resp = self._client.get("/api/v1/content/overview", params={"uri": uri})
 
         result = resp.get("result", "")
-        # result is a plain string from the content endpoints
+        # result 是内容端点返回的纯字符串
         content = result if isinstance(result, str) else result.get("content", "")
 
-        # Truncate very long content to avoid flooding the context
+        # 截断过长的内容以避免淹没上下文
         if len(content) > 8000:
             content = content[:8000] + "\n\n[... truncated, use a more specific URI or abstract level]"
 
@@ -602,16 +601,16 @@ class OpenVikingMemoryProvider(MemoryProvider):
         action = args.get("action", "list")
         path = args.get("path", "viking://")
 
-        # Map action to the correct fs endpoint (all GET with uri= param)
+        # 将操作映射到正确的 fs 端点（全部使用 GET 和 uri= 参数）
         endpoint_map = {"tree": "/api/v1/fs/tree", "list": "/api/v1/fs/ls", "stat": "/api/v1/fs/stat"}
         endpoint = endpoint_map.get(action, "/api/v1/fs/ls")
         resp = self._client.get(endpoint, params={"uri": path})
         result = resp.get("result", {})
 
-        # Format list/tree results for readability
+        # 格式化 list/tree 结果以提高可读性
         if action in ("list", "tree") and isinstance(result, list):
             entries = []
-            for e in result[:50]:  # cap at 50 entries
+            for e in result[:50]:  # 限制最多 50 条
                 entries.append({
                     "name": e.get("rel_path", e.get("name", "")),
                     "uri": e.get("uri", ""),
@@ -627,8 +626,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not content:
             return tool_error("content is required")
 
-        # Store as a session message that will be extracted during commit.
-        # The category hint helps OpenViking's extraction classify correctly.
+        # 作为会话消息存储，在提交时被提取。
+        # 类别提示帮助 OpenViking 的提取过程正确分类。
         category = args.get("category", "")
         text = f"[Remember] {content}"
         if category:
@@ -666,9 +665,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
 
 # ---------------------------------------------------------------------------
-# Plugin entry point
+# 插件入口点
 # ---------------------------------------------------------------------------
 
 def register(ctx) -> None:
-    """Register OpenViking as a memory provider plugin."""
+    """将 OpenViking 注册为记忆 provider 插件。"""
     ctx.register_memory_provider(OpenVikingMemoryProvider())

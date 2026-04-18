@@ -1,12 +1,12 @@
-"""Voice Mode -- Push-to-talk audio recording and playback for the CLI.
+"""语音模式 -- CLI 的按键说话音频录制和播放。
 
-Provides audio capture via sounddevice, WAV encoding via stdlib wave,
-STT dispatch via tools.transcription_tools, and TTS playback via
-sounddevice or system audio players.
+提供通过 sounddevice 进行音频捕获、通过标准库 wave 进行 WAV 编码、
+通过 tools.transcription_tools 进行语音转文字调度，
+以及通过 sounddevice 或系统音频播放器进行 TTS 播放。
 
-Dependencies (optional):
+依赖（可选）：
     pip install sounddevice numpy
-    or: pip install hermes-agent[voice]
+    或: pip install hermes-agent[voice]
 """
 
 import logging
@@ -24,15 +24,15 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Lazy audio imports -- never imported at module level to avoid crashing
-# in headless environments (SSH, Docker, WSL, no PortAudio).
+# 延迟音频导入 -- 从不在模块级别导入，以避免在无头环境
+# （SSH、Docker、WSL、无 PortAudio）中崩溃。
 # ---------------------------------------------------------------------------
 
 def _import_audio():
-    """Lazy-import sounddevice and numpy.  Returns (sd, np).
+    """延迟导入 sounddevice 和 numpy。返回 (sd, np)。
 
-    Raises ImportError or OSError if the libraries are not available
-    (e.g. PortAudio missing on headless servers).
+    如果库不可用（例如无头服务器缺少 PortAudio），
+    则抛出 ImportError 或 OSError。
     """
     import sounddevice as sd
     import numpy as np
@@ -40,7 +40,7 @@ def _import_audio():
 
 
 def _audio_available() -> bool:
-    """Return True if audio libraries can be imported."""
+    """如果音频库可以导入则返回 True。"""
     try:
         _import_audio()
         return True
@@ -85,29 +85,28 @@ def _termux_voice_capture_available() -> bool:
 
 
 def detect_audio_environment() -> dict:
-    """Detect if the current environment supports audio I/O.
+    """检测当前环境是否支持音频 I/O。
 
-    Returns dict with 'available' (bool), 'warnings' (list of hard-fail
-    reasons that block voice mode), and 'notices' (list of informational
-    messages that do NOT block voice mode).
+    返回包含 'available'（布尔值）、'warnings'（导致语音模式不可用的
+    硬性失败原因列表）和 'notices'（不阻止语音模式的信息性消息列表）的字典。
     """
-    warnings = []   # hard-fail: these block voice mode
-    notices = []     # informational: logged but don't block
+    warnings = []   # 硬性失败：这些会阻止语音模式
+    notices = []     # 信息性：记录日志但不阻止
     termux_mic_cmd = _termux_microphone_command()
     termux_app_installed = _termux_api_app_installed()
     termux_capture = bool(termux_mic_cmd and termux_app_installed)
 
-    # SSH detection
+    # SSH 检测
     if any(os.environ.get(v) for v in ('SSH_CLIENT', 'SSH_TTY', 'SSH_CONNECTION')):
         warnings.append("Running over SSH -- no audio devices available")
 
-    # Docker/Podman container detection
+    # Docker/Podman 容器检测
     from hermes_constants import is_container
     if is_container():
         warnings.append("Running inside Docker container -- no audio devices")
 
-    # WSL detection — PulseAudio bridge makes audio work in WSL.
-    # Only block if PULSE_SERVER is not configured.
+    # WSL 检测 — PulseAudio 桥接使音频在 WSL 中可用。
+    # 仅在未配置 PULSE_SERVER 时阻止。
     try:
         with open('/proc/version', 'r') as f:
             if 'microsoft' in f.read().lower():
@@ -123,7 +122,7 @@ def detect_audio_environment() -> dict:
     except (FileNotFoundError, PermissionError, OSError):
         pass
 
-    # Check audio libraries
+    # 检查音频库
     try:
         sd, _ = _import_audio()
         try:
@@ -179,31 +178,31 @@ def detect_audio_environment() -> dict:
     }
 
 # ---------------------------------------------------------------------------
-# Recording parameters
+# 录音参数
 # ---------------------------------------------------------------------------
-SAMPLE_RATE = 16000  # Whisper native rate
-CHANNELS = 1  # Mono
-DTYPE = "int16"  # 16-bit PCM
-SAMPLE_WIDTH = 2  # bytes per sample (int16)
+SAMPLE_RATE = 16000  # Whisper 原生采样率
+CHANNELS = 1  # 单声道
+DTYPE = "int16"  # 16 位 PCM
+SAMPLE_WIDTH = 2  # 每个采样的字节数（int16）
 
-# Silence detection defaults
-SILENCE_RMS_THRESHOLD = 200  # RMS below this = silence (int16 range 0-32767)
-SILENCE_DURATION_SECONDS = 3.0  # Seconds of continuous silence before auto-stop
+# 静音检测默认值
+SILENCE_RMS_THRESHOLD = 200  # RMS 低于此值视为静音（int16 范围 0-32767）
+SILENCE_DURATION_SECONDS = 3.0  # 连续静音多少秒后自动停止
 
-# Temp directory for voice recordings
+# 语音录音的临时目录
 _TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes_voice")
 
 
 # ============================================================================
-# Audio cues (beep tones)
+# 音频提示音（蜂鸣声）
 # ============================================================================
 def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> None:
-    """Play a short beep tone using numpy + sounddevice.
+    """使用 numpy + sounddevice 播放短促的蜂鸣声。
 
-    Args:
-        frequency: Tone frequency in Hz (default 880 = A5).
-        duration: Duration of each beep in seconds.
-        count: Number of beeps to play (with short gap between).
+    参数:
+        frequency: 音调频率（Hz），默认 880 = A5。
+        duration: 每次蜂鸣的持续时间（秒）。
+        count: 播放蜂鸣的次数（中间有短暂间隔）。
     """
     try:
         sd, np = _import_audio()
@@ -217,7 +216,7 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
         parts = []
         for i in range(count):
             t = np.linspace(0, duration, samples_per_beep, endpoint=False)
-            # Apply fade in/out to avoid click artifacts
+            # 应用淡入/淡出以避免点击伪影
             tone = np.sin(2 * np.pi * frequency * t)
             fade_len = min(int(SAMPLE_RATE * 0.01), samples_per_beep // 4)
             tone[:fade_len] *= np.linspace(0, 1, fade_len)
@@ -228,8 +227,8 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
 
         audio = np.concatenate(parts)
         sd.play(audio, samplerate=SAMPLE_RATE)
-        # sd.wait() calls Event.wait() without timeout — hangs forever if the
-        # audio device stalls.  Poll with a 2s ceiling and force-stop.
+        # sd.wait() 调用 Event.wait() 而无超时 — 如果音频设备
+        # 停滞会永远挂起。使用 2 秒上限轮询并强制停止。
         deadline = time.monotonic() + 2.0
         while sd.get_stream() and sd.get_stream().active and time.monotonic() < deadline:
             time.sleep(0.01)
@@ -239,10 +238,10 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
 
 
 # ============================================================================
-# Termux Audio Recorder
+# Termux 音频录制器
 # ============================================================================
 class TermuxAudioRecorder:
-    """Recorder backend that uses Termux:API microphone capture commands."""
+    """使用 Termux:API 麦克风捕获命令的录制器后端。"""
 
     supports_silence_autostop = False
 
@@ -268,7 +267,7 @@ class TermuxAudioRecorder:
         return self._current_rms
 
     def start(self, on_silence_stop=None) -> None:
-        del on_silence_stop  # Termux:API does not expose live silence callbacks.
+        del on_silence_stop  # Termux:API 不支持实时静音回调。
         mic_cmd = _termux_microphone_command()
         if not mic_cmd:
             raise RuntimeError(
@@ -367,22 +366,22 @@ class TermuxAudioRecorder:
 
 
 # ============================================================================
-# AudioRecorder
+# 音频录制器
 # ============================================================================
 class AudioRecorder:
-    """Thread-safe audio recorder using sounddevice.InputStream.
+    """使用 sounddevice.InputStream 的线程安全音频录制器。
 
-    Usage::
+    使用方法::
 
         recorder = AudioRecorder()
         recorder.start(on_silence_stop=my_callback)
-        # ... user speaks ...
-        wav_path = recorder.stop()   # returns path to WAV file
-        # or
-        recorder.cancel()            # discard without saving
+        # ... 用户说话 ...
+        wav_path = recorder.stop()   # 返回 WAV 文件路径
+        # 或
+        recorder.cancel()            # 丢弃而不保存
 
-    If ``on_silence_stop`` is provided, recording automatically stops when
-    the user is silent for ``silence_duration`` seconds and calls the callback.
+    如果提供了 ``on_silence_stop``，当用户静音 ``silence_duration`` 秒后
+    录制会自动停止并调用回调。
     """
 
     supports_silence_autostop = True
@@ -393,25 +392,25 @@ class AudioRecorder:
         self._frames: List[Any] = []
         self._recording = False
         self._start_time: float = 0.0
-        # Silence detection state
+        # 静音检测状态
         self._has_spoken = False
-        self._speech_start: float = 0.0  # When speech attempt began
-        self._dip_start: float = 0.0  # When current below-threshold dip began
-        self._min_speech_duration: float = 0.3  # Seconds of speech needed to confirm
-        self._max_dip_tolerance: float = 0.3  # Max dip duration before resetting speech
+        self._speech_start: float = 0.0  # 说话尝试开始的时间
+        self._dip_start: float = 0.0  # 当前低于阈值下降开始的时间
+        self._min_speech_duration: float = 0.3  # 确认说话所需的秒数
+        self._max_dip_tolerance: float = 0.3  # 重置说话前最大允许的下降持续时间
         self._silence_start: float = 0.0
-        self._resume_start: float = 0.0  # Tracks sustained speech after silence starts
-        self._resume_dip_start: float = 0.0  # Dip tolerance tracker for resume detection
+        self._resume_start: float = 0.0  # 跟踪静音开始后持续说话的情况
+        self._resume_dip_start: float = 0.0  # 恢复检测的下降容忍度跟踪器
         self._on_silence_stop = None
         self._silence_threshold: int = SILENCE_RMS_THRESHOLD
         self._silence_duration: float = SILENCE_DURATION_SECONDS
-        self._max_wait: float = 15.0  # Max seconds to wait for speech before auto-stop
-        # Peak RMS seen during recording (for speech presence check in stop())
+        self._max_wait: float = 15.0  # 等待说话的最大秒数，超时后自动停止
+        # 录制期间观察到的峰值 RMS（用于 stop() 中的语音存在检查）
         self._peak_rms: int = 0
-        # Live audio level (read by UI for visual feedback)
+        # 实时音频电平（由 UI 读取以提供视觉反馈）
         self._current_rms: int = 0
 
-    # -- public properties ---------------------------------------------------
+    # -- 公共属性 ---------------------------------------------------
 
     @property
     def elapsed_seconds(self) -> float:
@@ -421,23 +420,22 @@ class AudioRecorder:
 
     @property
     def current_rms(self) -> int:
-        """Current audio input RMS level (0-32767). Updated each audio chunk."""
+        """当前音频输入 RMS 电平（0-32767）。每个音频数据块更新一次。"""
         return self._current_rms
 
     @property
     def is_recording(self) -> bool:
-        """Whether audio recording is currently active."""
+        """音频录制是否正在进行中。"""
         return self._recording
 
-    # -- public methods ------------------------------------------------------
+    # -- 公共方法 ------------------------------------------------------
 
     def _ensure_stream(self) -> None:
-        """Create the audio InputStream once and keep it alive.
+        """创建一次音频 InputStream 并保持活跃。
 
-        The stream stays open for the lifetime of the recorder.  Between
-        recordings the callback simply discards audio chunks (``_recording``
-        is ``False``).  This avoids the CoreAudio bug where closing and
-        re-opening an ``InputStream`` hangs indefinitely on macOS.
+        流在录制器的整个生命周期内保持打开。在录制之间，回调会简单地
+        丢弃音频数据块（``_recording`` 为 ``False``）。这避免了在 macOS 上
+        关闭和重新打开 ``InputStream`` 时 CoreAudio 无限期挂起的 bug。
         """
         if self._stream is not None:
             return  # already alive
@@ -447,76 +445,75 @@ class AudioRecorder:
         def _callback(indata, frames, time_info, status):  # noqa: ARG001
             if status:
                 logger.debug("sounddevice status: %s", status)
-            # When not recording the stream is idle — discard audio.
+            # 不录制时流处于空闲状态 — 丢弃音频。
             if not self._recording:
                 return
             self._frames.append(indata.copy())
 
-            # Compute RMS for level display and silence detection
+            # 计算 RMS 用于电平显示和静音检测
             rms = int(np.sqrt(np.mean(indata.astype(np.float64) ** 2)))
             self._current_rms = rms
             if rms > self._peak_rms:
                 self._peak_rms = rms
 
-            # Silence detection
+            # 静音检测
             if self._on_silence_stop is not None:
                 now = time.monotonic()
                 elapsed = now - self._start_time
 
                 if rms > self._silence_threshold:
-                    # Audio is above threshold -- this is speech (or noise).
-                    self._dip_start = 0.0  # Reset dip tracker
+                    # 音频高于阈值 -- 这是说话（或噪音）。
+                    self._dip_start = 0.0  # 重置下降跟踪器
                     if self._speech_start == 0.0:
                         self._speech_start = now
                     elif not self._has_spoken and now - self._speech_start >= self._min_speech_duration:
                         self._has_spoken = True
                         logger.debug("Speech confirmed (%.2fs above threshold)",
                                      now - self._speech_start)
-                    # After speech is confirmed, only reset silence timer if
-                    # speech is sustained (>0.3s above threshold).  Brief
-                    # spikes from ambient noise should NOT reset the timer.
+                    # 语音确认后，只有在说话持续（超过阈值 >0.3 秒）时
+                    # 才重置静音计时器。来自环境噪音的短暂尖峰不应重置计时器。
                     if not self._has_spoken:
                         self._silence_start = 0.0
                     else:
-                        # Track resumed speech with dip tolerance.
-                        # Brief dips below threshold are normal during speech,
-                        # so we mirror the initial speech detection pattern:
-                        # start tracking, tolerate short dips, confirm after 0.3s.
-                        self._resume_dip_start = 0.0  # Above threshold — no dip
+                        # 使用带下降容忍的恢复跟踪。
+                        # 低于阈值的短暂下降在说话中是正常的，
+                        # 所以我们镜像初始语音检测模式：
+                        # 开始跟踪、容忍短暂下降、0.3 秒后确认。
+                        self._resume_dip_start = 0.0  # 高于阈值 — 无下降
                         if self._resume_start == 0.0:
                             self._resume_start = now
                         elif now - self._resume_start >= self._min_speech_duration:
                             self._silence_start = 0.0
                             self._resume_start = 0.0
                 elif self._has_spoken:
-                    # Below threshold after speech confirmed.
-                    # Use dip tolerance before resetting resume tracker —
-                    # natural speech has brief dips below threshold.
+                    # 语音确认后低于阈值。
+                    # 在重置恢复跟踪器之前使用下降容忍 —
+                    # 自然语音中低于阈值的短暂下降是正常的。
                     if self._resume_start > 0:
                         if self._resume_dip_start == 0.0:
                             self._resume_dip_start = now
                         elif now - self._resume_dip_start >= self._max_dip_tolerance:
-                            # Sustained dip — user actually stopped speaking
+                            # 持续下降 — 用户确实停止说话了
                             self._resume_start = 0.0
                             self._resume_dip_start = 0.0
                 elif self._speech_start > 0:
-                    # We were in a speech attempt but RMS dipped.
-                    # Tolerate brief dips (micro-pauses between syllables).
+                    # 我们正在说话尝试中但 RMS 下降了。
+                    # 容忍短暂下降（音节间的微停顿）。
                     if self._dip_start == 0.0:
                         self._dip_start = now
                     elif now - self._dip_start >= self._max_dip_tolerance:
-                        # Dip lasted too long -- genuine silence, reset
+                        # 下降持续太长 -- 真正的静音，重置
                         logger.debug("Speech attempt reset (dip lasted %.2fs)",
                                      now - self._dip_start)
                         self._speech_start = 0.0
                         self._dip_start = 0.0
 
-                # Fire silence callback when:
-                # 1. User spoke then went silent for silence_duration, OR
-                # 2. No speech detected at all for max_wait seconds
+                # 触发静音回调的条件：
+                # 1. 用户说话后静音了 silence_duration 秒，或
+                # 2. 在 max_wait 秒内完全没有检测到说话
                 should_fire = False
                 if self._has_spoken and rms <= self._silence_threshold:
-                    # User was speaking and now is silent
+                    # 用户之前在说话，现在静默了
                     if self._silence_start == 0.0:
                         self._silence_start = now
                     elif now - self._silence_start >= self._silence_duration:
@@ -537,10 +534,10 @@ class AudioRecorder:
                             try:
                                 cb()
                             except Exception as e:
-                                logger.error("Silence callback failed: %s", e, exc_info=True)
+                                logger.error("静音回调失败: %s", e, exc_info=True)
                         threading.Thread(target=_safe_cb, daemon=True).start()
 
-        # Create stream — may block on CoreAudio (first call only).
+        # 创建流 — 可能在 CoreAudio 上阻塞（仅首次调用）。
         stream = None
         try:
             stream = sd.InputStream(
@@ -563,19 +560,18 @@ class AudioRecorder:
         self._stream = stream
 
     def start(self, on_silence_stop=None) -> None:
-        """Start capturing audio from the default input device.
+        """从默认输入设备开始捕获音频。
 
-        The underlying InputStream is created once and kept alive across
-        recordings.  Subsequent calls simply reset detection state and
-        toggle frame collection via ``_recording``.
+        底层 InputStream 仅创建一次并在多次录制间保持活跃。
+        后续调用只重置检测状态并通过 ``_recording`` 切换帧收集。
 
-        Args:
-            on_silence_stop: Optional callback invoked (in a daemon thread) when
-                silence is detected after speech. The callback receives no arguments.
-                Use this to auto-stop recording and trigger transcription.
+        参数:
+            on_silence_stop: 可选回调，在语音后检测到静音时
+                在守护线程中调用。回调不接收任何参数。
+                用于自动停止录制并触发转录。
 
-        Raises ``RuntimeError`` if sounddevice/numpy are not installed
-        or if a recording is already in progress.
+        如果 sounddevice/numpy 未安装或录制正在进行中，
+        则抛出 ``RuntimeError``。
         """
         try:
             _import_audio()
@@ -602,7 +598,7 @@ class AudioRecorder:
             self._current_rms = 0
             self._on_silence_stop = on_silence_stop
 
-        # Ensure the persistent stream is alive (no-op after first call).
+        # 确保持久流处于活跃状态（首次调用后为空操作）。
         self._ensure_stream()
 
         with self._lock:
@@ -610,7 +606,7 @@ class AudioRecorder:
         logger.info("Voice recording started (rate=%d, channels=%d)", SAMPLE_RATE, CHANNELS)
 
     def _close_stream_with_timeout(self, timeout: float = 3.0) -> None:
-        """Close the audio stream with a timeout to prevent CoreAudio hangs."""
+        """带超时关闭音频流以防止 CoreAudio 挂起。"""
         if self._stream is None:
             return
 
@@ -626,7 +622,7 @@ class AudioRecorder:
 
         t = threading.Thread(target=_do_close, daemon=True)
         t.start()
-        # Poll in short intervals so Ctrl+C is not blocked
+        # 以短间隔轮询以避免 Ctrl+C 被阻塞
         deadline = __import__("time").monotonic() + timeout
         while t.is_alive() and __import__("time").monotonic() < deadline:
             t.join(timeout=0.1)
@@ -634,13 +630,12 @@ class AudioRecorder:
             logger.warning("Audio stream close timed out after %.1fs — forcing ahead", timeout)
 
     def stop(self) -> Optional[str]:
-        """Stop recording and write captured audio to a WAV file.
+        """停止录制并将捕获的音频写入 WAV 文件。
 
-        The underlying stream is kept alive for reuse — only frame
-        collection is stopped.
+        底层流保持活跃以便重用 — 只停止帧收集。
 
-        Returns:
-            Path to the WAV file, or ``None`` if no audio was captured.
+        返回:
+            WAV 文件的路径，如果没有捕获到音频则返回 ``None``。
         """
         with self._lock:
             if not self._recording:
