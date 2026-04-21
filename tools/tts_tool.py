@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
 """
-文本转语音工具模块
+Text-to-Speech Tool Module
 
-支持七种 TTS 提供商：
-- Edge TTS（默认，免费，无需 API 密钥）：Microsoft Edge 神经语音
-- ElevenLabs（高级版）：高品质语音，需要 ELEVENLABS_API_KEY
-- OpenAI TTS：良好品质，需要 OPENAI_API_KEY
-- MiniMax TTS：高品质带语音克隆，需要 MINIMAX_API_KEY
-- Mistral（Voxtral TTS）：多语言，原生 Opus，需要 MISTRAL_API_KEY
-- Google Gemini TTS：可控性强，30 种预置语音，需要 GEMINI_API_KEY
-- NeuTTS（本地，免费，无需 API 密钥）：通过 neutts_cli 的设备端 TTS，需要安装 neutts
+Supports seven TTS providers:
+- Edge TTS (default, free, no API key): Microsoft Edge neural voices
+- ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
+- OpenAI TTS: Good quality, needs OPENAI_API_KEY
+- MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
+- Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
+- Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
+- NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
 
-输出格式：
-- Opus（.ogg）用于 Telegram 语音气泡（Edge TTS 需要 ffmpeg）
-- MP3（.mp3）用于其他场景（CLI、Discord、WhatsApp）
+Output formats:
+- Opus (.ogg) for Telegram voice bubbles (requires ffmpeg for Edge TTS)
+- MP3 (.mp3) for everything else (CLI, Discord, WhatsApp)
 
-配置从 ~/.hermes/config.yaml 的 'tts:' 键下加载。
-用户选择提供商和声音；模型只需发送文本。
+Configuration is loaded from ~/.hermes/config.yaml under the 'tts:' key.
+The user chooses the provider and voice; the model just sends text.
 
-用法：
+Usage:
     from tools.tts_tool import text_to_speech_tool, check_tts_requirements
 
     result = text_to_speech_tool(text="Hello world")
@@ -49,38 +49,44 @@ from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gatew
 from tools.xai_http import hermes_xai_user_agent
 
 # ---------------------------------------------------------------------------
-# 延迟导入 -- 仅在实际使用时导入提供商，以避免
-# 在无头环境中崩溃（SSH、Docker、WSL、无 PortAudio）。
+# Lazy imports -- providers are imported only when actually used to avoid
+# crashing in headless environments (SSH, Docker, WSL, no PortAudio).
 # ---------------------------------------------------------------------------
 
 def _import_edge_tts():
-    """延迟导入 edge_tts。返回模块或抛出 ImportError。"""
+    """Lazy import edge_tts. Returns the module or raises ImportError."""
     import edge_tts
     return edge_tts
 
 def _import_elevenlabs():
-    """延迟导入 ElevenLabs 客户端。返回类或抛出 ImportError。"""
+    """Lazy import ElevenLabs client. Returns the class or raises ImportError."""
     from elevenlabs.client import ElevenLabs
     return ElevenLabs
 
 def _import_openai_client():
-    """延迟导入 OpenAI 客户端。返回类或抛出 ImportError。"""
+    """Lazy import OpenAI client. Returns the class or raises ImportError."""
     from openai import OpenAI as OpenAIClient
     return OpenAIClient
 
 def _import_mistral_client():
-    """延迟导入 Mistral 客户端。返回类或抛出 ImportError。"""
+    """Lazy import Mistral client. Returns the class or raises ImportError."""
     from mistralai.client import Mistral
     return Mistral
 
 def _import_sounddevice():
-    """延迟导入 sounddevice。返回模块或抛出 ImportError/OSError。"""
+    """Lazy import sounddevice. Returns the module or raises ImportError/OSError."""
     import sounddevice as sd
     return sd
 
 
+def _import_kittentts():
+    """Lazy import KittenTTS. Returns the class or raises ImportError."""
+    from kittentts import KittenTTS
+    return KittenTTS
+
+
 # ===========================================================================
-# 默认值
+# Defaults
 # ===========================================================================
 DEFAULT_PROVIDER = "edge"
 DEFAULT_EDGE_VOICE = "en-US-AriaNeural"
@@ -88,6 +94,8 @@ DEFAULT_ELEVENLABS_VOICE_ID = "pNInz6obpgDQGcFmaJgB"  # Adam
 DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
+DEFAULT_KITTENTTS_MODEL = "KittenML/kitten-tts-nano-0.8-int8"  # 25MB
+DEFAULT_KITTENTTS_VOICE = "Jasper"
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MINIMAX_MODEL = "speech-2.8-hd"
@@ -103,7 +111,7 @@ DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
 DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_GEMINI_TTS_VOICE = "Kore"
 DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-# Gemini TTS 的 PCM 输出规格（由 API 固定）
+# PCM output specs for Gemini TTS (fixed by the API)
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
 GEMINI_TTS_SAMPLE_WIDTH = 2  # 16-bit PCM (L16)
@@ -117,13 +125,14 @@ MAX_TEXT_LENGTH = 4000
 
 
 # ===========================================================================
-# 配置加载器 -- 从 ~/.hermes/config.yaml 读取 tts: 部分
+# Config loader -- reads tts: section from ~/.hermes/config.yaml
 # ===========================================================================
 def _load_tts_config() -> Dict[str, Any]:
     """
-    从 ~/.hermes/config.yaml 加载 TTS 配置。
+    Load TTS configuration from ~/.hermes/config.yaml.
 
-    返回包含提供商设置的字典。缺少的字段回退到默认值。
+    Returns a dict with provider settings. Falls back to defaults
+    for any missing fields.
     """
     try:
         from hermes_cli.config import load_config
@@ -138,7 +147,7 @@ def _load_tts_config() -> Dict[str, Any]:
 
 
 def _get_provider(tts_config: Dict[str, Any]) -> str:
-    """获取已配置的 TTS 提供商名称。"""
+    """Get the configured TTS provider name."""
     return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
 
 
@@ -146,7 +155,7 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
 # ffmpeg Opus conversion (Edge TTS MP3 -> OGG Opus for Telegram)
 # ===========================================================================
 def _has_ffmpeg() -> bool:
-    """检查系统上是否有 ffmpeg 可用。"""
+    """Check if ffmpeg is available on the system."""
     return shutil.which("ffmpeg") is not None
 
 
@@ -186,7 +195,7 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
 
 
 # ===========================================================================
-# 提供商：Edge TTS（免费）
+# Provider: Edge TTS (free)
 # ===========================================================================
 async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """
@@ -216,7 +225,7 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
 
 
 # ===========================================================================
-# 提供商：ElevenLabs（高级）
+# Provider: ElevenLabs (premium)
 # ===========================================================================
 def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """
@@ -238,7 +247,7 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
     voice_id = el_config.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID)
     model_id = el_config.get("model_id", DEFAULT_ELEVENLABS_MODEL_ID)
 
-    # 根据文件扩展名确定输出格式
+    # Determine output format based on file extension
     if output_path.endswith(".ogg"):
         output_format = "opus_48000_64"
     else:
@@ -262,7 +271,7 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
 
 
 # ===========================================================================
-# 提供商：OpenAI TTS
+# Provider: OpenAI TTS
 # ===========================================================================
 def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """
@@ -284,7 +293,7 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     base_url = oai_config.get("base_url", base_url)
     speed = float(oai_config.get("speed", tts_config.get("speed", 1.0)))
 
-    # 从扩展名确定响应格式
+    # Determine response format from extension
     if output_path.endswith(".ogg"):
         response_format = "opus"
     else:
@@ -313,7 +322,7 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 
 
 # ===========================================================================
-# 提供商：xAI TTS
+# Provider: xAI TTS
 # ===========================================================================
 def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """
@@ -339,7 +348,7 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
         or DEFAULT_XAI_BASE_URL
     ).strip().rstrip("/")
 
-    # 默认匹配文档中最小的 POST /v1/tts 格式。仅在
+    # Match the documented minimal POST /v1/tts shape by default. Only send
     # output_format when Hermes actually needs a non-default format/override.
     codec = "wav" if output_path.endswith(".wav") else "mp3"
     payload: Dict[str, Any] = {
@@ -378,7 +387,7 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
 
 
 # ===========================================================================
-# 提供商：MiniMax TTS
+# Provider: MiniMax TTS
 # ===========================================================================
 def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """
@@ -409,7 +418,7 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     pitch = mm_config.get("pitch", 0)
     base_url = mm_config.get("base_url", DEFAULT_MINIMAX_BASE_URL)
 
-    # 从输出扩展名确定音频格式
+    # Determine audio format from output extension
     if output_path.endswith(".wav"):
         audio_format = "wav"
     elif output_path.endswith(".flac"):
@@ -455,7 +464,7 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     if not hex_audio:
         raise RuntimeError("MiniMax TTS returned empty audio data")
 
-    # MiniMax 返回十六进制编码的音频（不是 base64）
+    # MiniMax returns hex-encoded audio (not base64)
     audio_bytes = bytes.fromhex(hex_audio)
 
     with open(output_path, "wb") as f:
@@ -465,10 +474,10 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
 
 # ===========================================================================
-# 提供商：Mistral (Voxtral TTS)
+# Provider: Mistral (Voxtral TTS)
 # ===========================================================================
 def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
-    """使用 Mistral Voxtral TTS API 生成音频。
+    """Generate audio using Mistral Voxtral TTS API.
 
     The API returns base64-encoded audio; this function decodes it
     and writes the raw bytes to *output_path*.
@@ -514,7 +523,7 @@ def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
 
 # ===========================================================================
-# 提供商：Google Gemini TTS
+# Provider: Google Gemini TTS
 # ===========================================================================
 def _wrap_pcm_as_wav(
     pcm_bytes: bytes,
@@ -522,7 +531,7 @@ def _wrap_pcm_as_wav(
     channels: int = GEMINI_TTS_CHANNELS,
     sample_width: int = GEMINI_TTS_SAMPLE_WIDTH,
 ) -> bytes:
-    """将原始有符号小端序 PCM 封装为标准 WAV RIFF 头。
+    """Wrap raw signed-little-endian PCM with a standard WAV RIFF header.
 
     Gemini TTS returns audio/L16;codec=pcm;rate=24000 -- raw PCM samples with
     no container. We add a minimal WAV header so the file is playable and
@@ -551,7 +560,7 @@ def _wrap_pcm_as_wav(
 
 
 def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
-    """使用 Google Gemini TTS 生成音频。
+    """Generate audio using Google Gemini TTS.
 
     Gemini's generateContent endpoint with responseModalities=["AUDIO"] returns
     raw 24kHz mono 16-bit PCM (L16) as base64. We wrap it with a WAV RIFF
@@ -605,7 +614,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         timeout=60,
     )
     if response.status_code != 200:
-        # 当 API 返回错误消息时展示出来
+        # Surface the API error message when present
         try:
             err = response.json().get("error", {})
             detail = err.get("message") or response.text[:300]
@@ -632,13 +641,13 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     pcm_bytes = base64.b64decode(audio_b64)
     wav_bytes = _wrap_pcm_as_wav(pcm_bytes)
 
-    # 快速路径：调用者要求直接输出 WAV，直接写入。
+    # Fast path: caller wants WAV directly, just write.
     if output_path.lower().endswith(".wav"):
         with open(output_path, "wb") as f:
             f.write(wav_bytes)
         return output_path
 
-    # 否则将 WAV 写入临时文件，然后用 ffmpeg 转换为目标格式
+    # Otherwise write WAV to a temp file and ffmpeg-convert to the target
     # format (.mp3 or .ogg). If ffmpeg is missing, fall back to renaming the
     # WAV -- this matches the NeuTTS behavior and keeps the tool usable on
     # systems without ffmpeg (audio still plays, just with a misleading
@@ -650,7 +659,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     try:
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
-            # 对于 .ogg 输出，强制使用 libopus 编码（Telegram 语音气泡
+            # For .ogg output, force libopus encoding (Telegram voice bubbles
             # require Opus specifically; ffmpeg's default for .ogg is Vorbis).
             if output_path.lower().endswith(".ogg"):
                 cmd = [
@@ -682,11 +691,11 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 
 
 # ===========================================================================
-# NeuTTS（本地设备端 TTS，通过 neutts_cli）
+# NeuTTS (local, on-device TTS via neutts_cli)
 # ===========================================================================
 
 def _check_neutts_available() -> bool:
-    """检查 neutts 引擎是否可导入（本地安装）。"""
+    """Check if the neutts engine is importable (installed locally)."""
     try:
         import importlib.util
         return importlib.util.find_spec("neutts") is not None
@@ -694,18 +703,27 @@ def _check_neutts_available() -> bool:
         return False
 
 
+def _check_kittentts_available() -> bool:
+    """Check if the kittentts engine is importable (installed locally)."""
+    try:
+        import importlib.util
+        return importlib.util.find_spec("kittentts") is not None
+    except Exception:
+        return False
+
+
 def _default_neutts_ref_audio() -> str:
-    """返回内置默认语音参考音频的路径。"""
+    """Return path to the bundled default voice reference audio."""
     return str(Path(__file__).parent / "neutts_samples" / "jo.wav")
 
 
 def _default_neutts_ref_text() -> str:
-    """返回内置默认语音参考文本的路径。"""
+    """Return path to the bundled default voice reference transcript."""
     return str(Path(__file__).parent / "neutts_samples" / "jo.txt")
 
 
 def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
-    """使用本地 NeuTTS 引擎生成语音。
+    """Generate speech using the local NeuTTS engine.
 
     Runs synthesis in a subprocess via tools/neutts_synth.py to keep the
     ~500MB model in a separate process that exits after synthesis.
@@ -719,7 +737,7 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
     model = neutts_config.get("model", "neuphonic/neutts-air-q4-gguf")
     device = neutts_config.get("device", "cpu")
 
-    # NeuTTS 原生输出 WAV -- 使用 .wav 路径生成，
+    # NeuTTS outputs WAV natively — use a .wav path for generation,
     # let the caller convert to the final format afterward.
     wav_path = output_path
     if not output_path.endswith(".wav"):
@@ -739,11 +757,11 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
         stderr = result.stderr.strip()
-        # 过滤掉 stderr 中的 "OK:" 行
+        # Filter out the "OK:" line from stderr
         error_lines = [l for l in stderr.splitlines() if not l.startswith("OK:")]
         raise RuntimeError(f"NeuTTS synthesis failed: {chr(10).join(error_lines) or 'unknown error'}")
 
-    # 如果调用者要求 .mp3 或 .ogg，则从 WAV 转换
+    # If the caller wanted .mp3 or .ogg, convert from WAV
     if wav_path != output_path:
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
@@ -751,14 +769,77 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
             subprocess.run(conv_cmd, check=True, timeout=30)
             os.remove(wav_path)
         else:
-            # 没有 ffmpeg -- 只将 WAV 重命名为预期路径
+            # No ffmpeg — just rename the WAV to the expected path
             os.rename(wav_path, output_path)
 
     return output_path
 
 
 # ===========================================================================
-# 主要工具函数
+# Provider: KittenTTS (local, lightweight)
+# ===========================================================================
+
+# Module-level cache for KittenTTS model instance
+_kittentts_model_cache: Dict[str, Any] = {}
+
+
+def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech using KittenTTS local ONNX model.
+
+    KittenTTS is a lightweight TTS engine (25-80MB models) that runs
+    entirely on CPU without requiring a GPU or API key.
+
+    Args:
+        text: Text to convert to speech.
+        output_path: Where to save the audio file.
+        tts_config: TTS config dict.
+
+    Returns:
+        Path to the saved audio file.
+    """
+    KittenTTS = _import_kittentts()
+    kt_config = tts_config.get("kittentts", {})
+    model_name = kt_config.get("model", DEFAULT_KITTENTTS_MODEL)
+    voice = kt_config.get("voice", DEFAULT_KITTENTTS_VOICE)
+    speed = kt_config.get("speed", 1.0)
+    clean_text = kt_config.get("clean_text", True)
+
+    # Use cached model instance if available
+    global _kittentts_model_cache
+    if model_name not in _kittentts_model_cache:
+        logger.info("[KittenTTS] Loading model: %s", model_name)
+        _kittentts_model_cache[model_name] = KittenTTS(model_name)
+        logger.info("[KittenTTS] Model loaded successfully")
+
+    model = _kittentts_model_cache[model_name]
+
+    # Generate audio (returns numpy array at 24kHz)
+    audio = model.generate(text, voice=voice, speed=speed, clean_text=clean_text)
+
+    # Save as WAV
+    import soundfile as sf
+    wav_path = output_path
+    if not output_path.endswith(".wav"):
+        wav_path = output_path.rsplit(".", 1)[0] + ".wav"
+
+    sf.write(wav_path, audio, 24000)
+
+    # Convert to desired format if needed
+    if wav_path != output_path:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
+            subprocess.run(conv_cmd, check=True, timeout=30)
+            os.remove(wav_path)
+        else:
+            # No ffmpeg — rename the WAV to the expected path
+            os.rename(wav_path, output_path)
+
+    return output_path
+
+
+# ===========================================================================
+# Main tool function
 # ===========================================================================
 def text_to_speech_tool(
     text: str,
@@ -784,7 +865,7 @@ def text_to_speech_tool(
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
 
-    # 截断过长的文本并附带警告
+    # Truncate very long text with a warning
     if len(text) > MAX_TEXT_LENGTH:
         logger.warning("TTS text too long (%d chars), truncating to %d", len(text), MAX_TEXT_LENGTH)
         text = text[:MAX_TEXT_LENGTH]
@@ -792,34 +873,34 @@ def text_to_speech_tool(
     tts_config = _load_tts_config()
     provider = _get_provider(tts_config)
 
-    # 从网关环境变量检测平台，以选择最佳输出格式。
-    # Telegram 语音气泡需要 Opus (.ogg)；OpenAI 和 ElevenLabs 可以
+    # Detect platform from gateway env var to choose the best output format.
+    # Telegram voice bubbles require Opus (.ogg); OpenAI and ElevenLabs can
     # produce Opus natively (no ffmpeg needed).  Edge TTS always outputs MP3
     # and needs ffmpeg for conversion.
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
     want_opus = (platform == "telegram")
 
-    # 确定输出路径
+    # Determine output path
     if output_path:
         file_path = Path(output_path).expanduser()
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         out_dir = Path(DEFAULT_OUTPUT_DIR)
         out_dir.mkdir(parents=True, exist_ok=True)
-        # 对于 Telegram，使用 .ogg 格式（适用于支持原生 Opus 输出的提供商），
+        # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
         if want_opus and provider in ("openai", "elevenlabs", "mistral", "gemini"):
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
 
-    # 确保父目录存在
+    # Ensure parent directory exists
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_str = str(file_path)
 
     try:
-        # 使用配置的提供商生成音频
+        # Generate audio with the configured provider
         if provider == "elevenlabs":
             try:
                 _import_elevenlabs()
@@ -876,8 +957,21 @@ def text_to_speech_tool(
             logger.info("Generating speech with NeuTTS (local)...")
             _generate_neutts(text, file_str, tts_config)
 
+        elif provider == "kittentts":
+            try:
+                _import_kittentts()
+            except ImportError:
+                return json.dumps({
+                    "success": False,
+                    "error": "KittenTTS provider selected but 'kittentts' package not installed. "
+                             "Run 'hermes setup tts' and choose KittenTTS, or install manually: "
+                             "pip install https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl"
+                }, ensure_ascii=False)
+            logger.info("Generating speech with KittenTTS (local, ~25MB)...")
+            _generate_kittentts(text, file_str, tts_config)
+
         else:
-            # 默认：Edge TTS（免费），NeuTTS 作为本地回退
+            # Default: Edge TTS (free), with NeuTTS as local fallback
             edge_available = True
             try:
                 _import_edge_tts()
@@ -905,17 +999,17 @@ def text_to_speech_tool(
                              "or set up NeuTTS for local synthesis."
                 }, ensure_ascii=False)
 
-        # 检查文件是否实际已创建
+        # Check the file was actually created
         if not os.path.exists(file_str) or os.path.getsize(file_str) == 0:
             return json.dumps({
                 "success": False,
                 "error": f"TTS generation produced no output (provider: {provider})"
             }, ensure_ascii=False)
 
-        # 尝试 Opus 转换以兼容 Telegram
-        # Edge TTS 输出 MP3，NeuTTS 输出 WAV -- 都需要 ffmpeg 转换
+        # Try Opus conversion for Telegram compatibility
+        # Edge TTS outputs MP3, NeuTTS/KittenTTS output WAV — all need ffmpeg conversion
         voice_compatible = False
-        if provider in ("edge", "neutts", "minimax", "xai") and not file_str.endswith(".ogg"):
+        if provider in ("edge", "neutts", "minimax", "xai", "kittentts") and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
@@ -926,7 +1020,7 @@ def text_to_speech_tool(
         file_size = os.path.getsize(file_str)
         logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{file_size:,}", provider)
 
-        # 构建带有 MEDIA 标签的响应以便平台投递
+        # Build response with MEDIA tag for platform delivery
         media_tag = f"MEDIA:{file_str}"
         if voice_compatible:
             media_tag = f"[[audio_as_voice]]\n{media_tag}"
@@ -940,24 +1034,24 @@ def text_to_speech_tool(
         }, ensure_ascii=False)
 
     except ValueError as e:
-        # 配置错误（缺少 API 密钥等）
+        # Configuration errors (missing API keys, etc.)
         error_msg = f"TTS configuration error ({provider}): {e}"
         logger.error("%s", error_msg)
         return tool_error(error_msg, success=False)
     except FileNotFoundError as e:
-        # 缺少依赖或文件
+        # Missing dependencies or files
         error_msg = f"TTS dependency missing ({provider}): {e}"
         logger.error("%s", error_msg, exc_info=True)
         return tool_error(error_msg, success=False)
     except Exception as e:
-        # 意外错误
+        # Unexpected errors
         error_msg = f"TTS generation failed ({provider}): {e}"
         logger.error("%s", error_msg, exc_info=True)
         return tool_error(error_msg, success=False)
 
 
 # ===========================================================================
-# 依赖检查
+# Requirements check
 # ===========================================================================
 def check_tts_requirements() -> bool:
     """
@@ -1000,11 +1094,13 @@ def check_tts_requirements() -> bool:
         pass
     if _check_neutts_available():
         return True
+    if _check_kittentts_available():
+        return True
     return False
 
 
 def _resolve_openai_audio_client_config() -> tuple[str, str]:
-    """返回直接 OpenAI 音频配置或托管网关回退。
+    """Return direct OpenAI audio config or a managed gateway fallback.
 
     When ``tts.use_gateway`` is set in config, the Tool Gateway is preferred
     even if direct OpenAI credentials are present.
@@ -1026,7 +1122,7 @@ def _resolve_openai_audio_client_config() -> tuple[str, str]:
 
 
 def _has_openai_audio_backend() -> bool:
-    """当 OpenAI 音频可以使用直接凭证或托管网关时返回 True。"""
+    """Return True when OpenAI audio can use direct credentials or the managed gateway."""
     return bool(resolve_openai_audio_api_key() or resolve_managed_tool_gateway("openai-audio"))
 
 
@@ -1036,7 +1132,7 @@ def _has_openai_audio_backend() -> bool:
 # Sentence boundary pattern: punctuation followed by space or newline
 _SENTENCE_BOUNDARY_RE = re.compile(r'(?<=[.!?])(?:\s|\n)|(?:\n\n)')
 
-# Markdown 去除模式（与 cli.py _voice_speak_response 相同）
+# Markdown stripping patterns (same as cli.py _voice_speak_response)
 _MD_CODE_BLOCK = re.compile(r'```[\s\S]*?```')
 _MD_LINK = re.compile(r'\[([^\]]+)\]\([^)]+\)')
 _MD_URL = re.compile(r'https?://\S+')
@@ -1050,7 +1146,7 @@ _MD_EXCESS_NL = re.compile(r'\n{3,}')
 
 
 def _strip_markdown_for_tts(text: str) -> str:
-    """去除不应朗读的 markdown 格式。"""
+    """Remove markdown formatting that shouldn't be spoken aloud."""
     text = _MD_CODE_BLOCK.sub(' ', text)
     text = _MD_LINK.sub(r'\1', text)
     text = _MD_URL.sub('', text)
@@ -1070,7 +1166,7 @@ def stream_tts_to_speaker(
     tts_done_event: threading.Event,
     display_callback: Optional[Callable[[str], None]] = None,
 ):
-    """从 *text_queue* 消费文本增量，将它们缓冲为句子，
+    """Consume text deltas from *text_queue*, buffer them into sentences,
     and stream each sentence through ElevenLabs TTS to the speaker in
     real-time.
 
@@ -1106,7 +1202,7 @@ def stream_tts_to_speaker(
             except ImportError:
                 logger.warning("elevenlabs package not installed; streaming TTS disabled")
 
-            # 为整个生命周期打开一个 sounddevice 输出流
+            # Open a single sounddevice output stream for the lifetime of
             # this function.  ElevenLabs pcm_24000 produces signed 16-bit
             # little-endian mono PCM at 24 kHz.
             if client is not None:
@@ -1128,7 +1224,7 @@ def stream_tts_to_speaker(
         long_flush_len = 100
         queue_timeout = 0.5
         _spoken_sentences: list[str] = []  # track spoken sentences to skip duplicates
-        # 正则表达式：去除缓冲区中完整的 <think>...</think> 块
+        # Regex to strip complete <think>...</think> blocks from buffer
         _think_block_re = re.compile(r'<think[\s>].*?</think>', flags=re.DOTALL)
 
         def _speak_sentence(sentence: str):
@@ -1138,19 +1234,19 @@ def stream_tts_to_speaker(
             cleaned = _strip_markdown_for_tts(sentence).strip()
             if not cleaned:
                 return
-            # 跳过重复/近似重复的句子（LLM 重复输出）
+            # Skip duplicate/near-duplicate sentences (LLM repetition)
             cleaned_lower = cleaned.lower().rstrip(".!,")
             for prev in _spoken_sentences:
                 if prev.lower().rstrip(".!,") == cleaned_lower:
                     return
             _spoken_sentences.append(cleaned)
-            # TTS 处理前在屏幕上显示原始句子
+            # Display raw sentence on screen before TTS processing
             if display_callback is not None:
                 display_callback(sentence)
-            # 如果没有可用的 TTS 客户端则跳过音频生成
+            # Skip audio generation if no TTS client available
             if client is None:
                 return
-            # 截断过长的句子
+            # Truncate very long sentences
             if len(cleaned) > MAX_TEXT_LENGTH:
                 cleaned = cleaned[:MAX_TEXT_LENGTH]
             try:
@@ -1168,7 +1264,7 @@ def stream_tts_to_speaker(
                         audio_array = _np.frombuffer(chunk, dtype=_np.int16)
                         output_stream.write(audio_array.reshape(-1, 1))
                 else:
-                    # 回退：将 PCM 块写入临时文件并通过系统播放器播放
+                    # Fallback: write chunks to temp file and play via system player
                     _play_via_tempfile(audio_iter, stop_event)
             except Exception as exc:
                 logger.warning("Streaming TTS sentence failed: %s", exc)
@@ -1200,18 +1296,18 @@ def stream_tts_to_speaker(
                         pass
 
         while not stop_event.is_set():
-            # 从队列读取下一个增量
+            # Read next delta from queue
             try:
                 delta = text_queue.get(timeout=queue_timeout)
             except queue.Empty:
-                # 超时：如果累积了很长的缓冲区，刷新它
+                # Timeout: if we have accumulated a long buffer, flush it
                 if len(sentence_buf) > long_flush_len:
                     _speak_sentence(sentence_buf)
                     sentence_buf = ""
                 continue
 
             if delta is None:
-                # 文本结束哨兵：去除剩余的 think 块，刷新
+                # End-of-text sentinel: strip any remaining think blocks, flush
                 sentence_buf = _think_block_re.sub('', sentence_buf)
                 if sentence_buf.strip():
                     _speak_sentence(sentence_buf)
@@ -1220,16 +1316,16 @@ def stream_tts_to_speaker(
             sentence_buf += delta
 
             # --- Think block filtering ---
-            # 去除缓冲区中完整的 <think>...</think> 块。
-            # 即使标签跨多个增量也能正确工作。
+            # Strip complete <think>...</think> blocks from buffer.
+            # Works correctly even when tags span multiple deltas.
             sentence_buf = _think_block_re.sub('', sentence_buf)
 
-            # 如果末尾有不完整的 <think 标签，等待更多数据
+            # If an incomplete <think tag is at the end, wait for more data
             # before extracting sentences (the closing tag may arrive next).
             if '<think' in sentence_buf and '</think>' not in sentence_buf:
                 continue
 
-            # 检查句子边界
+            # Check for sentence boundaries
             while True:
                 m = _SENTENCE_BOUNDARY_RE.search(sentence_buf)
                 if m is None:
@@ -1237,13 +1333,13 @@ def stream_tts_to_speaker(
                 end_pos = m.end()
                 sentence = sentence_buf[:end_pos]
                 sentence_buf = sentence_buf[end_pos:]
-                # 将短片段合并到下一个句子
+                # Merge short fragments into the next sentence
                 if len(sentence.strip()) < min_sentence_len:
                     sentence_buf = sentence + sentence_buf
                     break
                 _speak_sentence(sentence)
 
-        # 清空队列中剩余的项
+        # Drain any remaining items from the queue
         while True:
             try:
                 text_queue.get_nowait()
@@ -1255,7 +1351,7 @@ def stream_tts_to_speaker(
     except Exception as exc:
         logger.warning("Streaming TTS pipeline error: %s", exc)
     finally:
-        # 始终关闭音频输出流以避免锁定设备
+        # Always close the audio output stream to avoid locking the device
         if output_stream is not None:
             try:
                 output_stream.stop()
@@ -1266,7 +1362,7 @@ def stream_tts_to_speaker(
 
 
 # ===========================================================================
-# 主函数 -- 快速诊断
+# Main -- quick diagnostics
 # ===========================================================================
 if __name__ == "__main__":
     print("🔊 Text-to-Speech Tool Module")
@@ -1298,7 +1394,7 @@ if __name__ == "__main__":
 
 
 # ---------------------------------------------------------------------------
-# 注册
+# Registry
 # ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
 

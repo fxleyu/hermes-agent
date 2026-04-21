@@ -1,14 +1,14 @@
-"""Signal 即时通讯平台适配器。
+"""Signal messenger platform adapter.
 
-连接到以 HTTP 模式运行的 signal-cli 守护进程。
-入站消息通过 SSE（Server-Sent Events）流式传输接收。
-出站消息和操作使用基于 HTTP 的 JSON-RPC 2.0。
+Connects to a signal-cli daemon running in HTTP mode.
+Inbound messages arrive via SSE (Server-Sent Events) streaming.
+Outbound messages and actions use JSON-RPC 2.0 over HTTP.
 
-基于 PR #268（ibhagwan），修复了 bug 后重建。
+Based on PR #268 by ibhagwan, rebuilt with bug fixes.
 
-依赖：
-  - signal-cli 已安装并运行：signal-cli daemon --http 127.0.0.1:8080
-  - 已设置 SIGNAL_HTTP_URL 和 SIGNAL_ACCOUNT 环境变量
+Requires:
+  - signal-cli installed and running: signal-cli daemon --http 127.0.0.1:8080
+  - SIGNAL_HTTP_URL and SIGNAL_ACCOUNT environment variables set
 """
 
 import asyncio
@@ -18,6 +18,7 @@ import logging
 import os
 import random
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -41,28 +42,28 @@ from gateway.platforms.helpers import redact_phone
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# 常量
+# Constants
 # ---------------------------------------------------------------------------
 SIGNAL_MAX_ATTACHMENT_SIZE = 100 * 1024 * 1024  # 100 MB
-MAX_MESSAGE_LENGTH = 8000  # Signal 消息大小限制
-TYPING_INTERVAL = 8.0  # 输入指示器刷新间隔（秒）
+MAX_MESSAGE_LENGTH = 8000  # Signal message size limit
+TYPING_INTERVAL = 8.0  # seconds between typing indicator refreshes
 SSE_RETRY_DELAY_INITIAL = 2.0
 SSE_RETRY_DELAY_MAX = 60.0
-HEALTH_CHECK_INTERVAL = 30.0  # 健康检查间隔（秒）
-HEALTH_CHECK_STALE_THRESHOLD = 120.0  # SSE 无活动超过此时间则视为异常（秒）
+HEALTH_CHECK_INTERVAL = 30.0  # seconds between health checks
+HEALTH_CHECK_STALE_THRESHOLD = 120.0  # seconds without SSE activity before concern
 
 # ---------------------------------------------------------------------------
-# 辅助函数
+# Helpers
 # ---------------------------------------------------------------------------
 
 
 def _parse_comma_list(value: str) -> List[str]:
-    """将逗号分隔的字符串拆分为列表，去除空白。"""
+    """Split a comma-separated string into a list, stripping whitespace."""
     return [v.strip() for v in value.split(",") if v.strip()]
 
 
 def _guess_extension(data: bytes) -> str:
-    """根据文件魔数字节猜测文件扩展名。"""
+    """Guess file extension from magic bytes."""
     if data[:4] == b"\x89PNG":
         return ".png"
     if data[:2] == b"\xff\xd8":
@@ -102,42 +103,63 @@ _EXT_TO_MIME = {
 
 
 def _ext_to_mime(ext: str) -> str:
-    """将文件扩展名映射为 MIME 类型。"""
+    """Map file extension to MIME type."""
     return _EXT_TO_MIME.get(ext.lower(), "application/octet-stream")
 
 
 def _render_mentions(text: str, mentions: list) -> str:
-    """将 Signal 的提及占位符（\\uFFFC）替换为可读的 @标识符。
+    """Replace Signal mention placeholders (\\uFFFC) with readable @identifiers.
 
-    Signal 使用 Unicode 对象替换字符编码 @提及，
-    并在带外元数据中包含被提及用户的 UUID/号码。
+    Signal encodes @mentions as the Unicode object replacement character
+    with out-of-band metadata containing the mentioned user's UUID/number.
     """
     if not mentions or "\uFFFC" not in text:
         return text
-    # 按起始位置倒序排列提及，从后向前替换
-    # 以避免替换时索引偏移
+    # Sort mentions by start position (reverse) to replace from end to start
+    # so indices don't shift as we replace
     sorted_mentions = sorted(mentions, key=lambda m: m.get("start", 0), reverse=True)
     for mention in sorted_mentions:
         start = mention.get("start", 0)
         length = mention.get("length", 1)
-        # 使用提及的号码或 UUID 作为替换文本
+        # Use the mention's number or UUID as the replacement
         identifier = mention.get("number") or mention.get("uuid") or "user"
         replacement = f"@{identifier}"
         text = text[:start] + replacement + text[start + length:]
     return text
 
 
+def _is_signal_service_id(value: str) -> bool:
+    """Return True if *value* already looks like a Signal service identifier."""
+    if not value:
+        return False
+    if value.startswith("PNI:") or value.startswith("u:"):
+        return True
+    try:
+        uuid.UUID(value)
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
+def _looks_like_e164_number(value: str) -> bool:
+    """Return True for a plausible E.164 phone number."""
+    if not value or not value.startswith("+"):
+        return False
+    digits = value[1:]
+    return digits.isdigit() and 7 <= len(digits) <= 15
+
+
 def check_signal_requirements() -> bool:
-    """检查 Signal 是否已配置（具有 URL 和账户）。"""
+    """Check if Signal is configured (has URL and account)."""
     return bool(os.getenv("SIGNAL_HTTP_URL") and os.getenv("SIGNAL_ACCOUNT"))
 
 
 # ---------------------------------------------------------------------------
-# Signal 适配器
+# Signal Adapter
 # ---------------------------------------------------------------------------
 
 class SignalAdapter(BasePlatformAdapter):
-    """使用 signal-cli HTTP 守护进程的 Signal 即时通讯适配器。"""
+    """Signal messenger adapter using signal-cli HTTP daemon."""
 
     platform = Platform.SIGNAL
 
@@ -149,72 +171,95 @@ class SignalAdapter(BasePlatformAdapter):
         self.account = extra.get("account", "")
         self.ignore_stories = extra.get("ignore_stories", True)
 
-        # 解析允许列表 - 群组策略由群组允许列表是否存在来决定
+        # Parse allowlists — group policy is derived from presence of group allowlist
         group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
         self.group_allow_from = set(_parse_comma_list(group_allowed_str))
 
-        # HTTP 客户端
+        # HTTP client
         self.client: Optional[httpx.AsyncClient] = None
 
-        # 后台任务
+        # Background tasks
         self._sse_task: Optional[asyncio.Task] = None
         self._health_monitor_task: Optional[asyncio.Task] = None
         self._typing_tasks: Dict[str, asyncio.Task] = {}
+        # Per-chat typing-indicator backoff. When signal-cli reports
+        # NETWORK_FAILURE (recipient offline / unroutable), base.py's
+        # _keep_typing refresh loop would otherwise hammer sendTyping every
+        # ~2s indefinitely, producing WARNING-level log spam and pointless
+        # RPC traffic. We track consecutive failures per chat and skip the
+        # RPC during a cooldown window instead.
+        self._typing_failures: Dict[str, int] = {}
+        self._typing_skip_until: Dict[str, float] = {}
         self._running = False
         self._last_sse_activity = 0.0
         self._sse_response: Optional[httpx.Response] = None
 
-        # 规范化账户用于自消息过滤
+        # Normalize account for self-message filtering
         self._account_normalized = self.account.strip()
 
-        # 跟踪最近发送的消息时间戳，防止在"给自己的备忘"
-        # 或自聊天模式下出现回声循环（类似 WhatsApp 的 recentlySentIds）
+        # Track recently sent message timestamps to prevent echo-back loops
+        # in Note to Self / self-chat mode (mirrors WhatsApp recentlySentIds)
         self._recent_sent_timestamps: set = set()
         self._max_recent_timestamps = 50
+        # Signal increasingly exposes ACI/PNI UUIDs as stable recipient IDs.
+        # Keep a best-effort mapping so outbound sends can upgrade from a
+        # phone number to the corresponding UUID when signal-cli prefers it.
+        self._recipient_uuid_by_number: Dict[str, str] = {}
+        self._recipient_number_by_uuid: Dict[str, str] = {}
+        self._recipient_cache_lock = asyncio.Lock()
 
         logger.info("Signal adapter initialized: url=%s account=%s groups=%s",
                      self.http_url, redact_phone(self.account),
                      "enabled" if self.group_allow_from else "disabled")
 
     # ------------------------------------------------------------------
-    # 生命周期
+    # Lifecycle
     # ------------------------------------------------------------------
 
     async def connect(self) -> bool:
-        """连接到 signal-cli 守护进程并启动 SSE 监听器。"""
+        """Connect to signal-cli daemon and start SSE listener."""
         if not self.http_url or not self.account:
             logger.error("Signal: SIGNAL_HTTP_URL and SIGNAL_ACCOUNT are required")
             return False
 
-        # 获取作用域锁，防止同一电话号码的重复 Signal 监听器
+        # Acquire scoped lock to prevent duplicate Signal listeners for the same phone
+        lock_acquired = False
         try:
             if not self._acquire_platform_lock('signal-phone', self.account, 'Signal account'):
                 return False
+            lock_acquired = True
         except Exception as e:
             logger.warning("Signal: Could not acquire phone lock (non-fatal): %s", e)
 
         self.client = httpx.AsyncClient(timeout=30.0)
-
-        # 健康检查 - 验证 signal-cli 守护进程是否可达
         try:
-            resp = await self.client.get(f"{self.http_url}/api/v1/check", timeout=10.0)
-            if resp.status_code != 200:
-                logger.error("Signal: health check failed (status %d)", resp.status_code)
+            # Health check — verify signal-cli daemon is reachable
+            try:
+                resp = await self.client.get(f"{self.http_url}/api/v1/check", timeout=10.0)
+                if resp.status_code != 200:
+                    logger.error("Signal: health check failed (status %d)", resp.status_code)
+                    return False
+            except Exception as e:
+                logger.error("Signal: cannot reach signal-cli at %s: %s", self.http_url, e)
                 return False
-        except Exception as e:
-            logger.error("Signal: cannot reach signal-cli at %s: %s", self.http_url, e)
-            return False
 
-        self._running = True
-        self._last_sse_activity = time.time()
-        self._sse_task = asyncio.create_task(self._sse_listener())
-        self._health_monitor_task = asyncio.create_task(self._health_monitor())
+            self._running = True
+            self._last_sse_activity = time.time()
+            self._sse_task = asyncio.create_task(self._sse_listener())
+            self._health_monitor_task = asyncio.create_task(self._health_monitor())
 
-        logger.info("Signal: connected to %s", self.http_url)
-        return True
+            logger.info("Signal: connected to %s", self.http_url)
+            return True
+        finally:
+            if not self._running:
+                if self.client:
+                    await self.client.aclose()
+                    self.client = None
+                if lock_acquired:
+                    self._release_platform_lock()
 
     async def disconnect(self) -> None:
-        """停止 SSE 监听器并清理资源。"""
+        """Stop SSE listener and clean up."""
         self._running = False
 
         if self._sse_task:
@@ -231,7 +276,7 @@ class SignalAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
 
-        # 取消所有输入任务
+        # Cancel all typing tasks
         for task in self._typing_tasks.values():
             task.cancel()
         self._typing_tasks.clear()
@@ -245,11 +290,11 @@ class SignalAdapter(BasePlatformAdapter):
         logger.info("Signal: disconnected")
 
     # ------------------------------------------------------------------
-    # SSE 流式传输（入站消息）
+    # SSE Streaming (inbound messages)
     # ------------------------------------------------------------------
 
     async def _sse_listener(self) -> None:
-        """监听来自 signal-cli 守护进程的 SSE 事件。"""
+        """Listen for SSE events from signal-cli daemon."""
         url = f"{self.http_url}/api/v1/events?account={quote(self.account, safe='')}"
         backoff = SSE_RETRY_DELAY_INITIAL
 
@@ -262,7 +307,7 @@ class SignalAdapter(BasePlatformAdapter):
                     timeout=None,
                 ) as response:
                     self._sse_response = response
-                    backoff = SSE_RETRY_DELAY_INITIAL  # 连接成功后重置退避
+                    backoff = SSE_RETRY_DELAY_INITIAL  # Reset on successful connection
                     self._last_sse_activity = time.time()
                     logger.info("Signal SSE: connected")
 
@@ -276,13 +321,13 @@ class SignalAdapter(BasePlatformAdapter):
                             line = line.strip()
                             if not line:
                                 continue
-                            # SSE 心跳注释（":"）证明连接
-                            # 仍然活跃 - 更新活动时间，避免健康监控
-                            # 报告虚假空闲警告。
+                            # SSE keepalive comments (":") prove the connection
+                            # is alive — update activity so the health monitor
+                            # doesn't report false idle warnings.
                             if line.startswith(":"):
                                 self._last_sse_activity = time.time()
                                 continue
-                            # 解析 SSE 数据行
+                            # Parse SSE data lines
                             if line.startswith("data:"):
                                 data_str = line[5:].strip()
                                 if not data_str:
@@ -306,7 +351,7 @@ class SignalAdapter(BasePlatformAdapter):
                     logger.warning("Signal SSE: error: %s (reconnecting in %.0fs)", e, backoff)
 
             if self._running:
-                # 添加 20% 抖动以防止重连时的惊群效应
+                # Add 20% jitter to prevent thundering herd on reconnection
                 jitter = backoff * 0.2 * random.random()
                 await asyncio.sleep(backoff + jitter)
                 backoff = min(backoff * 2, SSE_RETRY_DELAY_MAX)
@@ -314,11 +359,11 @@ class SignalAdapter(BasePlatformAdapter):
         self._sse_response = None
 
     # ------------------------------------------------------------------
-    # 健康监控
+    # Health Monitor
     # ------------------------------------------------------------------
 
     async def _health_monitor(self) -> None:
-        """监控 SSE 连接健康状态，在连接陈旧时强制重连。"""
+        """Monitor SSE connection health and force reconnect if stale."""
         while self._running:
             await asyncio.sleep(HEALTH_CHECK_INTERVAL)
             if not self._running:
@@ -332,8 +377,8 @@ class SignalAdapter(BasePlatformAdapter):
                         f"{self.http_url}/api/v1/check", timeout=10.0
                     )
                     if resp.status_code == 200:
-                        # 守护进程存活但 SSE 空闲 - 更新活动时间以
-                        # 避免重复警告（连接可能只是没有新消息）
+                        # Daemon is alive but SSE is idle — update activity to
+                        # avoid repeated warnings (connection may just be quiet)
                         self._last_sse_activity = time.time()
                         logger.debug("Signal: daemon healthy, SSE idle")
                     else:
@@ -344,7 +389,7 @@ class SignalAdapter(BasePlatformAdapter):
                     self._force_reconnect()
 
     def _force_reconnect(self) -> None:
-        """通过关闭当前响应来强制 SSE 重连。"""
+        """Force SSE reconnection by closing the current response."""
         if self._sse_response and not self._sse_response.is_stream_consumed:
             try:
                 task = asyncio.create_task(self._sse_response.aclose())
@@ -355,16 +400,16 @@ class SignalAdapter(BasePlatformAdapter):
             self._sse_response = None
 
     # ------------------------------------------------------------------
-    # 消息处理
+    # Message Handling
     # ------------------------------------------------------------------
 
     async def _handle_envelope(self, envelope: dict) -> None:
-        """处理传入的 signal-cli 信封。"""
-        # 如果存在嵌套信封则解包
+        """Process an incoming signal-cli envelope."""
+        # Unwrap nested envelope if present
         envelope_data = envelope.get("envelope", envelope)
 
-        # 处理 syncMessage：提取"给自己的备忘"消息（发送给自己的账户），
-        # 同时过滤其他同步事件（已读回执、输入状态等）
+        # Handle syncMessage: extract "Note to Self" messages (sent to own account)
+        # while still filtering other sync events (read receipts, typing, etc.)
         is_note_to_self = False
         if "syncMessage" in envelope_data:
             sync_msg = envelope_data.get("syncMessage")
@@ -374,17 +419,17 @@ class SignalAdapter(BasePlatformAdapter):
                     dest = sent_msg.get("destinationNumber") or sent_msg.get("destination")
                     sent_ts = sent_msg.get("timestamp")
                     if dest == self._account_normalized:
-                        # 检查这是否是我们自己出站回复的回声
+                        # Check if this is an echo of our own outbound reply
                         if sent_ts and sent_ts in self._recent_sent_timestamps:
                             self._recent_sent_timestamps.discard(sent_ts)
                             return
-                        # 真正的用户"给自己的备忘" - 提升为 dataMessage
+                        # Genuine user Note to Self — promote to dataMessage
                         is_note_to_self = True
                         envelope_data = {**envelope_data, "dataMessage": sent_msg}
             if not is_note_to_self:
                 return
 
-        # 提取发送者信息
+        # Extract sender info
         sender = (
             envelope_data.get("sourceNumber")
             or envelope_data.get("sourceUuid")
@@ -392,21 +437,22 @@ class SignalAdapter(BasePlatformAdapter):
         )
         sender_name = envelope_data.get("sourceName", "")
         sender_uuid = envelope_data.get("sourceUuid", "")
+        self._remember_recipient_identifiers(sender, sender_uuid)
 
         if not sender:
             logger.debug("Signal: ignoring envelope with no sender")
             return
 
-        # 自消息过滤 - 防止回复循环（但允许"给自己的备忘"）
+        # Self-message filtering — prevent reply loops (but allow Note to Self)
         if self._account_normalized and sender == self._account_normalized and not is_note_to_self:
             return
 
-        # 过滤动态消息
+        # Filter stories
         if self.ignore_stories and envelope_data.get("storyMessage"):
             return
 
-        # 获取数据消息 - 也检查 editMessage（编辑后的消息在
-        # editMessage.dataMessage 中包含更新后的 dataMessage）
+        # Get data message — also check editMessage (edited messages contain
+        # their updated dataMessage inside editMessage.dataMessage)
         data_message = (
             envelope_data.get("dataMessage")
             or (envelope_data.get("editMessage") or {}).get("dataMessage")
@@ -414,16 +460,16 @@ class SignalAdapter(BasePlatformAdapter):
         if not data_message:
             return
 
-        # 检查是否为群组消息
+        # Check for group message
         group_info = data_message.get("groupInfo")
         group_id = group_info.get("groupId") if group_info else None
         is_group = bool(group_id)
 
-        # 群组消息过滤 - 基于 SIGNAL_GROUP_ALLOWED_USERS 推导：
-        # - 未设置环境变量 -> 群组禁用（默认安全行为）
-        # - 设置了群组 ID -> 仅允许这些群组
-        # - 设置了 "*" -> 允许所有群组
-        # 私聊授权完全由 run.py (_is_user_authorized) 处理
+        # Group message filtering — derived from SIGNAL_GROUP_ALLOWED_USERS:
+        # - No env var set → groups disabled (default safe behavior)
+        # - Env var set with group IDs → only those groups allowed
+        # - Env var set with "*" → all groups allowed
+        # DM auth is fully handled by run.py (_is_user_authorized)
         if is_group:
             if not self.group_allow_from:
                 logger.debug("Signal: ignoring group message (no SIGNAL_GROUP_ALLOWED_USERS)")
@@ -432,17 +478,17 @@ class SignalAdapter(BasePlatformAdapter):
                 logger.debug("Signal: group %s not in allowlist", group_id[:8] if group_id else "?")
                 return
 
-        # 构建聊天信息
+        # Build chat info
         chat_id = sender if not is_group else f"group:{group_id}"
         chat_type = "group" if is_group else "dm"
 
-        # 提取文本并渲染提及
+        # Extract text and render mentions
         text = data_message.get("message", "")
         mentions = data_message.get("mentions", [])
         if text and mentions:
             text = _render_mentions(text, mentions)
 
-        # 处理附件
+        # Process attachments
         attachments_data = data_message.get("attachments", [])
         media_urls = []
         media_types = []
@@ -459,14 +505,14 @@ class SignalAdapter(BasePlatformAdapter):
                 try:
                     cached_path, ext = await self._fetch_attachment(att_id)
                     if cached_path:
-                        # 使用 Signal 提供的 contentType（如果有），否则根据扩展名映射
+                        # Use contentType from Signal if available, else map from extension
                         content_type = att.get("contentType") or _ext_to_mime(ext)
                         media_urls.append(cached_path)
                         media_types.append(content_type)
                 except Exception:
                     logger.exception("Signal: failed to fetch attachment %s", att_id)
 
-        # 构建会话来源
+        # Build session source
         source = self.build_source(
             chat_id=chat_id,
             chat_name=group_info.get("groupName") if group_info else sender_name,
@@ -477,7 +523,7 @@ class SignalAdapter(BasePlatformAdapter):
             chat_id_alt=group_id if is_group else None,
         )
 
-        # 根据媒体类型判断消息类型
+        # Determine message type from media
         msg_type = MessageType.TEXT
         if media_types:
             if any(mt.startswith("audio/") for mt in media_types):
@@ -485,7 +531,7 @@ class SignalAdapter(BasePlatformAdapter):
             elif any(mt.startswith("image/") for mt in media_types):
                 msg_type = MessageType.PHOTO
 
-        # 从信封数据解析时间戳（自纪元以来的毫秒数）
+        # Parse timestamp from envelope data (milliseconds since epoch)
         ts_ms = envelope_data.get("timestamp", 0)
         if ts_ms:
             try:
@@ -495,7 +541,7 @@ class SignalAdapter(BasePlatformAdapter):
         else:
             timestamp = datetime.now(tz=timezone.utc)
 
-        # 构建并分发事件
+        # Build and dispatch event
         event = MessageEvent(
             source=source,
             text=text or "",
@@ -510,12 +556,70 @@ class SignalAdapter(BasePlatformAdapter):
 
         await self.handle_message(event)
 
+    def _remember_recipient_identifiers(self, number: Optional[str], service_id: Optional[str]) -> None:
+        """Cache any number↔UUID mapping observed from Signal envelopes."""
+        if not number or not service_id or not _is_signal_service_id(service_id):
+            return
+        self._recipient_uuid_by_number[number] = service_id
+        self._recipient_number_by_uuid[service_id] = number
+
+    def _extract_contact_uuid(self, contact: Any, phone_number: str) -> Optional[str]:
+        """Best-effort extraction of a Signal service ID from listContacts output."""
+        if not isinstance(contact, dict):
+            return None
+
+        number = contact.get("number")
+        recipient = contact.get("recipient")
+        service_id = contact.get("uuid") or contact.get("serviceId")
+        if not service_id:
+            profile = contact.get("profile")
+            if isinstance(profile, dict):
+                service_id = profile.get("serviceId") or profile.get("uuid")
+
+        if service_id and _is_signal_service_id(service_id):
+            matches_number = number == phone_number or recipient == phone_number
+            if matches_number:
+                return service_id
+        return None
+
+    async def _resolve_recipient(self, chat_id: str) -> str:
+        """Return the preferred Signal recipient identifier for a direct chat."""
+        if (
+            not chat_id
+            or chat_id.startswith("group:")
+            or _is_signal_service_id(chat_id)
+            or not _looks_like_e164_number(chat_id)
+        ):
+            return chat_id
+
+        cached = self._recipient_uuid_by_number.get(chat_id)
+        if cached:
+            return cached
+
+        async with self._recipient_cache_lock:
+            cached = self._recipient_uuid_by_number.get(chat_id)
+            if cached:
+                return cached
+
+            contacts = await self._rpc("listContacts", {
+                "account": self.account,
+                "allRecipients": True,
+            })
+            if isinstance(contacts, list):
+                for contact in contacts:
+                    number = contact.get("number") if isinstance(contact, dict) else None
+                    service_id = self._extract_contact_uuid(contact, chat_id)
+                    if number and service_id:
+                        self._remember_recipient_identifiers(number, service_id)
+
+            return self._recipient_uuid_by_number.get(chat_id, chat_id)
+
     # ------------------------------------------------------------------
-    # 附件处理
+    # Attachment Handling
     # ------------------------------------------------------------------
 
     async def _fetch_attachment(self, attachment_id: str) -> tuple:
-        """通过 JSON-RPC 获取附件并缓存。返回 (路径, 扩展名)。"""
+        """Fetch an attachment via JSON-RPC and cache it. Returns (path, ext)."""
         result = await self._rpc("getAttachment", {
             "account": self.account,
             "id": attachment_id,
@@ -524,14 +628,14 @@ class SignalAdapter(BasePlatformAdapter):
         if not result:
             return None, ""
 
-        # 处理字典响应（signal-cli 返回 {"data": "base64..."}）
+        # Handle dict response (signal-cli returns {"data": "base64..."})
         if isinstance(result, dict):
             result = result.get("data")
             if not result:
                 logger.warning("Signal: attachment response missing 'data' key")
                 return None, ""
 
-        # 结果是 base64 编码的文件内容
+        # Result is base64-encoded file content
         raw_data = base64.b64decode(result)
         ext = _guess_extension(raw_data)
 
@@ -545,11 +649,25 @@ class SignalAdapter(BasePlatformAdapter):
         return path, ext
 
     # ------------------------------------------------------------------
-    # JSON-RPC 通信
+    # JSON-RPC Communication
     # ------------------------------------------------------------------
 
-    async def _rpc(self, method: str, params: dict, rpc_id: str = None) -> Any:
-        """向 signal-cli 守护进程发送 JSON-RPC 2.0 请求。"""
+    async def _rpc(
+        self,
+        method: str,
+        params: dict,
+        rpc_id: str = None,
+        *,
+        log_failures: bool = True,
+    ) -> Any:
+        """Send a JSON-RPC 2.0 request to signal-cli daemon.
+
+        When ``log_failures=False``, error and exception paths log at DEBUG
+        instead of WARNING — used by the typing-indicator path to silence
+        repeated NETWORK_FAILURE spam for unreachable recipients while
+        still preserving visibility for the first occurrence and for
+        unrelated RPCs.
+        """
         if not self.client:
             logger.warning("Signal: RPC called but client not connected")
             return None
@@ -574,17 +692,23 @@ class SignalAdapter(BasePlatformAdapter):
             data = resp.json()
 
             if "error" in data:
-                logger.warning("Signal RPC error (%s): %s", method, data["error"])
+                if log_failures:
+                    logger.warning("Signal RPC error (%s): %s", method, data["error"])
+                else:
+                    logger.debug("Signal RPC error (%s): %s", method, data["error"])
                 return None
 
             return data.get("result")
 
         except Exception as e:
-            logger.warning("Signal RPC %s failed: %s", method, e)
+            if log_failures:
+                logger.warning("Signal RPC %s failed: %s", method, e)
+            else:
+                logger.debug("Signal RPC %s failed: %s", method, e)
             return None
 
     # ------------------------------------------------------------------
-    # 消息发送
+    # Sending
     # ------------------------------------------------------------------
 
     async def send(
@@ -594,7 +718,7 @@ class SignalAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """发送文本消息。"""
+        """Send a text message."""
         await self._stop_typing_indicator(chat_id)
 
         params: Dict[str, Any] = {
@@ -605,21 +729,21 @@ class SignalAdapter(BasePlatformAdapter):
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
         else:
-            params["recipient"] = [chat_id]
+            params["recipient"] = [await self._resolve_recipient(chat_id)]
 
         result = await self._rpc("send", params)
 
         if result is not None:
             self._track_sent_timestamp(result)
-            # 使用 RPC 结果中的时间戳作为伪 message_id。
-            # Signal 没有真正的消息 ID，但流消费者
-            # 需要一个真值来正确执行编辑->回退路径。
+            # Use the timestamp from the RPC result as a pseudo message_id.
+            # Signal doesn't have real message IDs, but the stream consumer
+            # needs a truthy value to follow its edit→fallback path correctly.
             _msg_id = str(result.get("timestamp", "")) if isinstance(result, dict) else None
             return SendResult(success=True, message_id=_msg_id or None)
         return SendResult(success=False, error="RPC send failed")
 
     def _track_sent_timestamp(self, rpc_result) -> None:
-        """记录出站消息时间戳用于回声过滤。"""
+        """Record outbound message timestamp for echo-back filtering."""
         ts = rpc_result.get("timestamp") if isinstance(rpc_result, dict) else None
         if ts:
             self._recent_sent_timestamps.add(ts)
@@ -627,7 +751,28 @@ class SignalAdapter(BasePlatformAdapter):
                 self._recent_sent_timestamps.pop()
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """发送正在输入指示器。"""
+        """Send a typing indicator.
+
+        base.py's ``_keep_typing`` refresh loop calls this every ~2s while
+        the agent is processing. If signal-cli returns NETWORK_FAILURE for
+        this recipient (offline, unroutable, group membership lost, etc.)
+        the unmitigated behaviour is: a WARNING log every 2 seconds for as
+        long as the agent keeps running. Instead we:
+
+        - silence the WARNING after the first consecutive failure (subsequent
+          attempts log at DEBUG) so transport issues are still visible once
+          but don't flood the log,
+        - skip the RPC entirely during an exponential cooldown window once
+          three consecutive failures have happened, so we stop hammering
+          signal-cli with requests it can't deliver.
+
+        A successful sendTyping clears the counters.
+        """
+        now = time.monotonic()
+        skip_until = self._typing_skip_until.get(chat_id, 0.0)
+        if now < skip_until:
+            return
+
         params: Dict[str, Any] = {
             "account": self.account,
         }
@@ -635,9 +780,28 @@ class SignalAdapter(BasePlatformAdapter):
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
         else:
-            params["recipient"] = [chat_id]
+            params["recipient"] = [await self._resolve_recipient(chat_id)]
 
-        await self._rpc("sendTyping", params, rpc_id="typing")
+        fails = self._typing_failures.get(chat_id, 0)
+        result = await self._rpc(
+            "sendTyping",
+            params,
+            rpc_id="typing",
+            log_failures=(fails == 0),
+        )
+
+        if result is None:
+            fails += 1
+            self._typing_failures[chat_id] = fails
+            # After 3 consecutive failures, back off exponentially (16s,
+            # 32s, 60s cap) to stop spamming signal-cli for a recipient
+            # that clearly isn't reachable right now.
+            if fails >= 3:
+                backoff = min(60.0, 16.0 * (2 ** (fails - 3)))
+                self._typing_skip_until[chat_id] = now + backoff
+        else:
+            self._typing_failures.pop(chat_id, None)
+            self._typing_skip_until.pop(chat_id, None)
 
     async def send_image(
         self,
@@ -646,14 +810,14 @@ class SignalAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         **kwargs,
     ) -> SendResult:
-        """发送图片。支持 http(s):// 和 file:// URL。"""
+        """Send an image. Supports http(s):// and file:// URLs."""
         await self._stop_typing_indicator(chat_id)
 
-        # 将图片解析为本地路径
+        # Resolve image to local path
         if image_url.startswith("file://"):
             file_path = unquote(image_url[7:])
         else:
-            # 下载远程图片到缓存
+            # Download remote image to cache
             try:
                 file_path = await cache_image_from_url(image_url)
             except Exception as e:
@@ -663,7 +827,7 @@ class SignalAdapter(BasePlatformAdapter):
         if not file_path or not Path(file_path).exists():
             return SendResult(success=False, error="Image file not found")
 
-        # 验证文件大小
+        # Validate size
         file_size = Path(file_path).stat().st_size
         if file_size > SIGNAL_MAX_ATTACHMENT_SIZE:
             return SendResult(success=False, error=f"Image too large ({file_size} bytes)")
@@ -677,7 +841,7 @@ class SignalAdapter(BasePlatformAdapter):
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
         else:
-            params["recipient"] = [chat_id]
+            params["recipient"] = [await self._resolve_recipient(chat_id)]
 
         result = await self._rpc("send", params)
         if result is not None:
@@ -692,10 +856,10 @@ class SignalAdapter(BasePlatformAdapter):
         media_label: str,
         caption: Optional[str] = None,
     ) -> SendResult:
-        """通过 RPC 发送任意文件作为 Signal 附件。
+        """Send any file as a Signal attachment via RPC.
 
-        send_document、send_image_file、send_voice
-        和 send_video 的共享实现 - 避免重复验证/路由/RPC 逻辑。
+        Shared implementation for send_document, send_image_file, send_voice,
+        and send_video — avoids duplicating the validation/routing/RPC logic.
         """
         await self._stop_typing_indicator(chat_id)
 
@@ -716,7 +880,7 @@ class SignalAdapter(BasePlatformAdapter):
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
         else:
-            params["recipient"] = [chat_id]
+            params["recipient"] = [await self._resolve_recipient(chat_id)]
 
         result = await self._rpc("send", params)
         if result is not None:
@@ -732,7 +896,7 @@ class SignalAdapter(BasePlatformAdapter):
         filename: Optional[str] = None,
         **kwargs,
     ) -> SendResult:
-        """发送文档/文件附件。"""
+        """Send a document/file attachment."""
         return await self._send_attachment(chat_id, file_path, "File", caption)
 
     async def send_image_file(
@@ -743,10 +907,10 @@ class SignalAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         **kwargs,
     ) -> SendResult:
-        """将本地图片文件作为原生 Signal 附件发送。
+        """Send a local image file as a native Signal attachment.
 
-        当从代理响应中提取包含图片路径的 MEDIA: 标签时，
-        由网关媒体传递流程调用。
+        Called by the gateway media delivery flow when MEDIA: tags containing
+        image paths are extracted from agent responses.
         """
         return await self._send_attachment(chat_id, image_path, "Image", caption)
 
@@ -789,6 +953,10 @@ class SignalAdapter(BasePlatformAdapter):
                 await task
             except asyncio.CancelledError:
                 pass
+        # Reset per-chat typing backoff state so the next agent turn starts
+        # fresh rather than inheriting a cooldown from a prior conversation.
+        self._typing_failures.pop(chat_id, None)
+        self._typing_skip_until.pop(chat_id, None)
 
     async def stop_typing(self, chat_id: str) -> None:
         """Public interface for stopping typing — called by base adapter's

@@ -1,18 +1,19 @@
-"""URL 安全检查——阻止对私有/内部网络地址的请求。
+"""URL safety checks — blocks requests to private/internal network addresses.
 
-防止 SSRF（服务端请求伪造），即恶意提示或技能可能诱骗代理
-获取内部资源，如云元数据端点（169.254.169.254）、localhost 服务
-或私有网络主机。
+Prevents SSRF (Server-Side Request Forgery) where a malicious prompt or
+skill could trick the agent into fetching internal resources like cloud
+metadata endpoints (169.254.169.254), localhost services, or private
+network hosts.
 
-局限性（已记录，在预检层面无法修复）：
-  - DNS 重绑定（TOCTOU）：攻击者控制的 DNS 服务器设置 TTL=0，
-    检查时返回公共 IP，实际连接时返回私有 IP。修复此问题需要
-    连接级验证（例如 Python 的 Champion 库或出口代理如
-    Stripe 的 Smokescreen）。
-  - 基于重定向的绕过通过 httpx 事件钩子来缓解，这些钩子在
-    vision_tools、网关平台适配器和媒体缓存辅助工具中重新验证
-    每个重定向目标。Web 工具使用第三方 SDK（Firecrawl/Tavily），
-    重定向处理在它们的服务器上进行。
+Limitations (documented, not fixable at pre-flight level):
+  - DNS rebinding (TOCTOU): an attacker-controlled DNS server with TTL=0
+    can return a public IP for the check, then a private IP for the actual
+    connection. Fixing this requires connection-level validation (e.g.
+    Python's Champion library or an egress proxy like Stripe's Smokescreen).
+  - Redirect-based bypass is mitigated by httpx event hooks that re-validate
+    each redirect target in vision_tools, gateway platform adapters, and
+    media cache helpers. Web tools use third-party SDKs (Firecrawl/Tavily)
+    where redirect handling is on their servers.
 """
 
 import ipaddress
@@ -22,54 +23,69 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
-# 无论 IP 解析结果如何，始终应阻止的主机名
+# Hostnames that should always be blocked regardless of IP resolution
 _BLOCKED_HOSTNAMES = frozenset({
     "metadata.google.internal",
     "metadata.goog",
 })
 
-# 100.64.0.0/10（CGNAT / 共享地址空间，RFC 6598）不在
-# ipaddress.is_private 的覆盖范围内——对 is_private 和 is_global
-# 都返回 False。必须显式阻止。被运营商级 NAT、Tailscale/WireGuard
-# VPN 和某些云内部网络使用。
+# Exact HTTPS hostnames allowed to resolve to private/benchmark-space IPs.
+# This is intentionally narrow: QQ media downloads can legitimately resolve
+# to 198.18.0.0/15 behind local proxy/benchmark infrastructure.
+_TRUSTED_PRIVATE_IP_HOSTS = frozenset({
+    "multimedia.nt.qq.com.cn",
+})
+
+# 100.64.0.0/10 (CGNAT / Shared Address Space, RFC 6598) is NOT covered by
+# ipaddress.is_private — it returns False for both is_private and is_global.
+# Must be blocked explicitly. Used by carrier-grade NAT, Tailscale/WireGuard
+# VPNs, and some cloud internal networks.
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """如果该 IP 应因 SSRF 保护而被阻止，返回 True。"""
+    """Return True if the IP should be blocked for SSRF protection."""
     if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
         return True
     if ip.is_multicast or ip.is_unspecified:
         return True
-    # 不在 is_private 覆盖范围内的 CGNAT 地址段
+    # CGNAT range not covered by is_private
     if ip in _CGNAT_NETWORK:
         return True
     return False
 
 
-def is_safe_url(url: str) -> bool:
-    """如果 URL 目标不是私有/内部地址，返回 True。
+def _allows_private_ip_resolution(hostname: str, scheme: str) -> bool:
+    """Return True when a trusted HTTPS hostname may bypass IP-class blocking."""
+    return scheme == "https" and hostname in _TRUSTED_PRIVATE_IP_HOSTS
 
-    将主机名解析为 IP 并检查是否属于私有范围。
-    失败关闭：DNS 错误和意外异常会阻止请求。
+
+def is_safe_url(url: str) -> bool:
+    """Return True if the URL target is not a private/internal address.
+
+    Resolves the hostname to an IP and checks against private ranges.
+    Fails closed: DNS errors and unexpected exceptions block the request.
     """
     try:
         parsed = urlparse(url)
-        hostname = (parsed.hostname or "").strip().lower()
+        hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+        scheme = (parsed.scheme or "").strip().lower()
         if not hostname:
             return False
 
-        # 阻止已知的内部主机名
+        # Block known internal hostnames
         if hostname in _BLOCKED_HOSTNAMES:
             logger.warning("Blocked request to internal hostname: %s", hostname)
             return False
 
-        # 尝试解析并检查 IP
+        allow_private_ip = _allows_private_ip_resolution(hostname, scheme)
+
+        # Try to resolve and check IP
         try:
             addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
         except socket.gaierror:
-            # DNS 解析失败——失败关闭。如果 DNS 无法解析，
-            # HTTP 客户端也会失败，所以阻止不会造成任何损失。
+            # DNS resolution failed — fail closed. If DNS can't resolve it,
+            # the HTTP client will also fail, so blocking loses nothing.
             logger.warning("Blocked request — DNS resolution failed for: %s", hostname)
             return False
 
@@ -80,16 +96,23 @@ def is_safe_url(url: str) -> bool:
             except ValueError:
                 continue
 
-            if _is_blocked_ip(ip):
+            if not allow_private_ip and _is_blocked_ip(ip):
                 logger.warning(
                     "Blocked request to private/internal address: %s -> %s",
                     hostname, ip_str,
                 )
                 return False
 
+        if allow_private_ip:
+            logger.debug(
+                "Allowing trusted hostname despite private/internal resolution: %s",
+                hostname,
+            )
+
         return True
 
     except Exception as exc:
-        # 失败关闭——不要让解析边缘情况成为 SSRF 绕过向量
+        # Fail closed on unexpected errors — don't let parsing edge cases
+        # become SSRF bypass vectors
         logger.warning("Blocked request — URL safety check error for %s: %s", url, exc)
         return False

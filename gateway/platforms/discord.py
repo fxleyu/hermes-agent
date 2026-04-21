@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 """
-Discord 平台适配器。
+Discord platform adapter.
 
-使用 discord.py 库实现：
-- 从服务器和私聊接收消息
-- 发送回复
-- 处理线程和频道
+Uses discord.py library for:
+- Receiving messages from servers and DMs
+- Sending responses back
+- Handling threads and channels
 """
 
 import asyncio
@@ -51,7 +51,9 @@ from gateway.platforms.base import (
     ProcessingOutcome,
     SendResult,
     cache_image_from_url,
+    cache_image_from_bytes,
     cache_audio_from_url,
+    cache_audio_from_bytes,
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
 )
@@ -59,74 +61,109 @@ from tools.url_safety import is_safe_url
 
 
 def _clean_discord_id(entry: str) -> str:
-    """去除 Discord 用户 ID 或用户名条目中的常见前缀。
+    """Strip common prefixes from a Discord user ID or username entry.
 
-    用户有时会粘贴带有前缀的 ID，如 ``user:123``、``<@123>``
-    或 ``<@!123>``，来自 Discord UI 或其他工具。这会将
-    条目规范化为纯 ID 或用户名。
+    Users sometimes paste IDs with prefixes like ``user:123``, ``<@123>``,
+    or ``<@!123>`` from Discord's UI or other tools.  This normalises the
+    entry to just the bare ID or username.
     """
     entry = entry.strip()
-    # 去除 Discord 提及语法：<@123> 或 <@!123>
+    # Strip Discord mention syntax: <@123> or <@!123>
     if entry.startswith("<@") and entry.endswith(">"):
         entry = entry.lstrip("<@!").rstrip(">")
-    # 去除 "user:" 前缀（见于某些 Discord 工具/入门粘贴）
+    # Strip "user:" prefix (seen in some Discord tools / onboarding pastes)
     if entry.lower().startswith("user:"):
         entry = entry[5:]
     return entry.strip()
 
 
 def check_discord_requirements() -> bool:
-    """检查 Discord 依赖是否可用。"""
+    """Check if Discord dependencies are available."""
     return DISCORD_AVAILABLE
 
 
-class VoiceReceiver:
-    """捕获并解码来自 Discord 语音频道的语音音频。
+def _build_allowed_mentions():
+    """Build Discord ``AllowedMentions`` with safe defaults, overridable via env.
 
-    连接到 VoiceClient 的套接字监听器，解密 RTP 数据包
-    （NaCl 传输 + DAVE E2EE），将 Opus 解码为 PCM，并缓冲
-    每个用户的音频。轮询循环检测静音并通过回调
-    传递完成的语句。
+    Discord bots default to parsing ``@everyone``, ``@here``, role pings, and
+    user pings when ``allowed_mentions`` is unset on the client — any LLM
+    output or echoed user content that contains ``@everyone`` would therefore
+    ping the whole server. We explicitly deny ``@everyone`` and role pings
+    by default and keep user / replied-user pings enabled so normal
+    conversation still works.
+
+    Override via environment variables (or ``discord.allow_mentions.*`` in
+    config.yaml):
+
+        DISCORD_ALLOW_MENTION_EVERYONE      default false  — @everyone + @here
+        DISCORD_ALLOW_MENTION_ROLES         default false  — @role pings
+        DISCORD_ALLOW_MENTION_USERS         default true   — @user pings
+        DISCORD_ALLOW_MENTION_REPLIED_USER  default true   — reply-ping author
+    """
+    if not DISCORD_AVAILABLE:
+        return None
+
+    def _b(name: str, default: bool) -> bool:
+        raw = os.getenv(name, "").strip().lower()
+        if not raw:
+            return default
+        return raw in ("true", "1", "yes", "on")
+
+    return discord.AllowedMentions(
+        everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", False),
+        roles=_b("DISCORD_ALLOW_MENTION_ROLES", False),
+        users=_b("DISCORD_ALLOW_MENTION_USERS", True),
+        replied_user=_b("DISCORD_ALLOW_MENTION_REPLIED_USER", True),
+    )
+
+
+class VoiceReceiver:
+    """Captures and decodes voice audio from a Discord voice channel.
+
+    Attaches to a VoiceClient's socket listener, decrypts RTP packets
+    (NaCl transport + DAVE E2EE), decodes Opus to PCM, and buffers
+    per-user audio.  A polling loop detects silence and delivers
+    completed utterances via a callback.
     """
 
-    SILENCE_THRESHOLD = 1.5    # 静默秒数 -> 语句结束
+    SILENCE_THRESHOLD = 1.5    # seconds of silence → end of utterance
     MIN_SPEECH_DURATION = 0.5  # minimum seconds to process (skip noise)
-    SAMPLE_RATE = 48000        # Discord 原生采样率
-    CHANNELS = 2               # Discord 发送立体声
+    SAMPLE_RATE = 48000        # Discord native rate
+    CHANNELS = 2               # Discord sends stereo
 
     def __init__(self, voice_client, allowed_user_ids: set = None):
         self._vc = voice_client
         self._allowed_user_ids = allowed_user_ids or set()
         self._running = False
 
-        # 解密
+        # Decryption
         self._secret_key: Optional[bytes] = None
         self._dave_session = None
         self._bot_ssrc: int = 0
 
-        # SSRC -> user_id 映射（通过 SPEAKING 事件填充）
+        # SSRC -> user_id mapping (populated from SPEAKING events)
         self._ssrc_to_user: Dict[int, int] = {}
         self._lock = threading.Lock()
 
-        # 每用户音频缓冲区
+        # Per-user audio buffers
         self._buffers: Dict[int, bytearray] = defaultdict(bytearray)
         self._last_packet_time: Dict[int, float] = {}
 
-        # 每 SSRC 的 Opus 解码器（每个用户需要独立的解码器状态）
+        # Opus decoder per SSRC (each user needs own decoder state)
         self._decoders: Dict[int, object] = {}
 
-        # 暂停标志：机器人播放 TTS 时不捕获音频
+        # Pause flag: don't capture while bot is playing TTS
         self._paused = False
 
-        # 调试日志计数器（实例级别以避免跨实例竞争）
+        # Debug logging counter (instance-level to avoid cross-instance races)
         self._packet_debug_count = 0
 
     # ------------------------------------------------------------------
-    # 生命周期
+    # Lifecycle
     # ------------------------------------------------------------------
 
     def start(self):
-        """开始监听语音数据包。"""
+        """Start listening for voice packets."""
         conn = self._vc._connection
         self._secret_key = bytes(conn.secret_key)
         self._dave_session = conn.dave_session
@@ -138,7 +175,7 @@ class VoiceReceiver:
         logger.info("VoiceReceiver started (bot_ssrc=%d)", self._bot_ssrc)
 
     def stop(self):
-        """停止监听并清理资源。"""
+        """Stop listening and clean up."""
         self._running = False
         try:
             self._vc._connection.remove_socket_listener(self._on_packet)
@@ -158,7 +195,7 @@ class VoiceReceiver:
         self._paused = False
 
     # ------------------------------------------------------------------
-    # SSRC -> user_id 映射，通过 SPEAKING 操作码钩子
+    # SSRC -> user_id mapping via SPEAKING opcode hook
     # ------------------------------------------------------------------
 
     def map_ssrc(self, ssrc: int, user_id: int):
@@ -166,12 +203,12 @@ class VoiceReceiver:
             self._ssrc_to_user[ssrc] = user_id
 
     def _install_speaking_hook(self, conn):
-        """包装语音 WebSocket 钩子以捕获 SPEAKING 事件（op 5）。
+        """Wrap the voice websocket hook to capture SPEAKING events (op 5).
 
-        VoiceConnectionState 将钩子存储为 ``conn.hook``（公共属性）。
-        它在每次（重新）连接时传递给 DiscordVoiceWebSocket，因此我们
-        必须在 VoiceConnectionState 级别和当前活动的
-        WebSocket 实例上包装它。
+        VoiceConnectionState stores the hook as ``conn.hook`` (public attr).
+        It is passed to DiscordVoiceWebSocket on each (re)connect, so we
+        must wrap it on the VoiceConnectionState level AND on the current
+        live websocket instance.
         """
         original_hook = conn.hook
         receiver_self = self
@@ -187,9 +224,9 @@ class VoiceReceiver:
             if original_hook:
                 await original_hook(ws, msg)
 
-        # 设置到连接状态上（用于后续重连）
+        # Set on connection state (for future reconnects)
         conn.hook = wrapped_hook
-        # 设置到当前活跃的 WebSocket 上（立即生效）
+        # Set on the current live websocket (for immediate effect)
         try:
             from discord.utils import MISSING
             if hasattr(conn, 'ws') and conn.ws is not MISSING:
@@ -199,14 +236,14 @@ class VoiceReceiver:
             logger.warning("Could not install hook on live ws: %s", e)
 
     # ------------------------------------------------------------------
-    # 数据包处理器（从 SocketReader 线程调用）
+    # Packet handler (called from SocketReader thread)
     # ------------------------------------------------------------------
 
     def _on_packet(self, data: bytes):
         if not self._running or self._paused:
             return
 
-        # 记录前几个原始数据包用于调试
+        # Log first few raw packets for debugging
         self._packet_debug_count += 1
         if self._packet_debug_count <= 5:
             logger.debug(
@@ -217,9 +254,9 @@ class VoiceReceiver:
         if len(data) < 16:
             return
 
-        # RTP 版本检查：最高 2 位必须为 10（版本 2）。
-        # 低位可能变化（填充、扩展、CSRC 计数）。
-        # 负载类型（字节 1 低 7 位）= 0x78（120）表示语音。
+        # RTP version check: top 2 bits must be 10 (version 2).
+        # Lower bits may vary (padding, extension, CSRC count).
+        # Payload type (byte 1 lower 7 bits) = 0x78 (120) for voice.
         if (data[0] >> 6) != 2 or (data[1] & 0x7F) != 0x78:
             if self._packet_debug_count <= 5:
                 logger.debug("Skipped non-RTP: byte0=0x%02x byte1=0x%02x", data[0], data[1])
@@ -228,20 +265,20 @@ class VoiceReceiver:
         first_byte = data[0]
         _, _, seq, timestamp, ssrc = struct.unpack_from(">BBHII", data, 0)
 
-        # 跳过机器人自身的音频
+        # Skip bot's own audio
         if ssrc == self._bot_ssrc:
             return
 
-        # 计算动态 RTP 头大小（RFC 9335 / rtpsize 模式）
-        cc = first_byte & 0x0F  # CSRC 计数
-        has_extension = bool(first_byte & 0x10)  # 扩展位
-        has_padding = bool(first_byte & 0x20)  # 填充位（RFC 3550 §5.1）
+        # Calculate dynamic RTP header size (RFC 9335 / rtpsize mode)
+        cc = first_byte & 0x0F  # CSRC count
+        has_extension = bool(first_byte & 0x10)  # extension bit
+        has_padding = bool(first_byte & 0x20)  # padding bit (RFC 3550 §5.1)
         header_size = 12 + (4 * cc) + (4 if has_extension else 0)
 
-        if len(data) < header_size + 4:  # 至少需要头部 + 随机数
+        if len(data) < header_size + 4:  # need at least header + nonce
             return
 
-        # 从前导字节读取扩展长度（解密后用于跳过）
+        # Read extension length from preamble (for skipping after decrypt)
         ext_data_len = 0
         if has_extension:
             ext_preamble_offset = 12 + (4 * cc)
@@ -267,7 +304,7 @@ class VoiceReceiver:
         encrypted = bytes(payload_with_nonce[:-4])
 
         try:
-            import nacl.secret  # noqa: 延迟导入 - 仅在语音路径中使用
+            import nacl.secret  # noqa: delayed import – only in voice path
             box = nacl.secret.Aead(self._secret_key)
             decrypted = box.decrypt(encrypted, header, bytes(nonce))
         except Exception as e:
@@ -275,15 +312,15 @@ class VoiceReceiver:
                 logger.warning("NaCl decrypt failed: %s (hdr=%d, enc=%d)", e, header_size, len(encrypted))
             return
 
-        # 跳过加密的扩展数据以获取实际的 opus 负载
+        # Skip encrypted extension data to get the actual opus payload
         if ext_data_len and len(decrypted) > ext_data_len:
             decrypted = decrypted[ext_data_len:]
 
-        # --- 去除 RTP 填充（RFC 3550 §5.1）---
-        # 当 P 位置位时，负载最后一个字节表示
-        # 需要移除的尾部填充字节数（包括自身），
-        # 在进一步处理前必须移除。跳过此步骤会将填充污染的
-        # 字节传入 DAVE/Opus 并损坏入站音频。
+        # --- Strip RTP padding (RFC 3550 §5.1) ---
+        # When the P bit is set, the last payload byte holds the count of
+        # trailing padding bytes (including itself) that must be removed
+        # before further processing. Skipping this passes padding-contaminated
+        # bytes into DAVE/Opus and corrupts inbound audio.
         if has_padding:
             if not decrypted:
                 if self._packet_debug_count <= 10:
@@ -301,7 +338,7 @@ class VoiceReceiver:
                 return
             decrypted = decrypted[:-pad_len]
             if not decrypted:
-                # 填充消耗了整个负载 —— 无数据可解码
+                # Padding consumed entire payload — nothing to decode
                 return
 
         # --- DAVE E2EE decrypt ---
@@ -315,14 +352,14 @@ class VoiceReceiver:
                         user_id, davey.MediaType.audio, decrypted
                     )
                 except Exception as e:
-                    # 未加密直通 —— 直接使用 NaCl 解密后的数据
+                    # Unencrypted passthrough — use NaCl-decrypted data as-is
                     if "Unencrypted" not in str(e):
                         if self._packet_debug_count <= 10:
                             logger.warning("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
                         return
-            # 如果 SSRC 未知（尚无 SPEAKING 事件），跳过 DAVE 直接
-            # 尝试 Opus 解码 —— 音频可能处于直通模式。
-            # 当 SPEAKING 事件到达时缓冲区将获得 user_id。
+            # If SSRC unknown (no SPEAKING event yet), skip DAVE and try
+            # Opus decode directly — audio may be in passthrough mode.
+            # Buffer will get a user_id when SPEAKING event arrives later.
 
         # --- Opus decode -> PCM ---
         try:
@@ -337,11 +374,11 @@ class VoiceReceiver:
             return
 
     # ------------------------------------------------------------------
-    # 静音检测
+    # Silence detection
     # ------------------------------------------------------------------
 
     def _infer_user_for_ssrc(self, ssrc: int) -> int:
-        """尝试为未映射的 SSRC 推断 user_id。
+        """Try to infer user_id for an unmapped SSRC.
 
         When the bot rejoins a voice channel, Discord may not resend
         SPEAKING events for users already speaking.  If exactly one
@@ -367,7 +404,7 @@ class VoiceReceiver:
         return 0
 
     def check_silence(self) -> list:
-        """返回已完成语句的 (user_id, pcm_bytes) 列表。"""
+        """Return list of (user_id, pcm_bytes) for completed utterances."""
         now = time.monotonic()
         completed = []
 
@@ -385,15 +422,15 @@ class VoiceReceiver:
                 if silence_duration >= self.SILENCE_THRESHOLD and buf_duration >= self.MIN_SPEECH_DURATION:
                     user_id = ssrc_user_map.get(ssrc, 0)
                     if not user_id:
-                        # SSRC 未映射（机器人重连后缺少 SPEAKING 事件）。
-                        # 从语音频道中的允许用户推断。
+                        # SSRC not mapped (SPEAKING event missing after bot rejoin).
+                        # Infer from allowed users in the voice channel.
                         user_id = self._infer_user_for_ssrc(ssrc)
                     if user_id:
                         completed.append((user_id, bytes(buf)))
                     self._buffers[ssrc] = bytearray()
                     self._last_packet_time.pop(ssrc, None)
                 elif silence_duration >= self.SILENCE_THRESHOLD * 2:
-                    # 过期缓冲区且无有效用户 —— 丢弃
+                    # Stale buffer with no valid user — discard
                     self._buffers.pop(ssrc, None)
                     self._last_packet_time.pop(ssrc, None)
 
@@ -406,7 +443,7 @@ class VoiceReceiver:
     @staticmethod
     def pcm_to_wav(pcm_data: bytes, output_path: str,
                    src_rate: int = 48000, src_channels: int = 2):
-        """通过 ffmpeg 将原始 PCM 转换为 16kHz 单声道 WAV。"""
+        """Convert raw PCM to 16kHz mono WAV via ffmpeg."""
         with tempfile.NamedTemporaryFile(suffix=".pcm", delete=False) as f:
             f.write(pcm_data)
             pcm_path = f.name
@@ -434,74 +471,76 @@ class VoiceReceiver:
 
 class DiscordAdapter(BasePlatformAdapter):
     """
-    Discord 机器人适配器。
+    Discord bot adapter.
 
-    处理功能：
-    - 接收来自服务器和私聊的消息
-    - 以 Discord Markdown 格式发送回复
-    - 线程支持
-    - 原生斜杠命令（/ask、/reset、/status、/stop）
-    - 基于按钮的命令执行审批
-    - 长对话自动创建线程
-    - 基于表情反应的反馈
+    Handles:
+    - Receiving messages from servers and DMs
+    - Sending responses with Discord markdown
+    - Thread support
+    - Native slash commands (/ask, /reset, /status, /stop)
+    - Button-based exec approvals
+    - Auto-threading for long conversations
+    - Reaction-based feedback
     """
 
-    # Discord 消息长度限制
+    # Discord message limits
     MAX_MESSAGE_LENGTH = 2000
-    _SPLIT_THRESHOLD = 1900  # 接近 2000 字符拆分点
+    _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
 
-    # 不活跃后自动断开语音频道的秒数
+    # Auto-disconnect from voice channel after this many seconds of inactivity
     VOICE_TIMEOUT = 300
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
         self._client: Optional[commands.Bot] = None
         self._ready_event = asyncio.Event()
-        self._allowed_user_ids: set = set()  # 用于按钮审批授权
-        # 语音频道状态（按服务器）
+        self._allowed_user_ids: set = set()  # For button approval authorization
+        self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
+        # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
-        # 文本批处理：合并快速连续消息（Telegram 风格）
+        self._voice_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
+        # Text batching: merge rapid successive messages (Telegram-style)
         self._text_batch_delay_seconds = float(os.getenv("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", "0.6"))
         self._text_batch_split_delay_seconds = float(os.getenv("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
-        self._voice_text_channels: Dict[int, int] = {}  # guild_id -> 文字频道 ID
-        self._voice_sources: Dict[int, Dict[str, Any]] = {}  # guild_id -> 关联的文字频道来源元数据
-        self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> 超时任务
-        # 第二阶段：语音监听
-        self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> 语音接收器
-        self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> 监听循环
-        self._voice_input_callback: Optional[Callable] = None  # 由 run.py 设置
-        self._on_voice_disconnect: Optional[Callable] = None  # 由 run.py 设置
-        # 记录机器人已参与的线程，这些线程中的后续消息
-        # 不需要 @提及。持久化到磁盘以便集合在网关重启后保留。
+        self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
+        self._voice_sources: Dict[int, Dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
+        self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
+        # Phase 2: voice listening
+        self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
+        self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
+        self._voice_input_callback: Optional[Callable] = None  # set by run.py
+        self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
+        # Track threads where the bot has participated so follow-up messages
+        # in those threads don't require @mention.  Persisted to disk so the
+        # set survives gateway restarts.
         self._threads = ThreadParticipationTracker("discord")
-        # 每个频道的持久打字指示器循环（私聊不可靠地
-        # 显示机器人的标准打字网关事件）
+        # Persistent typing indicator loops per channel (DMs don't reliably
+        # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
-        # 去重缓存：当 Discord RESUME 在重连后重放事件时，
-        # 防止重复的机器人响应。
+        # Dedup cache: prevents duplicate bot responses when Discord
+        # RESUME replays events after reconnects.
         self._dedup = MessageDeduplicator()
-        # 回复线程模式："off"（不回复）、"first"（仅在第一个
-        # 分片回复，默认）、"all"（每个分片都使用回复引用）。
+        # Reply threading mode: "off" (no replies), "first" (reply on first
+        # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
 
     async def connect(self) -> bool:
-        """连接到 Discord 并开始接收事件。"""
+        """Connect to Discord and start receiving events."""
         if not DISCORD_AVAILABLE:
             logger.error("[%s] discord.py not installed. Run: pip install discord.py", self.name)
             return False
 
-        # 加载 Opus 编解码器以支持语音频道
+        # Load opus codec for voice channel support
         if not discord.opus.is_loaded():
             import ctypes.util
             opus_path = ctypes.util.find_library("opus")
             # ctypes.util.find_library fails on macOS with Homebrew-installed libs,
             # so fall back to known Homebrew paths if needed.
             if not opus_path:
-                import sys
                 _homebrew_paths = (
                     "/opt/homebrew/lib/libopus.dylib",  # Apple Silicon
                     "/usr/local/lib/libopus.dylib",     # Intel Mac
@@ -527,7 +566,7 @@ class DiscordAdapter(BasePlatformAdapter):
             if not self._acquire_platform_lock('discord-bot-token', self.config.token, 'Discord bot token'):
                 return False
 
-            # 解析允许的用户条目（可能包含用户名或 ID）
+            # Parse allowed user entries (may contain usernames or IDs)
             allowed_env = os.getenv("DISCORD_ALLOWED_USERS", "")
             if allowed_env:
                 self._allowed_user_ids = {
@@ -535,38 +574,57 @@ class DiscordAdapter(BasePlatformAdapter):
                     if uid.strip()
                 }
 
-            # 设置 intents。
-            # Message Content 是正常文本回复所必需的。
-            # Server Members 仅在白名单包含需要解析为数字 ID 的用户名时需要。
-            # 请求在 Discord 开发者门户未启用的特权 intents 可能导致
-            # 机器人完全无法上线，因此除非确实需要否则避免请求 members intent。
+            # Parse DISCORD_ALLOWED_ROLES — comma-separated role IDs.
+            # Users with ANY of these roles can interact with the bot.
+            roles_env = os.getenv("DISCORD_ALLOWED_ROLES", "")
+            if roles_env:
+                self._allowed_role_ids = {
+                    int(rid.strip()) for rid in roles_env.split(",")
+                    if rid.strip().isdigit()
+                }
+
+            # Set up intents.
+            # Message Content is required for normal text replies.
+            # Server Members is only needed when the allowlist contains usernames
+            # that must be resolved to numeric IDs. Requesting privileged intents
+            # that aren't enabled in the Discord Developer Portal can prevent the
+            # bot from coming online at all, so avoid requesting members intent
+            # unless it is actually necessary.
             intents = Intents.default()
             intents.message_content = True
             intents.dm_messages = True
             intents.guild_messages = True
-            intents.members = any(not entry.isdigit() for entry in self._allowed_user_ids)
+            intents.members = (
+                any(not entry.isdigit() for entry in self._allowed_user_ids)
+                or bool(self._allowed_role_ids)  # Need members intent for role lookup
+            )
             intents.voice_states = True
 
-            # 解析代理（DISCORD_PROXY > 通用环境变量 > macOS 系统代理）
+            # Resolve proxy (DISCORD_PROXY > generic env vars > macOS system proxy)
             from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_bot
             proxy_url = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
             if proxy_url:
                 logger.info("[%s] Using proxy for Discord: %s", self.name, proxy_url)
 
-            # 创建机器人 —— proxy= 用于 HTTP，connector= 用于 SOCKS
+            # Create bot — proxy= for HTTP, connector= for SOCKS.
+            # allowed_mentions is set with safe defaults (no @everyone/roles)
+            # so LLM output or echoed user content can't ping the whole
+            # server; override per DISCORD_ALLOW_MENTION_* env vars or the
+            # discord.allow_mentions.* block in config.yaml.
             self._client = commands.Bot(
-                command_prefix="!",  # 实际未使用，我们处理原始消息
+                command_prefix="!",  # Not really used, we handle raw messages
                 intents=intents,
+                allowed_mentions=_build_allowed_mentions(),
                 **proxy_kwargs_for_bot(proxy_url),
             )
-            adapter_self = self  # 供闭包捕获
+            adapter_self = self  # capture for closure
 
-            # 注册事件处理器
+            # Register event handlers
             @self._client.event
             async def on_ready():
                 logger.info("[%s] Connected as %s", adapter_self.name, adapter_self._client.user)
 
-                # 将白名单中的用户名解析为数字 ID
+                # Resolve any usernames in the allowed list to numeric IDs
                 await adapter_self._resolve_allowed_usernames()
                 adapter_self._ready_event.set()
 
@@ -578,27 +636,35 @@ class DiscordAdapter(BasePlatformAdapter):
 
             @self._client.event
             async def on_message(message: DiscordMessage):
-                # 去重：Discord RESUME 在重连后重放事件（#4777）
+                # Block until _resolve_allowed_usernames has swapped
+                # any raw usernames in DISCORD_ALLOWED_USERS for numeric
+                # IDs (otherwise on_message's author.id lookup can miss).
+                if not adapter_self._ready_event.is_set():
+                    try:
+                        await asyncio.wait_for(adapter_self._ready_event.wait(), timeout=30.0)
+                    except asyncio.TimeoutError:
+                        pass
+
+                # Dedup: Discord RESUME replays events after reconnects (#4777)
                 if adapter_self._dedup.is_duplicate(str(message.id)):
                     return
 
-                # 始终忽略自身的消息
+                # Always ignore our own messages
                 if message.author == self._client.user:
                     return
 
-                # 忽略 Discord 系统消息（线程重命名、置顶、成员加入等）
-                # 同时允许默认类型和回复类型 —— 回复有独立的 MessageType。
+                # Ignore Discord system messages (thread renames, pins, member joins, etc.)
+                # Allow both default and reply types — replies have a distinct MessageType.
                 if message.type not in (discord.MessageType.default, discord.MessageType.reply):
                     return
 
-                # 检查消息作者是否在允许的用户列表中
-                if not self._is_allowed_user(str(message.author.id)):
-                    return
-
-                # 机器人消息过滤（DISCORD_ALLOW_BOTS）：
-                #   "none"     —— 忽略所有其他机器人（默认）
-                #   "mentions" —— 仅当机器人 @提及我们时接受
-                #   "all"      —— 接受所有机器人消息
+                # Bot message filtering (DISCORD_ALLOW_BOTS):
+                #   "none"     — ignore all other bots (default)
+                #   "mentions" — accept bot messages only when they @mention us
+                #   "all"      — accept all bot messages
+                # Must run BEFORE the user allowlist check so that bots
+                # permitted by DISCORD_ALLOW_BOTS are not rejected for
+                # not being in DISCORD_ALLOWED_USERS (fixes #4466).
                 if getattr(message.author, "bot", False):
                     allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
                     if allow_bots == "none":
@@ -606,16 +672,22 @@ class DiscordAdapter(BasePlatformAdapter):
                     elif allow_bots == "mentions":
                         if not self._client.user or self._client.user not in message.mentions:
                             return
-                    # "all" falls through to handle_message
+                    # "all" falls through; bot is permitted — skip the
+                    # human-user allowlist below (bots aren't in it).
+                else:
+                    # Non-bot: enforce the configured user/role allowlists.
+                    if not self._is_allowed_user(str(message.author.id), message.author):
+                        return
                 
-                # 多 agent 过滤：如果消息提及了特定机器人
-                # 但不包括本机器人，则发送者是在与另一个 agent 对话 ——
-                # 保持沉默。没有机器人提及的消息（一般聊天）
-                # 仍然传递到 _handle_message 进行现有的
-                # DISCORD_REQUIRE_MENTION 检查。
+                # Multi-agent filtering: if the message mentions specific bots
+                # but NOT this bot, the sender is talking to another agent —
+                # stay silent.  Messages with no bot mentions (general chat)
+                # still fall through to _handle_message for the existing
+                # DISCORD_REQUIRE_MENTION check.
                 #
-                # 这替代了旧的 DISCORD_IGNORE_NO_MENTION 逻辑，
-                # 使用感知机器人的过滤，在多个 agent 共享频道时正确工作。
+                # This replaces the older DISCORD_IGNORE_NO_MENTION logic
+                # with bot-aware filtering that works correctly when multiple
+                # agents share a channel.
                 if not isinstance(message.channel, discord.DMChannel) and message.mentions:
                     _self_mentioned = (
                         self._client.user is not None
@@ -625,11 +697,11 @@ class DiscordAdapter(BasePlatformAdapter):
                         m.bot and m != self._client.user
                         for m in message.mentions
                     )
-                    # 如果其他机器人被提及但我们没有被提及 -> 不是给我们的
+                    # If other bots are mentioned but we're not → not for us
                     if _other_bots_mentioned and not _self_mentioned:
                         return
-                    # 如果人类被提及但我们没有被提及 -> 不是给我们的
-                    # （保留旧的 DISCORD_IGNORE_NO_MENTION=true 行为）
+                    # If humans are mentioned but we're not → not for us
+                    # (preserves old DISCORD_IGNORE_NO_MENTION=true behavior)
                     _ignore_no_mention = os.getenv(
                         "DISCORD_IGNORE_NO_MENTION", "true"
                     ).lower() in ("true", "1", "yes")
@@ -640,15 +712,15 @@ class DiscordAdapter(BasePlatformAdapter):
 
             @self._client.event
             async def on_voice_state_update(member, before, after):
-                """跟踪语音频道加入/离开事件。"""
-                # 仅跟踪机器人已连接的频道
+                """Track voice channel join/leave events."""
+                # Only track channels where the bot is connected
                 bot_guild_ids = set(adapter_self._voice_clients.keys())
                 if not bot_guild_ids:
                     return
                 guild_id = member.guild.id
                 if guild_id not in bot_guild_ids:
                     return
-                # 忽略机器人自身
+                # Ignore the bot itself
                 if member == adapter_self._client.user:
                     return
 
@@ -671,13 +743,13 @@ class DiscordAdapter(BasePlatformAdapter):
                         guild_id,
                     )
 
-            # 注册斜杠命令
+            # Register slash commands
             self._register_slash_commands()
 
-            # 在后台启动机器人
+            # Start the bot in background
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
 
-            # 等待就绪
+            # Wait for ready
             await asyncio.wait_for(self._ready_event.wait(), timeout=30)
 
             self._running = True
@@ -693,8 +765,8 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
 
     async def disconnect(self) -> None:
-        """从 Discord 断开连接。"""
-        # 关闭客户端前清理所有活跃的语音连接
+        """Disconnect from Discord."""
+        # Clean up all active voice connections before closing the client
         for guild_id in list(self._voice_clients.keys()):
             try:
                 await self.leave_voice_channel(guild_id)
@@ -724,7 +796,7 @@ class DiscordAdapter(BasePlatformAdapter):
         logger.info("[%s] Disconnected", self.name)
 
     async def _run_post_connect_initialization(self) -> None:
-        """在 Discord 连接后完成非关键启动工作。"""
+        """Finish non-critical startup work after Discord is connected."""
         if not self._client:
             return
         try:
@@ -738,7 +810,7 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.warning("[%s] Slash command sync failed: %s", self.name, e, exc_info=True)
 
     async def _add_reaction(self, message: Any, emoji: str) -> bool:
-        """在 Discord 消息上添加表情反应。"""
+        """Add an emoji reaction to a Discord message."""
         if not message or not hasattr(message, "add_reaction"):
             return False
         try:
@@ -749,7 +821,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
 
     async def _remove_reaction(self, message: Any, emoji: str) -> bool:
-        """从 Discord 消息中移除机器人自己的表情反应。"""
+        """Remove the bot's own emoji reaction from a Discord message."""
         if not message or not hasattr(message, "remove_reaction") or not self._client or not self._client.user:
             return False
         try:
@@ -760,11 +832,11 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
 
     def _reactions_enabled(self) -> bool:
-        """检查消息反应是否通过配置/环境变量启用。"""
+        """Check if message reactions are enabled via config/env."""
         return os.getenv("DISCORD_REACTIONS", "true").lower() not in ("false", "0", "no")
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """为普通 Discord 消息事件添加处理中反应。"""
+        """Add an in-progress reaction for normal Discord message events."""
         if not self._reactions_enabled():
             return
         message = event.raw_message
@@ -772,7 +844,7 @@ class DiscordAdapter(BasePlatformAdapter):
             await self._add_reaction(message, "👀")
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """将处理中反应替换为最终的成功/失败反应。"""
+        """Swap the in-progress reaction for a final success/failure reaction."""
         if not self._reactions_enabled():
             return
         message = event.raw_message
@@ -790,36 +862,43 @@ class DiscordAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None
     ) -> SendResult:
-        """向 Discord 频道或线程发送消息。
+        """Send a message to a Discord channel or thread.
 
-        当 metadata 包含 thread_id 时，消息发送到该线程
-        而不是 chat_id 标识的父频道。
+        When metadata contains a thread_id, the message is sent to that
+        thread instead of the parent channel identified by chat_id.
+
+        Forum channels (type 15) reject direct messages — a thread post is
+        created automatically.
         """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
         try:
-            # 确定目标频道：metadata 中的 thread_id 优先。
+            # Determine target channel: thread_id in metadata takes precedence.
             thread_id = None
             if metadata and metadata.get("thread_id"):
                 thread_id = metadata["thread_id"]
 
             if thread_id:
-                # 直接获取线程 —— 线程通过自身 ID 寻址。
+                # Fetch the thread directly — threads are addressed by their own ID.
                 channel = self._client.get_channel(int(thread_id))
                 if not channel:
                     channel = await self._client.fetch_channel(int(thread_id))
                 if not channel:
                     return SendResult(success=False, error=f"Thread {thread_id} not found")
             else:
-                # 获取父频道
+                # Get the parent channel
                 channel = self._client.get_channel(int(chat_id))
                 if not channel:
                     channel = await self._client.fetch_channel(int(chat_id))
                 if not channel:
                     return SendResult(success=False, error=f"Channel {chat_id} not found")
 
-            # 格式化并根据需要分割消息
+            # Forum channels reject channel.send() — create a thread post instead.
+            if self._is_forum_parent(channel):
+                return await self._send_to_forum(channel, content)
+
+            # Format and split message if needed
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
@@ -829,7 +908,10 @@ class DiscordAdapter(BasePlatformAdapter):
             if reply_to and self._reply_to_mode != "off":
                 try:
                     ref_msg = await channel.fetch_message(int(reply_to))
-                    reference = ref_msg
+                    if hasattr(ref_msg, "to_reference"):
+                        reference = ref_msg.to_reference(fail_if_not_exists=False)
+                    else:
+                        reference = ref_msg
                 except Exception as e:
                     logger.debug("Could not fetch reply-to message: %s", e)
 
@@ -847,14 +929,20 @@ class DiscordAdapter(BasePlatformAdapter):
                     err_text = str(e)
                     if (
                         chunk_reference is not None
-                        and "error code: 50035" in err_text
-                        and "Cannot reply to a system message" in err_text
+                        and (
+                            (
+                                "error code: 50035" in err_text
+                                and "Cannot reply to a system message" in err_text
+                            )
+                            or "error code: 10008" in err_text
+                        )
                     ):
                         logger.warning(
-                            "[%s] Reply target %s is a Discord system message; retrying send without reply reference",
+                            "[%s] Reply target %s rejected the reply reference; retrying send without reply reference",
                             self.name,
                             reply_to,
                         )
+                        reference = None
                         msg = await channel.send(
                             content=chunk,
                             reference=None,
@@ -873,13 +961,129 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
+        """Create a thread post in a forum channel with the message as starter content.
+
+        Forum channels (type 15) don't support direct messages.  Instead we
+        POST to /channels/{forum_id}/threads with a thread name derived from
+        the first line of the message.  Any follow-up chunk failures are
+        reported in ``raw_response['warnings']`` so the caller can surface
+        partial-send issues.
+        """
+        from tools.send_message_tool import _derive_forum_thread_name
+
+        formatted = self.format_message(content)
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+
+        thread_name = _derive_forum_thread_name(content)
+
+        starter_content = chunks[0] if chunks else thread_name
+
+        try:
+            thread = await forum_channel.create_thread(
+                name=thread_name,
+                content=starter_content,
+            )
+        except Exception as e:
+            logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
+            return SendResult(success=False, error=f"Forum thread creation failed: {e}")
+
+        thread_channel = thread if hasattr(thread, "send") else getattr(thread, "thread", None)
+        thread_id = str(getattr(thread_channel, "id", getattr(thread, "id", "")))
+        starter_msg = getattr(thread, "message", None)
+        message_id = str(getattr(starter_msg, "id", thread_id)) if starter_msg else thread_id
+
+        # Send remaining chunks into the newly created thread.  Track any
+        # per-chunk failures so the caller sees partial-send outcomes.
+        message_ids = [message_id]
+        warnings: list[str] = []
+        for chunk in chunks[1:]:
+            try:
+                msg = await thread_channel.send(content=chunk)
+                message_ids.append(str(msg.id))
+            except Exception as e:
+                warning = f"Failed to send follow-up chunk to forum thread {thread_id}: {e}"
+                logger.warning("[%s] %s", self.name, warning)
+                warnings.append(warning)
+
+        raw_response: Dict[str, Any] = {"message_ids": message_ids, "thread_id": thread_id}
+        if warnings:
+            raw_response["warnings"] = warnings
+
+        return SendResult(
+            success=True,
+            message_id=message_ids[0],
+            raw_response=raw_response,
+        )
+
+    async def _forum_post_file(
+        self,
+        forum_channel: Any,
+        *,
+        thread_name: Optional[str] = None,
+        content: str = "",
+        file: Any = None,
+        files: Optional[list] = None,
+    ) -> SendResult:
+        """Create a forum thread whose starter message carries file attachments.
+
+        Used by the send_voice / send_image_file / send_document paths when
+        the target channel is a forum (type 15).  ``create_thread`` on a
+        ForumChannel accepts the same file/files/content kwargs as
+        ``channel.send``, creating the thread and starter message atomically.
+        """
+        from tools.send_message_tool import _derive_forum_thread_name
+
+        if not thread_name:
+            # Prefer the text content, fall back to the first attached
+            # filename, fall back to the generic default.
+            hint = content or ""
+            if not hint.strip():
+                if file is not None:
+                    hint = getattr(file, "filename", "") or ""
+                elif files:
+                    hint = getattr(files[0], "filename", "") or ""
+            thread_name = _derive_forum_thread_name(hint) if hint.strip() else "New Post"
+
+        kwargs: Dict[str, Any] = {"name": thread_name}
+        if content:
+            kwargs["content"] = content
+        if file is not None:
+            kwargs["file"] = file
+        if files:
+            kwargs["files"] = files
+
+        try:
+            thread = await forum_channel.create_thread(**kwargs)
+        except Exception as e:
+            logger.error(
+                "[%s] Failed to create forum thread with file in %s: %s",
+                self.name,
+                getattr(forum_channel, "id", "?"),
+                e,
+            )
+            return SendResult(success=False, error=f"Forum thread creation failed: {e}")
+
+        thread_channel = thread if hasattr(thread, "send") else getattr(thread, "thread", None)
+        thread_id = str(getattr(thread_channel, "id", getattr(thread, "id", "")))
+        starter_msg = getattr(thread, "message", None)
+        message_id = str(getattr(starter_msg, "id", thread_id)) if starter_msg else thread_id
+
+        return SendResult(
+            success=True,
+            message_id=message_id,
+            raw_response={"thread_id": thread_id},
+        )
+
     async def edit_message(
         self,
         chat_id: str,
         message_id: str,
         content: str,
+        *,
+        finalize: bool = False,
     ) -> SendResult:
-        """编辑之前发送的 Discord 消息。"""
+        """Edit a previously sent Discord message."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
         try:
@@ -903,7 +1107,11 @@ class DiscordAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
     ) -> SendResult:
-        """以 Discord 附件发送本地文件。"""
+        """Send a local file as a Discord attachment.
+
+        Forum channels (type 15) get a new thread whose starter message
+        carries the file — they reject direct POST /messages.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
@@ -916,6 +1124,12 @@ class DiscordAdapter(BasePlatformAdapter):
         filename = file_name or os.path.basename(file_path)
         with open(file_path, "rb") as fh:
             file = discord.File(fh, filename=filename)
+            if self._is_forum_parent(channel):
+                return await self._forum_post_file(
+                    channel,
+                    content=(caption or "").strip(),
+                    file=file,
+                )
             msg = await channel.send(content=caption if caption else None, file=file)
         return SendResult(success=True, message_id=str(msg.id))
 
@@ -925,10 +1139,10 @@ class DiscordAdapter(BasePlatformAdapter):
         audio_path: str,
         **kwargs,
     ) -> SendResult:
-        """播放自动 TTS 音频。
+        """Play auto-TTS audio.
 
-        当机器人在该聊天所属服务器的语音频道中时，
-        直接在语音频道播放，而不是作为文件附件发送。
+        When the bot is in a voice channel for this chat's guild, play
+        directly in the VC instead of sending as a file attachment.
         """
         for gid, text_ch_id in self._voice_text_channels.items():
             if str(text_ch_id) == str(chat_id) and self.is_in_voice_channel(gid):
@@ -946,7 +1160,7 @@ class DiscordAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """以 Discord 文件附件发送音频。"""
+        """Send audio as a Discord file attachment."""
         try:
             import io
 
@@ -964,7 +1178,19 @@ class DiscordAdapter(BasePlatformAdapter):
             with open(audio_path, "rb") as f:
                 file_data = f.read()
 
-            # 尝试通过原始 API 以原生语音消息发送（flags=8192）。
+            # Forum channels (type 15) reject direct POST /messages — the
+            # native voice flag path also targets /messages so it would fail
+            # too.  Create a thread post with the audio as the starter
+            # attachment instead.
+            if self._is_forum_parent(channel):
+                forum_file = discord.File(io.BytesIO(file_data), filename=filename)
+                return await self._forum_post_file(
+                    channel,
+                    content=(caption or "").strip(),
+                    file=forum_file,
+                )
+
+            # Try sending as a native voice message via raw API (flags=8192).
             try:
                 import base64
 
@@ -1013,77 +1239,79 @@ class DiscordAdapter(BasePlatformAdapter):
             return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)
 
     # ------------------------------------------------------------------
-    # 语音频道方法（加入 / 离开 / 播放）
+    # Voice channel methods (join / leave / play)
     # ------------------------------------------------------------------
 
     async def join_voice_channel(self, channel) -> bool:
-        """加入 Discord 语音频道。成功时返回 True。"""
+        """Join a Discord voice channel. Returns True on success."""
         if not self._client or not DISCORD_AVAILABLE:
             return False
         guild_id = channel.guild.id
 
-        # 已在此服务器中连接？
-        existing = self._voice_clients.get(guild_id)
-        if existing and existing.is_connected():
-            if existing.channel.id == channel.id:
+        async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
+            # Already connected in this guild?
+            existing = self._voice_clients.get(guild_id)
+            if existing and existing.is_connected():
+                if existing.channel.id == channel.id:
+                    self._reset_voice_timeout(guild_id)
+                    return True
+                await existing.move_to(channel)
                 self._reset_voice_timeout(guild_id)
                 return True
-            await existing.move_to(channel)
+
+            vc = await channel.connect()
+            self._voice_clients[guild_id] = vc
             self._reset_voice_timeout(guild_id)
+
+            # Start voice receiver (Phase 2: listen to users)
+            try:
+                receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
+                receiver.start()
+                self._voice_receivers[guild_id] = receiver
+                self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
+                    self._voice_listen_loop(guild_id)
+                )
+            except Exception as e:
+                logger.warning("Voice receiver failed to start: %s", e)
+
             return True
 
-        vc = await channel.connect()
-        self._voice_clients[guild_id] = vc
-        self._reset_voice_timeout(guild_id)
-
-        # 启动语音接收器（第二阶段：监听用户）
-        try:
-            receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
-            receiver.start()
-            self._voice_receivers[guild_id] = receiver
-            self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
-                self._voice_listen_loop(guild_id)
-            )
-        except Exception as e:
-            logger.warning("Voice receiver failed to start: %s", e)
-
-        return True
-
     async def leave_voice_channel(self, guild_id: int) -> None:
-        """从服务器的语音频道断开连接。"""
-        # 先停止语音接收器
-        receiver = self._voice_receivers.pop(guild_id, None)
-        if receiver:
-            receiver.stop()
-        listen_task = self._voice_listen_tasks.pop(guild_id, None)
-        if listen_task:
-            listen_task.cancel()
+        """Disconnect from the voice channel in a guild."""
+        async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
+            # Stop voice receiver first
+            receiver = self._voice_receivers.pop(guild_id, None)
+            if receiver:
+                receiver.stop()
+            listen_task = self._voice_listen_tasks.pop(guild_id, None)
+            if listen_task:
+                listen_task.cancel()
 
-        vc = self._voice_clients.pop(guild_id, None)
-        if vc and vc.is_connected():
-            await vc.disconnect()
-        task = self._voice_timeout_tasks.pop(guild_id, None)
-        if task:
-            task.cancel()
-        self._voice_text_channels.pop(guild_id, None)
-        self._voice_sources.pop(guild_id, None)
+            vc = self._voice_clients.pop(guild_id, None)
+            if vc and vc.is_connected():
+                await vc.disconnect()
+            task = self._voice_timeout_tasks.pop(guild_id, None)
+            if task:
+                task.cancel()
+            self._voice_text_channels.pop(guild_id, None)
+            self._voice_sources.pop(guild_id, None)
 
-    # 语音播放最大等待秒数
+    # Maximum seconds to wait for voice playback before giving up
     PLAYBACK_TIMEOUT = 120
 
     async def play_in_voice_channel(self, guild_id: int, audio_path: str) -> bool:
-        """在已连接的语音频道中播放音频文件。"""
+        """Play an audio file in the connected voice channel."""
         vc = self._voice_clients.get(guild_id)
         if not vc or not vc.is_connected():
             return False
 
-        # 播放时暂停语音接收器（防止回声）
+        # Pause voice receiver while playing (echo prevention)
         receiver = self._voice_receivers.get(guild_id)
         if receiver:
             receiver.pause()
 
         try:
-            # 等待当前播放完成（带超时）
+            # Wait for current playback to finish (with timeout)
             wait_start = time.monotonic()
             while vc.is_playing():
                 if time.monotonic() - wait_start > self.PLAYBACK_TIMEOUT:
@@ -1115,7 +1343,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 receiver.resume()
 
     async def get_user_voice_channel(self, guild_id: int, user_id: str):
-        """返回用户当前所在的语音频道，如果没有则返回 None。"""
+        """Return the voice channel the user is currently in, or None."""
         if not self._client:
             return None
         guild = self._client.get_guild(guild_id)
@@ -1127,7 +1355,7 @@ class DiscordAdapter(BasePlatformAdapter):
         return member.voice.channel
 
     def _reset_voice_timeout(self, guild_id: int) -> None:
-        """重置自动断开不活动定时器。"""
+        """Reset the auto-disconnect inactivity timer."""
         task = self._voice_timeout_tasks.pop(guild_id, None)
         if task:
             task.cancel()
@@ -1136,14 +1364,14 @@ class DiscordAdapter(BasePlatformAdapter):
         )
 
     async def _voice_timeout_handler(self, guild_id: int) -> None:
-        """在 VOICE_TIMEOUT 秒不活动后自动断开连接。"""
+        """Auto-disconnect after VOICE_TIMEOUT seconds of inactivity."""
         try:
             await asyncio.sleep(self.VOICE_TIMEOUT)
         except asyncio.CancelledError:
             return
         text_ch_id = self._voice_text_channels.get(guild_id)
         await self.leave_voice_channel(guild_id)
-        # 通知运行器以便清理 voice_mode 状态
+        # Notify the runner so it can clean up voice_mode state
         if self._on_voice_disconnect and text_ch_id:
             try:
                 self._on_voice_disconnect(str(text_ch_id))
@@ -1158,16 +1386,16 @@ class DiscordAdapter(BasePlatformAdapter):
                     pass
 
     def is_in_voice_channel(self, guild_id: int) -> bool:
-        """检查机器人是否已连接到此服务器的语音频道。"""
+        """Check if the bot is connected to a voice channel in this guild."""
         vc = self._voice_clients.get(guild_id)
         return vc is not None and vc.is_connected()
 
     def get_voice_channel_info(self, guild_id: int) -> Optional[Dict[str, Any]]:
-        """返回给定服务器的语音频道感知信息。
+        """Return voice channel awareness info for the given guild.
 
-        如果机器人不在语音频道中则返回 None。否则返回包含
-        频道名称、成员列表、计数和当前正在说话的
-        用户 ID（来自 SSRC 映射）的字典。
+        Returns None if the bot is not in a voice channel.  Otherwise
+        returns a dict with channel name, member list, count, and
+        currently-speaking user IDs (from SSRC mapping).
         """
         vc = self._voice_clients.get(guild_id)
         if not vc or not vc.is_connected():
@@ -1177,33 +1405,32 @@ class DiscordAdapter(BasePlatformAdapter):
         if not channel:
             return None
 
-        # 当前在语音频道中的成员（包括机器人）
+        # Members currently in the voice channel (includes bot)
         members_info = []
         bot_user = self._client.user if self._client else None
         for m in channel.members:
             if bot_user and m.id == bot_user.id:
-                continue  # 跳过机器人自身
+                continue  # skip the bot itself
             members_info.append({
                 "user_id": m.id,
                 "display_name": m.display_name,
                 "is_bot": m.bot,
             })
 
-        # 当前正在说话的用户（来自 SSRC 映射 + 活跃缓冲区）
+        # Currently speaking users (from SSRC mapping + active buffers)
         speaking_user_ids: set = set()
         receiver = self._voice_receivers.get(guild_id)
         if receiver:
-            import time as _time
-            now = _time.monotonic()
+            now = time.monotonic()
             with receiver._lock:
                 for ssrc, last_t in receiver._last_packet_time.items():
-                    # 如果 2 秒内收到音频则视为"正在说话"
+                    # Consider "speaking" if audio received within last 2 seconds
                     if now - last_t < 2.0:
                         uid = receiver._ssrc_to_user.get(ssrc)
                         if uid:
                             speaking_user_ids.add(uid)
 
-        # 在成员上标记说话状态
+        # Tag speaking status on members
         for info in members_info:
             info["is_speaking"] = info["user_id"] in speaking_user_ids
 
@@ -1215,7 +1442,7 @@ class DiscordAdapter(BasePlatformAdapter):
         }
 
     def get_voice_channel_context(self, guild_id: int) -> str:
-        """返回人类可读的语音频道上下文字符串。
+        """Return a human-readable voice channel context string.
 
         Suitable for injection into the system/ephemeral prompt so the
         agent is always aware of voice channel state.
@@ -1232,16 +1459,15 @@ class DiscordAdapter(BasePlatformAdapter):
         return "\n".join(parts)
 
     # ------------------------------------------------------------------
-    # ------------------------------------------------------------------
-    # 语音监听（第二阶段）
+    # Voice listening (Phase 2)
     # ------------------------------------------------------------------
 
-    # UDP 保活间隔（秒）—— 防止 Discord 在约 60 秒静默后
-    # 丢弃 UDP 路由。
+    # UDP keepalive interval in seconds — prevents Discord from dropping
+    # the UDP route after ~60s of silence.
     _KEEPALIVE_INTERVAL = 15
 
     async def _voice_listen_loop(self, guild_id: int):
-        """定期检查已完成的语句并处理它们。"""
+        """Periodically check for completed utterances and process them."""
         receiver = self._voice_receivers.get(guild_id)
         if not receiver:
             return
@@ -1250,8 +1476,8 @@ class DiscordAdapter(BasePlatformAdapter):
             while receiver._running:
                 await asyncio.sleep(0.2)
 
-                # 发送周期性 UDP 保活以防止 Discord 在约 60 秒
-                # 静默后丢弃 UDP 会话。
+                # Send periodic UDP keepalive to prevent Discord from
+                # dropping the UDP session after ~60s of silence.
                 now = time.monotonic()
                 if now - last_keepalive >= self._KEEPALIVE_INTERVAL:
                     last_keepalive = now
@@ -1273,7 +1499,7 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("Voice listen loop error: %s", e, exc_info=True)
 
     async def _process_voice_input(self, guild_id: int, user_id: int, pcm_data: bytes):
-        """将 PCM -> WAV -> STT -> 回调。"""
+        """Convert PCM -> WAV -> STT -> callback."""
         from tools.voice_mode import is_whisper_hallucination
 
         tmp_f = tempfile.NamedTemporaryFile(suffix=".wav", prefix="vc_listen_", delete=False)
@@ -1307,11 +1533,48 @@ class DiscordAdapter(BasePlatformAdapter):
             except OSError:
                 pass
 
-    def _is_allowed_user(self, user_id: str) -> bool:
-        """检查用户是否在 DISCORD_ALLOWED_USERS 中。"""
-        if not self._allowed_user_ids:
+    def _is_allowed_user(self, user_id: str, author=None) -> bool:
+        """Check if user is allowed via DISCORD_ALLOWED_USERS or DISCORD_ALLOWED_ROLES.
+
+        Uses OR semantics: if the user matches EITHER allowlist, they're allowed.
+        If both allowlists are empty, everyone is allowed (backwards compatible).
+        When author is a Member, checks .roles directly; otherwise falls back
+        to scanning the bot's mutual guilds for a Member record.
+        """
+        # ``getattr`` fallbacks here guard against test fixtures that build
+        # an adapter via ``object.__new__(DiscordAdapter)`` and skip __init__
+        # (see AGENTS.md pitfall #17 — same pattern as gateway.run).
+        allowed_users = getattr(self, "_allowed_user_ids", set())
+        allowed_roles = getattr(self, "_allowed_role_ids", set())
+        has_users = bool(allowed_users)
+        has_roles = bool(allowed_roles)
+        if not has_users and not has_roles:
             return True
-        return user_id in self._allowed_user_ids
+        # Check user ID allowlist
+        if has_users and user_id in allowed_users:
+            return True
+        # Check role allowlist
+        if has_roles:
+            # Try direct role check from Member object
+            direct_roles = getattr(author, "roles", None) if author is not None else None
+            if direct_roles:
+                if any(getattr(r, "id", None) in allowed_roles for r in direct_roles):
+                    return True
+            # Fallback: scan mutual guilds for member's roles
+            if self._client is not None:
+                try:
+                    uid_int = int(user_id)
+                except (TypeError, ValueError):
+                    uid_int = None
+                if uid_int is not None:
+                    for guild in self._client.guilds:
+                        m = guild.get_member(uid_int)
+                        if m is None:
+                            continue
+                        m_roles = getattr(m, "roles", None) or []
+                        if any(getattr(r, "id", None) in allowed_roles for r in m_roles):
+                            return True
+        return False
 
     async def send_image_file(
         self,
@@ -1321,7 +1584,7 @@ class DiscordAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """以原生 Discord 文件附件发送本地图片文件。"""
+        """Send a local image file natively as a Discord file attachment."""
         try:
             return await self._send_file_attachment(chat_id, image_path, caption)
         except FileNotFoundError:
@@ -1338,7 +1601,7 @@ class DiscordAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """以原生 Discord 文件附件发送图片。"""
+        """Send an image natively as a Discord file attachment."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
@@ -1355,8 +1618,8 @@ class DiscordAdapter(BasePlatformAdapter):
             if not channel:
                 return SendResult(success=False, error=f"Channel {chat_id} not found")
 
-            # 下载图片并以 Discord 文件附件发送
-            # （Discord 会内联渲染附件，不同于纯 URL）
+            # Download the image and send as a Discord file attachment
+            # (Discord renders attachments inline, unlike plain URLs)
             from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
             _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
             _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
@@ -1367,7 +1630,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
                     image_data = await resp.read()
 
-                    # 从 URL 或 content type 确定文件名
+                    # Determine filename from URL or content type
                     content_type = resp.headers.get("content-type", "image/png")
                     ext = "png"
                     if "jpeg" in content_type or "jpg" in content_type:
@@ -1379,6 +1642,13 @@ class DiscordAdapter(BasePlatformAdapter):
 
                     import io
                     file = discord.File(io.BytesIO(image_data), filename=f"image.{ext}")
+
+                    if self._is_forum_parent(channel):
+                        return await self._forum_post_file(
+                            channel,
+                            content=(caption or "").strip(),
+                            file=file,
+                        )
 
                     msg = await channel.send(
                         content=caption if caption else None,
@@ -1410,7 +1680,7 @@ class DiscordAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """以原生 Discord 文件附件发送动态 GIF。"""
+        """Send an animated GIF natively as a Discord file attachment."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
@@ -1427,8 +1697,8 @@ class DiscordAdapter(BasePlatformAdapter):
             if not channel:
                 return SendResult(success=False, error=f"Channel {chat_id} not found")
 
-            # 下载 GIF 并以 Discord 文件附件发送
-            # （Discord 会将 .gif 附件内联渲染为自动播放的动画）
+            # Download the GIF and send as a Discord file attachment
+            # (Discord renders .gif attachments as auto-playing animations inline)
             from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
             _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
             _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
@@ -1441,6 +1711,13 @@ class DiscordAdapter(BasePlatformAdapter):
 
                     import io
                     file = discord.File(io.BytesIO(animation_data), filename="animation.gif")
+
+                    if self._is_forum_parent(channel):
+                        return await self._forum_post_file(
+                            channel,
+                            content=(caption or "").strip(),
+                            file=file,
+                        )
 
                     msg = await channel.send(
                         content=caption if caption else None,
@@ -1472,7 +1749,7 @@ class DiscordAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """以原生 Discord 附件发送本地视频文件。"""
+        """Send a local video file natively as a Discord attachment."""
         try:
             return await self._send_file_attachment(chat_id, video_path, caption)
         except FileNotFoundError:
@@ -1490,7 +1767,7 @@ class DiscordAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """以原生 Discord 附件发送任意文件。"""
+        """Send an arbitrary file natively as a Discord attachment."""
         try:
             return await self._send_file_attachment(chat_id, file_path, caption, file_name=file_name)
         except FileNotFoundError:
@@ -1500,16 +1777,16 @@ class DiscordAdapter(BasePlatformAdapter):
             return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """为频道启动持续输入指示器。
+        """Start a persistent typing indicator for a channel.
 
-        Discord 的 TYPING_START 网关事件在私聊中对机器人不可靠。
-        因此启动一个后台循环，每 8 秒调用打字端点一次
-        （打字指示器持续约 10 秒）。当 stop_typing() 被调用
-        （回复发送后）时循环被取消。
+        Discord's TYPING_START gateway event is unreliable in DMs for bots.
+        Instead, start a background loop that hits the typing endpoint every
+        8 seconds (typing indicator lasts ~10s).  The loop is cancelled when
+        stop_typing() is called (after the response is sent).
         """
         if not self._client:
             return
-        # 不启动重复的循环
+        # Don't start a duplicate loop
         if chat_id in self._typing_tasks:
             return
 
@@ -1534,7 +1811,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
 
     async def stop_typing(self, chat_id: str) -> None:
-        """停止频道的持续输入指示器。"""
+        """Stop the persistent typing indicator for a channel."""
         task = self._typing_tasks.pop(chat_id, None)
         if task:
             task.cancel()
@@ -1544,7 +1821,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 pass
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
-        """获取 Discord 频道的信息。"""
+        """Get information about a Discord channel."""
         if not self._client:
             return {"name": "Unknown", "type": "dm"}
 
@@ -1556,7 +1833,7 @@ class DiscordAdapter(BasePlatformAdapter):
             if not channel:
                 return {"name": str(chat_id), "type": "dm"}
 
-            # 判断频道类型
+            # Determine channel type
             if isinstance(channel, discord.DMChannel):
                 chat_type = "dm"
                 name = channel.recipient.name if channel.recipient else str(chat_id)
@@ -1584,11 +1861,11 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def _resolve_allowed_usernames(self) -> None:
         """
-        将 DISCORD_ALLOWED_USERS 中的非数字条目解析为 Discord 用户 ID。
+        Resolve non-numeric entries in DISCORD_ALLOWED_USERS to Discord user IDs.
 
-        用户可以指定用户名（如 "teknium"）或显示名称来替代
-        原始数字 ID。解析后，环境变量和内部集合将更新，
-        使授权检查仅使用 ID。
+        Users can specify usernames (e.g. "teknium") or display names instead of
+        raw numeric IDs.  After resolution, the env var and internal set are updated
+        so authorization checks work with IDs only.
         """
         if not self._allowed_user_ids or not self._client:
             return
@@ -1609,7 +1886,7 @@ class DiscordAdapter(BasePlatformAdapter):
         resolved_count = 0
 
         for guild in self._client.guilds:
-            # 拉取完整成员列表（需要 members intent）
+            # Fetch full member list (requires members intent)
             try:
                 members = guild.members
                 if len(members) < guild.member_count:
@@ -1640,7 +1917,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if to_resolve:
             print(f"[{self.name}] Could not resolve usernames: {', '.join(to_resolve)}")
 
-        # 更新内部集合和环境变量，使网关授权检查使用 ID
+        # Update internal set and env var so gateway auth checks use IDs
         self._allowed_user_ids = numeric_ids
         os.environ["DISCORD_ALLOWED_USERS"] = ",".join(sorted(numeric_ids))
         if resolved_count:
@@ -1648,11 +1925,11 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def format_message(self, content: str) -> str:
         """
-        格式化 Discord 消息。
+        Format message for Discord.
 
-        Discord 使用自己的 Markdown 变体。
+        Discord uses its own markdown variant.
         """
-        # Discord Markdown 相当标准，不需要特殊转义
+        # Discord markdown is fairly standard, no special escaping needed
         return content
 
     async def _run_simple_slash(
@@ -1661,13 +1938,31 @@ class DiscordAdapter(BasePlatformAdapter):
         command_text: str,
         followup_msg: str | None = None,
     ) -> None:
-        """简单斜杠命令的通用处理器，分发命令字符串。
+        """Common handler for simple slash commands that dispatch a command string.
 
-        延迟交互响应（显示"正在思考..."），分发命令，
-        然后清理延迟响应。如果提供了 *followup_msg*，
-        "正在思考..."指示器将替换为该文本；否则将被
-        删除以避免频道杂乱。
+        Defers the interaction (shows "thinking..."), dispatches the command,
+        then cleans up the deferred response.  If *followup_msg* is provided
+        the "thinking..." indicator is replaced with that text; otherwise it
+        is deleted so the channel isn't cluttered.
         """
+        # Log the invoker so ghost-command reports can be triaged.  Discord
+        # native slash invocations are always user-initiated (no bot can fire
+        # them), but mobile autocomplete / keyboard shortcuts / other users
+        # in the same channel are easy to miss in post-mortems.
+        try:
+            _user = interaction.user
+            _chan_id = getattr(interaction.channel, "id", None) or getattr(interaction, "channel_id", None)
+            logger.info(
+                "[Discord] slash '%s' invoked by user=%s id=%s channel=%s guild=%s",
+                command_text,
+                getattr(_user, "name", "?"),
+                getattr(_user, "id", "?"),
+                _chan_id,
+                getattr(interaction, "guild_id", None),
+            )
+        except Exception:
+            pass  # logging must never block command dispatch
+
         await interaction.response.defer(ephemeral=True)
         event = self._build_slash_event(interaction, command_text)
         await self.handle_message(event)
@@ -1680,7 +1975,7 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.debug("Discord interaction cleanup failed: %s", e)
 
     def _register_slash_commands(self) -> None:
-        """在命令树上注册 Discord 斜杠命令。"""
+        """Register Discord slash commands on the command tree."""
         if not self._client:
             return
 
@@ -1728,6 +2023,11 @@ class DiscordAdapter(BasePlatformAdapter):
         @tree.command(name="stop", description="Stop the running Hermes agent")
         async def slash_stop(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/stop", "Stop requested~")
+
+        @tree.command(name="steer", description="Inject a message after the next tool call (no interrupt)")
+        @discord.app_commands.describe(prompt="Text to inject into the agent's next tool result")
+        async def slash_steer(interaction: discord.Interaction, prompt: str):
+            await self._run_simple_slash(interaction, f"/steer {prompt}".strip())
 
         @tree.command(name="compress", description="Compress conversation context")
         async def slash_compress(interaction: discord.Interaction):
@@ -1825,10 +2125,10 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_btw(interaction: discord.Interaction, question: str):
             await self._run_simple_slash(interaction, f"/btw {question}")
 
-        # ── 自动注册命令树上尚未存在的网关可用命令 ──
-        # 这确保 hermes_cli/commands.py 的 COMMAND_REGISTRY 中
-        # 新增的命令自动显示为 Discord 斜杠命令，
-        # 无需在此手动添加条目。
+        # ── Auto-register any gateway-available commands not yet on the tree ──
+        # This ensures new commands added to COMMAND_REGISTRY in
+        # hermes_cli/commands.py automatically appear as Discord slash
+        # commands without needing a manual entry here.
         try:
             from hermes_cli.commands import COMMAND_REGISTRY, _is_gateway_available, _resolve_config_gates
 
@@ -1843,18 +2143,18 @@ class DiscordAdapter(BasePlatformAdapter):
             for cmd_def in COMMAND_REGISTRY:
                 if not _is_gateway_available(cmd_def, config_overrides):
                     continue
-                # Discord 命令名称：小写，允许连字符，最长 32 字符。
+                # Discord command names: lowercase, hyphens OK, max 32 chars.
                 discord_name = cmd_def.name.lower()[:32]
                 if discord_name in already_registered:
                     continue
-                # 跳过与已注册名称重叠的别名
-                # （显式注册命令的别名已在上方处理）。
+                # Skip aliases that overlap with already-registered names
+                # (aliases for explicitly registered commands are handled above).
                 desc = (cmd_def.description or f"Run /{cmd_def.name}")[:100]
                 has_args = bool(cmd_def.args_hint)
 
                 if has_args:
-                    # 命令接受可选参数 —— 创建带可选
-                    # ``args`` 字符串参数的处理器。
+                    # Command takes optional arguments — create handler with
+                    # an optional ``args`` string parameter.
                     def _make_args_handler(_name: str, _hint: str):
                         @discord.app_commands.describe(args=f"Arguments: {_hint}"[:100])
                         async def _handler(interaction: discord.Interaction, args: str = ""):
@@ -1866,7 +2166,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
                     handler = _make_args_handler(cmd_def.name, cmd_def.args_hint)
                 else:
-                    # 无参数命令。
+                    # Parameterless command.
                     def _make_simple_handler(_name: str):
                         async def _handler(interaction: discord.Interaction):
                             await self._run_simple_slash(interaction, f"/{_name}")
@@ -1884,8 +2184,8 @@ class DiscordAdapter(BasePlatformAdapter):
                     tree.add_command(auto_cmd)
                     already_registered.add(discord_name)
                 except Exception:
-                    # 静默跳过注册失败的命令（例如
-                    # 与子命令组名称冲突）。
+                    # Silently skip commands that fail registration (e.g.
+                    # name conflict with a subcommand group).
                     pass
 
             logger.debug(
@@ -1895,18 +2195,29 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("Discord auto-register from COMMAND_REGISTRY failed: %s", e)
 
-        # 将技能注册在单个 /skill 命令组下，使用分类子命令组。
-        # 这使用 1 个顶级槽位而不是 N 个，
-        # 支持最多 25 个分类 x 25 个技能 = 625 个技能。
+        # Register skills under a single /skill command group with category
+        # subcommand groups.  This uses 1 top-level slot instead of N,
+        # supporting up to 25 categories × 25 skills = 625 skills.
         self._register_skill_group(tree)
 
     def _register_skill_group(self, tree) -> None:
-        """注册带分类子命令组的 ``/skill`` 命令组。
+        """Register a single ``/skill`` command with autocomplete on the name.
 
-        技能按 ``SKILLS_DIR`` 下的目录分类组织。
-        每个分类成为一个子命令组；根级别的技能成为
-        直接子命令。Discord 支持 25 个子命令组 x 25 个
-        子命令 = 625 个技能 —— 远超旧的 100 命令上限。
+        Discord enforces an ~8000-byte per-command payload limit. The older
+        nested layout (``/skill <category> <name>``) registered one giant
+        command whose serialized payload grew linearly with the skill
+        catalog — with the default ~75 skills the payload was ~14 KB and
+        ``tree.sync()`` rejected the entire slash-command batch (issues
+        #11321, #10259, #11385, #10261, #10214).
+
+        Autocomplete options are fetched dynamically by Discord when the
+        user types — they do NOT count against the per-command registration
+        budget. So we register ONE flat ``/skill`` command with
+        ``name: str`` (autocompleted) and ``args: str = ""``. This scales
+        to thousands of skills with no size math, no splitting, and no
+        hidden skills. The slash picker also becomes more discoverable —
+        Discord live-filters by the user's typed prefix against both the
+        skill name and its description.
         """
         try:
             from hermes_cli.commands import discord_skill_commands_by_category
@@ -1917,71 +2228,100 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
+            # Reuse the existing collector for consistent filtering
+            # (per-platform disabled, hub-excluded, name clamping), then
+            # flatten — the category grouping was only useful for the
+            # nested layout.
             categories, uncategorized, hidden = discord_skill_commands_by_category(
                 reserved_names=existing_names,
             )
+            entries: list[tuple[str, str, str]] = list(uncategorized)
+            for cat_skills in categories.values():
+                entries.extend(cat_skills)
 
-            if not categories and not uncategorized:
+            if not entries:
                 return
 
-            skill_group = discord.app_commands.Group(
+            # Stable alphabetical order so the autocomplete suggestion
+            # list is predictable across restarts.
+            entries.sort(key=lambda t: t[0])
+
+            # name -> (description, cmd_key) — used by both the autocomplete
+            # callback and the handler for O(1) dispatch.
+            skill_lookup: dict[str, tuple[str, str]] = {
+                n: (d, k) for n, d, k in entries
+            }
+
+            async def _autocomplete_name(
+                interaction: "discord.Interaction", current: str,
+            ) -> list:
+                """Filter skills by the user's typed prefix.
+
+                Matches both the skill name and its description so
+                "/skill pdf" surfaces skills whose description mentions
+                PDFs even if the name doesn't. Discord caps this list at
+                25 entries per query.
+                """
+                q = (current or "").strip().lower()
+                choices: list = []
+                for name, desc, _key in entries:
+                    if not q or q in name.lower() or (desc and q in desc.lower()):
+                        if desc:
+                            label = f"{name} — {desc}"
+                        else:
+                            label = name
+                        # Discord's Choice.name is capped at 100 chars.
+                        if len(label) > 100:
+                            label = label[:97] + "..."
+                        choices.append(
+                            discord.app_commands.Choice(name=label, value=name)
+                        )
+                        if len(choices) >= 25:
+                            break
+                return choices
+
+            @discord.app_commands.describe(
+                name="Which skill to run",
+                args="Optional arguments for the skill",
+            )
+            @discord.app_commands.autocomplete(name=_autocomplete_name)
+            async def _skill_handler(
+                interaction: "discord.Interaction", name: str, args: str = "",
+            ):
+                entry = skill_lookup.get(name)
+                if not entry:
+                    await interaction.response.send_message(
+                        f"Unknown skill: `{name}`. Start typing for "
+                        f"autocomplete suggestions.",
+                        ephemeral=True,
+                    )
+                    return
+                _desc, cmd_key = entry
+                await self._run_simple_slash(
+                    interaction, f"{cmd_key} {args}".strip()
+                )
+
+            cmd = discord.app_commands.Command(
                 name="skill",
                 description="Run a Hermes skill",
+                callback=_skill_handler,
             )
+            tree.add_command(cmd)
 
-            # ── 辅助函数：为技能命令键构建回调 ──
-            def _make_handler(_key: str):
-                @discord.app_commands.describe(args="Optional arguments for the skill")
-                async def _handler(interaction: discord.Interaction, args: str = ""):
-                    await self._run_simple_slash(interaction, f"{_key} {args}".strip())
-                _handler.__name__ = f"skill_{_key.lstrip('/').replace('-', '_')}"
-                return _handler
-
-            # ── 未分类（根级别）技能 -> 直接子命令 ──
-            for discord_name, description, cmd_key in uncategorized:
-                cmd = discord.app_commands.Command(
-                    name=discord_name,
-                    description=description or f"Run the {discord_name} skill",
-                    callback=_make_handler(cmd_key),
-                )
-                skill_group.add_command(cmd)
-
-            # ── 分类子命令组 ──
-            for cat_name in sorted(categories):
-                cat_desc = f"{cat_name.replace('-', ' ').title()} skills"
-                if len(cat_desc) > 100:
-                    cat_desc = cat_desc[:97] + "..."
-                cat_group = discord.app_commands.Group(
-                    name=cat_name,
-                    description=cat_desc,
-                    parent=skill_group,
-                )
-                for discord_name, description, cmd_key in categories[cat_name]:
-                    cmd = discord.app_commands.Command(
-                        name=discord_name,
-                        description=description or f"Run the {discord_name} skill",
-                        callback=_make_handler(cmd_key),
-                    )
-                    cat_group.add_command(cmd)
-
-            tree.add_command(skill_group)
-
-            total = sum(len(v) for v in categories.values()) + len(uncategorized)
             logger.info(
-                "[%s] Registered /skill group: %d skill(s) across %d categories"
-                " + %d uncategorized",
-                self.name, total, len(categories), len(uncategorized),
+                "[%s] Registered /skill command with %d skill(s) via autocomplete",
+                self.name, len(entries),
             )
             if hidden:
-                logger.warning(
-                    "[%s] %d skill(s) not registered (Discord subcommand limits)",
+                logger.info(
+                    "[%s] %d skill(s) filtered out of /skill (name clamp / reserved)",
                     self.name, hidden,
                 )
         except Exception as exc:
-            logger.warning("[%s] Failed to register /skill group: %s", self.name, exc)
+            logger.warning("[%s] Failed to register /skill command: %s", self.name, exc)
 
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
-        """根据 Discord 斜杠命令交互构建 MessageEvent。"""
+        """Build a MessageEvent from a Discord slash command interaction."""
         is_dm = isinstance(interaction.channel, discord.DMChannel)
         is_thread = isinstance(interaction.channel, discord.Thread)
         thread_id = None
@@ -2000,8 +2340,8 @@ class DiscordAdapter(BasePlatformAdapter):
             if hasattr(interaction.channel, "guild") and interaction.channel.guild:
                 chat_name = f"{interaction.channel.guild.name} / #{chat_name}"
 
-        # 获取频道主题（如果可用）。
-        # 对于论坛帖子，继承父级论坛的主题。
+        # Get channel topic (if available).
+        # For forum threads, inherit the parent forum's topic.
         chat_topic = self._get_effective_topic(interaction.channel, is_thread=is_thread)
 
         source = self.build_source(
@@ -2026,7 +2366,7 @@ class DiscordAdapter(BasePlatformAdapter):
         )
 
     # ------------------------------------------------------------------
-    # 线程创建辅助方法
+    # Thread creation helpers
     # ------------------------------------------------------------------
 
     async def _handle_thread_create_slash(
@@ -2036,7 +2376,7 @@ class DiscordAdapter(BasePlatformAdapter):
         message: str = "",
         auto_archive_duration: int = 1440,
     ) -> None:
-        """从斜杠命令创建 Discord 线程并在其中启动会话。"""
+        """Create a Discord thread from a slash command and start a session in it."""
         result = await self._create_thread(
             interaction,
             name=name,
@@ -2052,15 +2392,15 @@ class DiscordAdapter(BasePlatformAdapter):
         thread_id = result.get("thread_id")
         thread_name = result.get("thread_name") or name
 
-        # 告知用户线程的位置
+        # Tell the user where the thread is
         link = f"<#{thread_id}>" if thread_id else f"**{thread_name}**"
         await interaction.followup.send(f"Created thread {link}", ephemeral=True)
 
-        # 记录线程参与状态，后续消息无需 @提及
+        # Track thread participation so follow-ups don't require @mention
         if thread_id:
             self._threads.mark(thread_id)
 
-        # 如果提供了消息内容，则在线程中启动新的 Hermes 会话
+        # If a message was provided, kick off a new Hermes session in the thread
         starter = (message or "").strip()
         if starter and thread_id:
             await self._dispatch_thread_session(interaction, thread_id, thread_name, starter)
@@ -2072,14 +2412,14 @@ class DiscordAdapter(BasePlatformAdapter):
         thread_name: str,
         text: str,
     ) -> None:
-        """构建指向线程的 MessageEvent 并通过 handle_message 分发。"""
+        """Build a MessageEvent pointing at a thread and send it through handle_message."""
         guild_name = ""
         if hasattr(interaction, "guild") and interaction.guild:
             guild_name = interaction.guild.name
 
         chat_name = f"{guild_name} / {thread_name}" if guild_name else thread_name
 
-        # 当线程创建在论坛频道内时，继承论坛主题。
+        # Inherit forum topic when the thread was created inside a forum channel.
         _chan = getattr(interaction, "channel", None)
         chat_topic = self._get_effective_topic(_chan, is_thread=True) if _chan else None
 
@@ -2108,13 +2448,13 @@ class DiscordAdapter(BasePlatformAdapter):
         await self.handle_message(event)
 
     def _resolve_channel_skills(self, channel_id: str, parent_id: str | None = None) -> list[str] | None:
-        """查找 Discord 频道/论坛线程的自动技能绑定。
+        """Look up auto-skill bindings for a Discord channel/forum thread.
 
-        配置格式（在平台 extra 中）：
+        Config format (in platform extra):
             channel_skill_bindings:
               - id: "123456"
                 skills: ["skill-a", "skill-b"]
-        同时检查 parent_id，使论坛线程继承论坛的绑定。
+        Also checks parent_id so forum threads inherit the forum's bindings.
         """
         bindings = self.config.extra.get("channel_skill_bindings", [])
         if not bindings:
@@ -2129,20 +2469,40 @@ class DiscordAdapter(BasePlatformAdapter):
                 if isinstance(skills, str):
                     return [skills]
                 if isinstance(skills, list) and skills:
-                    return list(dict.fromkeys(skills))  # 去重，保留顺序
+                    return list(dict.fromkeys(skills))  # dedup, preserve order
         return None
 
     def _resolve_channel_prompt(self, channel_id: str, parent_id: str | None = None) -> str | None:
-        """解析 Discord 按频道配置的 prompt，精确频道优先于其父级频道。"""
+        """Resolve a Discord per-channel prompt, preferring the exact channel over its parent."""
         from gateway.platforms.base import resolve_channel_prompt
         return resolve_channel_prompt(self.config.extra, channel_id, parent_id)
 
+    def _discord_require_mention(self) -> bool:
+        """Return whether Discord channel messages require a bot mention."""
+        configured = self.config.extra.get("require_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in ("false", "0", "no", "off")
+            return bool(configured)
+        return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
+
+    def _discord_free_response_channels(self) -> set:
+        """Return Discord channel IDs where no bot mention is required."""
+        raw = self.config.extra.get("free_response_channels")
+        if raw is None:
+            raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        if isinstance(raw, str) and raw.strip():
+            return {part.strip() for part in raw.split(",") if part.strip()}
+        return set()
+
     def _thread_parent_channel(self, channel: Any) -> Any:
-        """在从线程调用时返回父级文字频道。"""
+        """Return the parent text channel when invoked from a thread."""
         return getattr(channel, "parent", None) or channel
 
     async def _resolve_interaction_channel(self, interaction: discord.Interaction) -> Optional[Any]:
-        """返回交互频道，如果载荷不完整则进行拉取。"""
+        """Return the interaction channel, fetching it if the payload is partial."""
         channel = getattr(interaction, "channel", None)
         if channel is not None:
             return channel
@@ -2167,10 +2527,11 @@ class DiscordAdapter(BasePlatformAdapter):
         message: str = "",
         auto_archive_duration: int = 1440,
     ) -> Dict[str, Any]:
-        """在当前 Discord 频道中创建线程。
+        """Create a thread in the current Discord channel.
 
-        首先尝试 ``parent_channel.create_thread()``。如果 Discord 拒绝
-        （例如权限问题），则回退到发送种子消息并从中创建线程。
+        Tries ``parent_channel.create_thread()`` first.  If Discord rejects
+        that (e.g. permission issues), falls back to sending a seed message
+        and creating the thread from it.
         """
         name = (name or "").strip()
         if not name:
@@ -2230,16 +2591,23 @@ class DiscordAdapter(BasePlatformAdapter):
                 }
 
     # ------------------------------------------------------------------
-    # 自动创建线程辅助方法
+    # Auto-thread helpers
     # ------------------------------------------------------------------
 
     async def _auto_create_thread(self, message: 'DiscordMessage') -> Optional[Any]:
-        """为自动线程功能从用户消息创建线程。
+        """Create a thread from a user message for auto-threading.
 
-        成功时返回创建的线程对象，失败时返回 ``None``。
+        Returns the created thread object, or ``None`` on failure.
         """
-        # 从消息内容构建短线程名称
+        # Build a short thread name from the message. Strip Discord mention
+        # syntax (users / roles / channels) so thread titles don't end up
+        # showing raw <@id>, <@&id>, or <#id> markers — the ID isn't
+        # meaningful to humans glancing at the thread list (#6336).
         content = (message.content or "").strip()
+        # <@123>, <@!123>, <@&123>, <#123> — collapse to empty; normalize spaces.
+        content = re.sub(r"<@[!&]?\d+>", "", content)
+        content = re.sub(r"<#\d+>", "", content)
+        content = re.sub(r"\s+", " ", content).strip()
         thread_name = content[:80] if content else "Hermes"
         if len(content) > 80:
             thread_name = thread_name[:77] + "..."
@@ -2247,9 +2615,25 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
             return thread
-        except Exception as e:
-            logger.warning("[%s] Auto-thread creation failed: %s", self.name, e)
-            return None
+        except Exception as direct_error:
+            display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
+            reason = f"Auto-threaded from mention by {display_name}"
+            try:
+                seed_msg = await message.channel.send(f"\U0001f9f5 Thread created by Hermes: **{thread_name}**")
+                thread = await seed_msg.create_thread(
+                    name=thread_name,
+                    auto_archive_duration=1440,
+                    reason=reason,
+                )
+                return thread
+            except Exception as fallback_error:
+                logger.warning(
+                    "[%s] Auto-thread creation failed. Direct error: %s. Fallback error: %s",
+                    self.name,
+                    direct_error,
+                    fallback_error,
+                )
+                return None
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
@@ -2257,16 +2641,16 @@ class DiscordAdapter(BasePlatformAdapter):
         metadata: Optional[dict] = None,
     ) -> SendResult:
         """
-        发送基于按钮的危险命令执行审批提示。
+        Send a button-based exec approval prompt for a dangerous command.
 
-        按钮调用 ``resolve_gateway_approval()`` 来解除等待中的
-        agent 线程阻塞 —— 这替代了 Discord 上基于文本的 ``/approve`` 流程。
+        The buttons call ``resolve_gateway_approval()`` to unblock the waiting
+        agent thread — this replaces the text-based ``/approve`` flow on Discord.
         """
         if not self._client or not DISCORD_AVAILABLE:
             return SendResult(success=False, error="Not connected")
 
         try:
-            # 解析频道 —— 如果 metadata 中有 thread_id 则使用线程 ID
+            # Resolve channel — use thread_id from metadata if present
             target_id = chat_id
             if metadata and metadata.get("thread_id"):
                 target_id = metadata["thread_id"]
@@ -2275,7 +2659,7 @@ class DiscordAdapter(BasePlatformAdapter):
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
 
-            # Discord embed 描述限制为 4096 字符；在此限制内显示完整命令
+            # Discord embed description limit is 4096; show full command up to that
             max_desc = 4088
             cmd_display = command if len(command) <= max_desc else command[: max_desc - 3] + "..."
             embed = discord.Embed(
@@ -2300,10 +2684,10 @@ class DiscordAdapter(BasePlatformAdapter):
         self, chat_id: str, prompt: str, default: str = "",
         session_key: str = "",
     ) -> SendResult:
-        """发送基于按钮的交互式更新提示（是 / 否）。
+        """Send an interactive button-based update prompt (Yes / No).
 
-        当 ``hermes update --gateway`` 需要用户输入（恢复暂存、配置迁移）时，
-        由网关 ``/update`` 监听器使用。
+        Used by the gateway ``/update`` watcher when ``hermes update --gateway``
+        needs user input (stash restore, config migration).
         """
         if not self._client or not DISCORD_AVAILABLE:
             return SendResult(success=False, error="Not connected")
@@ -2337,16 +2721,16 @@ class DiscordAdapter(BasePlatformAdapter):
         on_model_selected,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """发送交互式下拉菜单模型选择器。
+        """Send an interactive select-menu model picker.
 
-        两步下钻：提供商下拉菜单 -> 模型下拉菜单。
-        使用 Discord 嵌入消息 + ``ModelPickerView`` 的下拉菜单。
+        Two-step drill-down: provider dropdown → model dropdown.
+        Uses Discord embeds + Select menus via ``ModelPickerView``.
         """
         if not self._client or not DISCORD_AVAILABLE:
             return SendResult(success=False, error="Not connected")
 
         try:
-            # 解析目标频道（如果存在则使用 thread_id）
+            # Resolve target channel (use thread_id if present)
             target_id = chat_id
             if metadata and metadata.get("thread_id"):
                 target_id = metadata["thread_id"]
@@ -2388,7 +2772,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     def _get_parent_channel_id(self, channel: Any) -> Optional[str]:
-        """返回 Discord 线程类频道的父频道 ID（如果存在）。"""
+        """Return the parent channel ID for a Discord thread-like channel, if present."""
         parent = getattr(channel, "parent", None)
         if parent is not None and getattr(parent, "id", None) is not None:
             return str(parent.id)
@@ -2398,7 +2782,7 @@ class DiscordAdapter(BasePlatformAdapter):
         return None
 
     def _is_forum_parent(self, channel: Any) -> bool:
-        """尽力检查一个 Discord 频道是否为论坛频道。"""
+        """Best-effort check for whether a Discord channel is a forum channel."""
         if channel is None:
             return False
         forum_cls = getattr(discord, "ForumChannel", None)
@@ -2412,7 +2796,7 @@ class DiscordAdapter(BasePlatformAdapter):
         return False
 
     def _get_effective_topic(self, channel: Any, is_thread: bool = False) -> Optional[str]:
-        """返回频道主题，论坛线程回退到父级论坛的主题。"""
+        """Return the channel topic, falling back to the parent forum's topic for forum threads."""
         topic = getattr(channel, "topic", None)
         if not topic and is_thread:
             parent = getattr(channel, "parent", None)
@@ -2421,7 +2805,7 @@ class DiscordAdapter(BasePlatformAdapter):
         return topic
 
     def _format_thread_chat_name(self, thread: Any) -> str:
-        """为 Discord 线程类频道构建可读的聊天名称，可用时包含论坛上下文。"""
+        """Build a readable chat name for thread-like Discord channels, including forum context when available."""
         thread_name = getattr(thread, "name", None) or str(getattr(thread, "id", "thread"))
         parent = getattr(thread, "parent", None)
         guild = getattr(thread, "guild", None) or getattr(parent, "guild", None)
@@ -2436,18 +2820,137 @@ class DiscordAdapter(BasePlatformAdapter):
             return f"{parent_name} / {thread_name}"
         return thread_name
 
+    # ------------------------------------------------------------------
+    # Attachment download helpers
+    #
+    # Discord attachments (images / audio / documents) are fetched via the
+    # authenticated bot session whenever the Attachment object exposes
+    # ``read()``. That sidesteps two classes of bug that hit the older
+    # plain-HTTP path:
+    #
+    #   1. ``cdn.discordapp.com`` URLs increasingly require bot auth on
+    #      download — unauthenticated httpx sees 403 Forbidden.
+    #      (issue #8242)
+    #   2. Some user environments (VPNs, corporate DNS, tunnels) resolve
+    #      ``cdn.discordapp.com`` to private-looking IPs that our
+    #      ``is_safe_url`` guard classifies as SSRF risks. Routing the
+    #      fetch through discord.py's own HTTP client handles DNS
+    #      internally so our guard isn't consulted for the attachment
+    #      path. (issue #6587)
+    #
+    # If ``att.read()`` is unavailable (unexpected object shape / test
+    # stub) or the bot session fetch fails, we fall back to the existing
+    # SSRF-gated URL downloaders. The fallback keeps defense-in-depth
+    # against any future Discord payload-schema drift that could slip a
+    # non-CDN URL into the ``att.url`` field. (issue #11345)
+    # ------------------------------------------------------------------
+
+    async def _read_attachment_bytes(self, att) -> Optional[bytes]:
+        """Read an attachment via discord.py's authenticated bot session.
+
+        Returns the raw bytes on success, or ``None`` if ``att`` doesn't
+        expose a callable ``read()`` or the read itself fails. Callers
+        should treat ``None`` as a signal to fall back to the URL-based
+        downloaders.
+        """
+        reader = getattr(att, "read", None)
+        if reader is None or not callable(reader):
+            return None
+        try:
+            return await reader()
+        except Exception as e:
+            logger.warning(
+                "[Discord] Authenticated attachment read failed for %s: %s",
+                getattr(att, "filename", None) or getattr(att, "url", "<unknown>"),
+                e,
+            )
+            return None
+
+    async def _cache_discord_image(self, att, ext: str) -> str:
+        """Cache a Discord image attachment to local disk.
+
+        Primary path: ``att.read()`` + ``cache_image_from_bytes``
+        (authenticated, no SSRF gate).
+
+        Fallback: ``cache_image_from_url`` (plain httpx, SSRF-gated).
+        """
+        raw_bytes = await self._read_attachment_bytes(att)
+        if raw_bytes is not None:
+            try:
+                return cache_image_from_bytes(raw_bytes, ext=ext)
+            except Exception as e:
+                logger.debug(
+                    "[Discord] cache_image_from_bytes rejected att.read() data; falling back to URL: %s",
+                    e,
+                )
+        return await cache_image_from_url(att.url, ext=ext)
+
+    async def _cache_discord_audio(self, att, ext: str) -> str:
+        """Cache a Discord audio attachment to local disk.
+
+        Primary path: ``att.read()`` + ``cache_audio_from_bytes``
+        (authenticated, no SSRF gate).
+
+        Fallback: ``cache_audio_from_url`` (plain httpx, SSRF-gated).
+        """
+        raw_bytes = await self._read_attachment_bytes(att)
+        if raw_bytes is not None:
+            try:
+                return cache_audio_from_bytes(raw_bytes, ext=ext)
+            except Exception as e:
+                logger.debug(
+                    "[Discord] cache_audio_from_bytes failed; falling back to URL: %s",
+                    e,
+                )
+        return await cache_audio_from_url(att.url, ext=ext)
+
+    async def _cache_discord_document(self, att, ext: str) -> bytes:
+        """Download a Discord document attachment and return the raw bytes.
+
+        Primary path: ``att.read()`` (authenticated, no SSRF gate).
+
+        Fallback: SSRF-gated ``aiohttp`` download. This closes the gap
+        where the old document path made raw ``aiohttp.ClientSession``
+        requests with no safety check (#11345). The caller is responsible
+        for passing the returned bytes to ``cache_document_from_bytes``
+        (and, where applicable, for injecting text content).
+        """
+        raw_bytes = await self._read_attachment_bytes(att)
+        if raw_bytes is not None:
+            return raw_bytes
+
+        # Fallback: SSRF-gated URL download.
+        if not is_safe_url(att.url):
+            raise ValueError(
+                f"Blocked unsafe attachment URL (SSRF protection): {att.url}"
+            )
+        import aiohttp
+        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+        _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+        async with aiohttp.ClientSession(**_sess_kw) as session:
+            async with session.get(
+                att.url,
+                timeout=aiohttp.ClientTimeout(total=30),
+                **_req_kw,
+            ) as resp:
+                if resp.status != 200:
+                    raise Exception(f"HTTP {resp.status}")
+                return await resp.read()
+
     async def _handle_message(self, message: DiscordMessage) -> None:
-        """处理传入的 Discord 消息。"""
-        # 在服务器频道（非私聊）中，要求机器人被 @提及，
-        # 除非该频道在免提及列表中，或消息在机器人已参与的线程中。
+        """Handle incoming Discord messages."""
+        # In server channels (not DMs), require the bot to be @mentioned
+        # UNLESS the channel is in the free-response list or the message is
+        # in a thread where the bot has already participated.
         #
-        # 配置（均可通过 config.yaml 中的 discord.* 或 DISCORD_* 环境变量设置）：
-        #   discord.require_mention: 服务器频道要求 @提及（默认：true）
-        #   discord.free_response_channels: 机器人无需提及即可响应的频道 ID
-        #   discord.ignored_channels: 机器人永不响应（即使被提及）的频道 ID
-        #   discord.allowed_channels: 如果设置，机器人仅在这些频道中响应（白名单）
-        #   discord.no_thread_channels: 机器人直接回复而不创建线程的频道 ID
-        #   discord.auto_thread: 在频道中被 @提及时自动创建线程（默认：true）
+        # Config (all settable via discord.* in config.yaml or DISCORD_* env vars):
+        #   discord.require_mention: Require @mention in server channels (default: true)
+        #   discord.free_response_channels: Channel IDs where bot responds without mention
+        #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
+        #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
+        #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
+        #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
 
         thread_id = None
         parent_channel_id = None
@@ -2457,12 +2960,23 @@ class DiscordAdapter(BasePlatformAdapter):
             parent_channel_id = self._get_parent_channel_id(message.channel)
 
         is_voice_linked_channel = False
+
+        # Save mention-stripped text before auto-threading since create_thread()
+        # can clobber message.content, breaking /command detection in channels.
+        raw_content = message.content.strip()
+        normalized_content = raw_content
+        mention_prefix = False
+        if self._client.user and self._client.user in message.mentions:
+            mention_prefix = True
+            normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
+            normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+            message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
 
-            # 检查允许的频道 - 如果设置了白名单，仅在这些频道中响应
+            # Check allowed channels - if set, only respond in these channels
             allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
             if allowed_channels_raw:
                 allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
@@ -2470,49 +2984,44 @@ class DiscordAdapter(BasePlatformAdapter):
                     logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_ids)
                     return
 
-            # 检查忽略的频道 - 即使被提及也永不响应
+            # Check ignored channels - never respond even when mentioned
             ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
             ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
             if channel_ids & ignored_channels:
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_ids)
                 return
 
-            free_channels_raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
-            free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
+            free_channels = self._discord_free_response_channels()
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
 
-            require_mention = os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
-            # 语音关联的文字频道在语音活跃时作为免提及频道。
-            # 仅绑定的精确频道享有豁免，同级线程不享有。
+            require_mention = self._discord_require_mention()
+            # Voice-linked text channels act as free-response while voice is active.
+            # Only the exact bound channel gets the exemption, not sibling threads.
             voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
             current_channel_id = str(message.channel.id)
             is_voice_linked_channel = current_channel_id in voice_linked_ids
             is_free_channel = bool(channel_ids & free_channels) or is_voice_linked_channel
 
-            # 如果消息在机器人之前已参与（自动创建或已回复过）的线程中，
-            # 则跳过提及检查。
+            # Skip the mention check if the message is in a thread where
+            # the bot has previously participated (auto-created or replied in).
             in_bot_thread = is_thread and thread_id in self._threads
 
             if require_mention and not is_free_channel and not in_bot_thread:
-                if self._client.user not in message.mentions:
+                if self._client.user not in message.mentions and not mention_prefix:
                     return
-
-            if self._client.user and self._client.user in message.mentions:
-                message.content = message.content.replace(f"<@{self._client.user.id}>", "").strip()
-                message.content = message.content.replace(f"<@!{self._client.user.id}>", "").strip()
-
-        # 自动线程：启用后，对文字频道中的每个 @提及自动创建线程，
-        # 使每个对话隔离（类似 Slack）。
-        # 已在线程中或私聊中的消息不受影响。
-        # no_thread_channels：机器人直接回复而不创建线程的频道。
+        # Auto-thread: when enabled, automatically create a thread for every
+        # @mention in a text channel so each conversation is isolated (like Slack).
+        # Messages already inside threads or DMs are unaffected.
+        # no_thread_channels: channels where bot responds directly without thread.
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels)
+            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
-            if auto_thread and not skip_thread and not is_voice_linked_channel:
+            is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
+            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)
                 if thread:
                     is_thread = True
@@ -2520,12 +3029,12 @@ class DiscordAdapter(BasePlatformAdapter):
                     auto_threaded_channel = thread
                     self._threads.mark(thread_id)
 
-        # 判断消息类型
+        # Determine message type
         msg_type = MessageType.TEXT
-        if message.content.startswith("/"):
+        if normalized_content.startswith("/"):
             msg_type = MessageType.COMMAND
         elif message.attachments:
-            # 检查附件类型
+            # Check attachment types
             for att in message.attachments:
                 if att.content_type:
                     if att.content_type.startswith("image/"):
@@ -2543,10 +3052,10 @@ class DiscordAdapter(BasePlatformAdapter):
                             msg_type = MessageType.DOCUMENT
                     break
 
-        # 当自动线程功能生效时，将回复路由到新线程
+        # When auto-threading kicked in, route responses to the new thread
         effective_channel = auto_threaded_channel or message.channel
 
-        # 判断聊天类型
+        # Determine chat type
         if isinstance(message.channel, discord.DMChannel):
             chat_type = "dm"
             chat_name = message.author.name
@@ -2559,12 +3068,12 @@ class DiscordAdapter(BasePlatformAdapter):
             if hasattr(message.channel, "guild") and message.channel.guild:
                 chat_name = f"{message.channel.guild.name} / #{chat_name}"
 
-        # 获取频道主题（如果可用 —— TextChannel 有主题，私聊/线程没有）。
-        # 对于父级为论坛频道的线程，继承父级的主题，
-        # 使论坛描述（如项目说明）出现在会话上下文中。
+        # Get channel topic (if available - TextChannels have topics, DMs/threads don't).
+        # For threads whose parent is a forum channel, inherit the parent's topic
+        # so forum descriptions (e.g. project instructions) appear in the session context.
         chat_topic = self._get_effective_topic(message.channel, is_thread=is_thread)
 
-        # 构建消息来源
+        # Build source
         source = self.build_source(
             chat_id=str(effective_channel.id),
             chat_name=chat_name,
@@ -2573,10 +3082,11 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=message.author.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            is_bot=getattr(message.author, "bot", False),
         )
 
-        # 构建媒体 URL —— 将图片附件下载到本地缓存，使
-        # 视觉工具可以可靠访问（Discord CDN URL 可能过期）。
+        # Build media URLs -- download image attachments to local cache so the
+        # vision tool can access them reliably (Discord CDN URLs can expire).
         media_urls = []
         media_types = []
         pending_text_injection: Optional[str] = None
@@ -2584,17 +3094,17 @@ class DiscordAdapter(BasePlatformAdapter):
             content_type = att.content_type or "unknown"
             if content_type.startswith("image/"):
                 try:
-                    # 从 content type 确定扩展名（image/png -> .png）
+                    # Determine extension from content type (image/png -> .png)
                     ext = "." + content_type.split("/")[-1].split(";")[0]
                     if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
                         ext = ".jpg"
-                    cached_path = await cache_image_from_url(att.url, ext=ext)
+                    cached_path = await self._cache_discord_image(att, ext)
                     media_urls.append(cached_path)
                     media_types.append(content_type)
                     print(f"[Discord] Cached user image: {cached_path}", flush=True)
                 except Exception as e:
                     print(f"[Discord] Failed to cache image attachment: {e}", flush=True)
-                    # 如果缓存失败，回退到 CDN URL
+                    # Fall back to the CDN URL if caching fails
                     media_urls.append(att.url)
                     media_types.append(content_type)
             elif content_type.startswith("audio/"):
@@ -2602,7 +3112,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     ext = "." + content_type.split("/")[-1].split(";")[0]
                     if ext not in (".ogg", ".mp3", ".wav", ".webm", ".m4a"):
                         ext = ".ogg"
-                    cached_path = await cache_audio_from_url(att.url, ext=ext)
+                    cached_path = await self._cache_discord_audio(att, ext)
                     media_urls.append(cached_path)
                     media_types.append(content_type)
                     print(f"[Discord] Cached user audio: {cached_path}", flush=True)
@@ -2611,7 +3121,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     media_urls.append(att.url)
                     media_types.append(content_type)
             else:
-                # 文档附件：下载、缓存，并可选注入文本内容
+                # Document attachments: download, cache, and optionally inject text
                 ext = ""
                 if att.filename:
                     _, ext = os.path.splitext(att.filename)
@@ -2633,19 +3143,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         )
                     else:
                         try:
-                            import aiohttp
-                            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-                            _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
-                            _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
-                            async with aiohttp.ClientSession(**_sess_kw) as session:
-                                async with session.get(
-                                    att.url,
-                                    timeout=aiohttp.ClientTimeout(total=30),
-                                    **_req_kw,
-                                ) as resp:
-                                    if resp.status != 200:
-                                        raise Exception(f"HTTP {resp.status}")
-                                    raw_bytes = await resp.read()
+                            raw_bytes = await self._cache_discord_document(att, ext)
                             cached_path = cache_document_from_bytes(
                                 raw_bytes, att.filename or f"document{ext}"
                             )
@@ -2653,7 +3151,7 @@ class DiscordAdapter(BasePlatformAdapter):
                             media_urls.append(cached_path)
                             media_types.append(doc_mime)
                             logger.info("[Discord] Cached user document: %s", cached_path)
-                            # 为纯文本文档注入文本内容（上限 100 KB）
+                            # Inject text content for plain-text documents (capped at 100 KB)
                             MAX_TEXT_INJECT_BYTES = 100 * 1024
                             if ext in (".md", ".txt", ".log") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                                 try:
@@ -2673,12 +3171,14 @@ class DiscordAdapter(BasePlatformAdapter):
                                 att.filename, e, exc_info=True,
                             )
 
-        event_text = message.content
+        # Use normalized_content (saved before auto-threading) instead of message.content,
+        # to detect /slash commands in channel messages.
+        event_text = normalized_content
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
 
-        # 纵深防御：防止空的用户消息进入会话
-        # （当用户仅发送 @提及而无其他文本时可能发生）
+        # Defense-in-depth: prevent empty user messages from entering session
+        # (can happen when user sends @mention-only with no other text)
         if not event_text or not event_text.strip():
             event_text = "(The user sent a message with no text content)"
 
@@ -2710,24 +3210,24 @@ class DiscordAdapter(BasePlatformAdapter):
             channel_prompt=_channel_prompt,
         )
 
-        # 记录线程参与状态，使机器人在已参与的线程中
-        # 后续消息不需要 @提及。
+        # Track thread participation so the bot won't require @mention for
+        # follow-up messages in threads it has already engaged in.
         if thread_id:
             self._threads.mark(thread_id)
 
-        # 仅对纯文本消息进行批处理 —— 命令、媒体等立即分发，
-        # 因为它们不会被 Discord 客户端拆分。
+        # Only batch plain text messages — commands, media, etc. dispatch
+        # immediately since they won't be split by the Discord client.
         if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
             self._enqueue_text_event(event)
         else:
             await self.handle_message(event)
 
     # ------------------------------------------------------------------
-    # 文本消息聚合（处理 Discord 客户端拆分）
+    # Text message aggregation (handles Discord client-side splits)
     # ------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """文本消息批处理的会话范围键。"""
+        """Session-scoped key for text message batching."""
         from gateway.session import build_session_key
         return build_session_key(
             event.source,
@@ -2736,10 +3236,11 @@ class DiscordAdapter(BasePlatformAdapter):
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
-        """缓存文本事件并重置刷新定时器。
+        """Buffer a text event and reset the flush timer.
 
-        当 Discord 以 2000 字符为界拆分长消息时，分片会在
-        几百毫秒内到达。此方法在分发前将它们合并为单个事件。
+        When Discord splits a long user message at 2000 chars, the chunks
+        arrive within a few hundred milliseconds.  This merges them into
+        a single event before dispatching.
         """
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
@@ -2763,10 +3264,10 @@ class DiscordAdapter(BasePlatformAdapter):
         )
 
     async def _flush_text_batch(self, key: str) -> None:
-        """等待静默期结束后分发聚合的文本。
+        """Wait for the quiet period then dispatch the aggregated text.
 
-        当最新分片接近 Discord 的 2000 字符拆分点时使用更长的延迟，
-        因为后续分片几乎必定会到来。
+        Uses a longer delay when the latest chunk is near Discord's 2000-char
+        split point, since a continuation chunk is almost certain.
         """
         current_task = asyncio.current_task()
         try:
@@ -2784,45 +3285,58 @@ class DiscordAdapter(BasePlatformAdapter):
                 "[Discord] Flushing text batch %s (%d chars)",
                 key, len(event.text or ""),
             )
-            await self.handle_message(event)
+            # Shield the downstream dispatch so that a subsequent chunk
+            # arriving while handle_message is mid-flight cannot cancel
+            # the running agent turn.  _enqueue_text_event always cancels
+            # the prior flush task when a new chunk lands; without this
+            # shield, CancelledError would propagate from our task down
+            # into handle_message → the agent's streaming request,
+            # aborting the response the user was waiting on.  The new
+            # chunk is handled by the fresh flush task regardless.
+            await asyncio.shield(self.handle_message(event))
+        except asyncio.CancelledError:
+            # Only reached if cancel landed before the pop — the shielded
+            # handle_message is unaffected either way.  Let the task exit
+            # cleanly so the finally block cleans up.
+            pass
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
 
 
 # ---------------------------------------------------------------------------
-# Discord UI 组件（位于适配器类外部）
+# Discord UI Components (outside the adapter class)
 # ---------------------------------------------------------------------------
 
 if DISCORD_AVAILABLE:
 
     class ExecApprovalView(discord.ui.View):
         """
-        用于危险命令执行审批的交互式按钮视图。
+        Interactive button view for exec approval of dangerous commands.
 
-        显示四个按钮：允许一次、允许本次会话、始终允许、拒绝。
-        点击按钮调用 ``resolve_gateway_approval()`` 来解除等待中的
-        agent 线程阻塞 —— 与文本 ``/approve`` 流程使用相同机制。
-        仅允许列表中的用户可以点击。5 分钟后超时。
+        Shows four buttons: Allow Once, Allow Session, Always Allow, Deny.
+        Clicking a button calls ``resolve_gateway_approval()`` to unblock the
+        waiting agent thread — the same mechanism as the text ``/approve`` flow.
+        Only users in the allowed list can click.  Times out after 5 minutes.
         """
 
         def __init__(self, session_key: str, allowed_user_ids: set):
-            super().__init__(timeout=300)  # 5 分钟超时
+            super().__init__(timeout=300)  # 5-minute timeout
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.resolved = False
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
-            """验证点击的用户是否已授权。"""
+            """Verify the user clicking is authorized."""
             if not self.allowed_user_ids:
-                return True  # 无白名单 = 任何人都可以审批
+                return True  # No allowlist = anyone can approve
             return str(interaction.user.id) in self.allowed_user_ids
 
         async def _resolve(
             self, interaction: discord.Interaction, choice: str,
             color: discord.Color, label: str,
         ):
-            """通过网关审批队列解决审批请求并更新嵌入消息。"""
+            """Resolve the approval via the gateway approval queue and update the embed."""
             if self.resolved:
                 await interaction.response.send_message(
                     "This approval has already been resolved~", ephemeral=True
@@ -2837,19 +3351,19 @@ if DISCORD_AVAILABLE:
 
             self.resolved = True
 
-            # 用审批决定更新嵌入消息
+            # Update the embed with the decision
             embed = interaction.message.embeds[0] if interaction.message.embeds else None
             if embed:
                 embed.color = color
                 embed.set_footer(text=f"{label} by {interaction.user.display_name}")
 
-            # 禁用所有按钮
+            # Disable all buttons
             for child in self.children:
                 child.disabled = True
 
             await interaction.response.edit_message(embed=embed, view=self)
 
-            # 通过网关审批队列解除等待中的 agent 线程阻塞
+            # Unblock the waiting agent thread via the gateway approval queue
             try:
                 from tools.approval import resolve_gateway_approval
                 count = resolve_gateway_approval(self.session_key, choice)
@@ -2885,17 +3399,18 @@ if DISCORD_AVAILABLE:
             await self._resolve(interaction, "deny", discord.Color.red(), "Denied")
 
         async def on_timeout(self):
-            """处理视图超时 —— 禁用按钮并标记为已过期。"""
+            """Handle view timeout -- disable buttons and mark as expired."""
             self.resolved = True
             for child in self.children:
                 child.disabled = True
 
     class UpdatePromptView(discord.ui.View):
-        """用于 ``hermes update`` 提示的交互式 是/否 按钮。
+        """Interactive Yes/No buttons for ``hermes update`` prompts.
 
-        点击按钮将答案写入 ``.update_response``，以便
-        分离的更新进程获取。仅授权用户可以点击。
-        5 分钟后超时（更新进程侧也有 5 分钟超时）。
+        Clicking a button writes the answer to ``.update_response`` so the
+        detached update process can pick it up.  Only authorized users can
+        click.  Times out after 5 minutes (the update process also has a
+        5-minute timeout on its side).
         """
 
         def __init__(self, session_key: str, allowed_user_ids: set):
@@ -2926,7 +3441,7 @@ if DISCORD_AVAILABLE:
 
             self.resolved = True
 
-            # 更新嵌入消息
+            # Update embed
             embed = interaction.message.embeds[0] if interaction.message.embeds else None
             if embed:
                 embed.color = color
@@ -2936,7 +3451,7 @@ if DISCORD_AVAILABLE:
                 child.disabled = True
             await interaction.response.edit_message(embed=embed, view=self)
 
-            # 写入响应文件
+            # Write response file
             try:
                 from hermes_constants import get_hermes_home
                 home = get_hermes_home()
@@ -2969,11 +3484,11 @@ if DISCORD_AVAILABLE:
                 child.disabled = True
 
     class ModelPickerView(discord.ui.View):
-        """交互式下拉菜单模型选择视图。
+        """Interactive select-menu view for model switching.
 
-        两步下钻：提供商下拉菜单 -> 模型下拉菜单。
-        在用户导航时原地编辑原始消息。
-        2 分钟后超时。
+        Two-step drill-down: provider dropdown → model dropdown.
+        Edits the original message in-place as the user navigates.
+        Times out after 2 minutes.
         """
 
         def __init__(
@@ -3003,7 +3518,7 @@ if DISCORD_AVAILABLE:
             return str(interaction.user.id) in self.allowed_user_ids
 
         def _build_provider_select(self):
-            """构建提供商下拉菜单。"""
+            """Build the provider dropdown menu."""
             self.clear_items()
             options = []
             for p in self.providers:
@@ -3035,7 +3550,7 @@ if DISCORD_AVAILABLE:
             self.add_item(cancel_btn)
 
         def _build_model_select(self, provider_slug: str):
-            """为指定提供商构建模型下拉菜单。"""
+            """Build the model dropdown for a specific provider."""
             self.clear_items()
             provider = next(
                 (p for p in self.providers if p["slug"] == provider_slug), None

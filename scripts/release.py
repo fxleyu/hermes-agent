@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Hermes Agent 发布脚本
+"""Hermes Agent Release Script
 
-生成变更日志并创建带有 CalVer 标签的 GitHub 发布。
+Generates changelogs and creates GitHub releases with CalVer tags.
 
-用法:
-    # 预览变更日志（试运行）
+Usage:
+    # Preview changelog (dry run)
     python scripts/release.py
 
-    # 使用语义版本号升级预览
+    # Preview with semver bump
     python scripts/release.py --bump minor
 
-    # 创建发布
+    # Create the release
     python scripts/release.py --bump minor --publish
 
-    # 首次发布（无先前标签）
+    # First release (no previous tag)
     python scripts/release.py --bump minor --publish --first-release
 
-    # 覆盖 CalVer 日期（例如延迟发布的情况）
+    # Override CalVer date (e.g. for a belated release)
     python scripts/release.py --bump minor --publish --date 2026.3.15
 """
 
@@ -34,22 +34,30 @@ VERSION_FILE = REPO_ROOT / "hermes_cli" / "__init__.py"
 PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 
 # ──────────────────────────────────────────────────────────────────────
-# Git 邮箱 → GitHub 用户名映射
+# Git email → GitHub username mapping
 # ──────────────────────────────────────────────────────────────────────
 
-# 从 noreply 邮箱自动提取 + 手动覆盖
+# Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
-    # teknium（多个邮箱地址）
+    # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
     "teknium@nousresearch.com": "teknium1",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
-    # 贡献者（从 noreply 模式提取）
+    # contributors (from noreply pattern)
+    "snreynolds2506@gmail.com": "snreynolds",
     "35742124+0xbyt4@users.noreply.github.com": "0xbyt4",
+    "71184274+MassiveMassimo@users.noreply.github.com": "MassiveMassimo",
+    "massivemassimo@users.noreply.github.com": "MassiveMassimo",
     "82637225+kshitijk4poor@users.noreply.github.com": "kshitijk4poor",
     "kshitijk4poor@users.noreply.github.com": "kshitijk4poor",
+    "kshitijk4poor@gmail.com": "kshitijk4poor",
     "16443023+stablegenius49@users.noreply.github.com": "stablegenius49",
     "185121704+stablegenius49@users.noreply.github.com": "stablegenius49",
     "101283333+batuhankocyigit@users.noreply.github.com": "batuhankocyigit",
+    "valdi.jorge@gmail.com": "jvcl",
+    "francip@gmail.com": "francip",
+    "omni@comelse.com": "omnissiah-comelse",
+    "oussama.redcode@gmail.com": "mavrickdeveloper",
     "126368201+vilkasdev@users.noreply.github.com": "vilkasdev",
     "137614867+cutepawss@users.noreply.github.com": "cutepawss",
     "96793918+memosr@users.noreply.github.com": "memosr",
@@ -63,42 +71,81 @@ AUTHOR_MAP = {
     "104278804+Sertug17@users.noreply.github.com": "Sertug17",
     "112503481+caentzminger@users.noreply.github.com": "caentzminger",
     "258577966+voidborne-d@users.noreply.github.com": "voidborne-d",
+    "sir_even@icloud.com": "sirEven",
+    "36056348+sirEven@users.noreply.github.com": "sirEven",
     "70424851+insecurejezza@users.noreply.github.com": "insecurejezza",
+    "254021826+dodo-reach@users.noreply.github.com": "dodo-reach",
     "259807879+Bartok9@users.noreply.github.com": "Bartok9",
     "241404605+MestreY0d4-Uninter@users.noreply.github.com": "MestreY0d4-Uninter",
     "268667990+Roy-oss1@users.noreply.github.com": "Roy-oss1",
     "27917469+nosleepcassette@users.noreply.github.com": "nosleepcassette",
     "241404605+MestreY0d4-Uninter@users.noreply.github.com": "MestreY0d4-Uninter",
     "109555139+davetist@users.noreply.github.com": "davetist",
-    # 贡献者（从 git 名称手动映射）
+    "39405770+yyq4193@users.noreply.github.com": "yyq4193",
+    "Asunfly@users.noreply.github.com": "Asunfly",
+    "2500400+honghua@users.noreply.github.com": "honghua",
+    "462836+jplew@users.noreply.github.com": "jplew",
+    "nish3451@users.noreply.github.com": "nish3451",
+    "Mibayy@users.noreply.github.com": "Mibayy",
+    "mibayy@users.noreply.github.com": "Mibayy",
+    "135070653+sgaofen@users.noreply.github.com": "sgaofen",
+    "nocoo@users.noreply.github.com": "nocoo",
+    "30841158+n-WN@users.noreply.github.com": "n-WN",
+    "leoyuan0099@gmail.com": "keyuyuan",
+    "bxzt2006@163.com": "Only-Code-A",
+    "i@troy-y.org": "TroyMitchell911",
+    "mygamez@163.com": "zhongyueming1121",
+    "hansnow@users.noreply.github.com": "hansnow",
+    "134848055+UNLINEARITY@users.noreply.github.com": "UNLINEARITY",
+    # contributors (manual mapping from git names)
     "ahmedsherif95@gmail.com": "asheriif",
+    "liujinkun@bytedance.com": "liujinkun2025",
     "dmayhem93@gmail.com": "dmahan93",
+    "fr@tecompanytea.com": "ifrederico",
+    "cdanis@gmail.com": "cdanis",
     "samherring99@gmail.com": "samherring99",
     "desaiaum08@gmail.com": "Aum08Desai",
     "shannon.sands.1979@gmail.com": "shannonsands",
     "shannon@nousresearch.com": "shannonsands",
+    "abdi.moya@gmail.com": "AxDSan",
     "eri@plasticlabs.ai": "Erosika",
     "hjcpuro@gmail.com": "hjc-puro",
     "xaydinoktay@gmail.com": "aydnOktay",
     "abdullahfarukozden@gmail.com": "Farukest",
     "lovre.pesut@gmail.com": "rovle",
+    "xjtumj@gmail.com": "mengjian-github",
     "kevinskysunny@gmail.com": "kevinskysunny",
+    "xiewenxuan462@gmail.com": "yule975",
+    "yiweimeng.dlut@hotmail.com": "meng93",
     "hakanerten02@hotmail.com": "teyrebaz33",
+    "linux2010@users.noreply.github.com": "Linux2010",
+    "elmatadorgh@users.noreply.github.com": "elmatadorgh",
+    "alexazzjjtt@163.com": "alexzhu0",
+    "1180176+Swift42@users.noreply.github.com": "Swift42",
     "ruzzgarcn@gmail.com": "Ruzzgar",
+    "yukipukikedy@gmail.com": "Yukipukii1",
     "alireza78.crypto@gmail.com": "alireza78a",
     "brooklyn.bb.nicholson@gmail.com": "brooklynnicholson",
+    "withapurpose37@gmail.com": "StefanIsMe",
     "4317663+helix4u@users.noreply.github.com": "helix4u",
     "331214+counterposition@users.noreply.github.com": "counterposition",
     "blspear@gmail.com": "BrennerSpear",
+    "akhater@gmail.com": "akhater",
     "239876380+handsdiff@users.noreply.github.com": "handsdiff",
+    "hesapacicam112@gmail.com": "etherman-os",
+    "mark.ramsell@rivermounts.com": "mark-ramsell",
+    "taeng02@icloud.com": "taeng0204",
     "gpickett00@gmail.com": "gpickett00",
     "mcosma@gmail.com": "wakamex",
     "clawdia.nash@proton.me": "clawdia-nash",
     "pickett.austin@gmail.com": "austinpickett",
+    "dangtc94@gmail.com": "dieutx",
     "jaisehgal11299@gmail.com": "jaisup",
     "percydikec@gmail.com": "PercyDikec",
+    "noonou7@gmail.com": "HenkDz",
     "dean.kerr@gmail.com": "deankerr",
     "socrates1024@gmail.com": "socrates1024",
+    "seanalt555@gmail.com": "Salt-555",
     "satelerd@gmail.com": "satelerd",
     "numman.ali@gmail.com": "nummanali",
     "0xNyk@users.noreply.github.com": "0xNyk",
@@ -109,12 +156,15 @@ AUTHOR_MAP = {
     "vincentcharlebois@gmail.com": "vincentcharlebois",
     "aryan@synvoid.com": "aryansingh",
     "johnsonblake1@gmail.com": "blakejohnson",
+    "hcn518@gmail.com": "pedh",
+    "haileymarshall005@gmail.com": "haileymarshall",
     "greer.guthrie@gmail.com": "g-guthrie",
     "kennyx102@gmail.com": "bobashopcashier",
     "shokatalishaikh95@gmail.com": "areu01or00",
     "bryan@intertwinesys.com": "bryanyoung",
     "christo.mitov@gmail.com": "christomitov",
     "hermes@nousresearch.com": "NousResearch",
+    "hermes@noushq.ai": "benbarclay",
     "chinmingcock@gmail.com": "ChimingLiu",
     "openclaw@sparklab.ai": "openclaw",
     "semihcvlk53@gmail.com": "Himess",
@@ -129,16 +179,21 @@ AUTHOR_MAP = {
     "jack.47@gmail.com": "JackTheGit",
     "dalvidjr2022@gmail.com": "Jr-kenny",
     "m@statecraft.systems": "mbierling",
-    "balyan.sid@gmail.com": "balyansid",
+    "balyan.sid@gmail.com": "alt-glitch",
     "oluwadareab12@gmail.com": "bennytimz",
     "simon@simonmarcus.org": "simon-marcus",
     "xowiekk@gmail.com": "Xowiek",
     "1243352777@qq.com": "zons-zhaozhy",
-    # ── 批量添加: 通过 API、PR 内容、noreply 交叉比对和 GH 贡献者列表
-    #    匹配解析了 75 个邮箱（2026 年 4 月审计） ──
+    "e.silacandmr@gmail.com": "Es1la",
+    # ── bulk addition: 75 emails resolved via API, PR salvage bodies, noreply
+    #    crossref, and GH contributor list matching (April 2026 audit) ──
     "1115117931@qq.com": "aaronagent",
     "1506751656@qq.com": "hqhq1025",
     "364939526@qq.com": "luyao618",
+    "hgk324@gmail.com": "houziershi",
+    "176644217+PStarH@users.noreply.github.com": "PStarH",
+    "51058514+Sanjays2402@users.noreply.github.com": "Sanjays2402",
+    "906014227@qq.com": "bingo906",
     "aaronwong1999@icloud.com": "AaronWong1999",
     "agents@kylefrench.dev": "DeployFaith",
     "angelos@oikos.lan.home.malaiwah.com": "angelos",
@@ -158,9 +213,12 @@ AUTHOR_MAP = {
     "don.rhm@gmail.com": "donrhmexe",
     "dorukardahan@hotmail.com": "dorukardahan",
     "dsocolobsky@gmail.com": "dsocolobsky",
+    "dylan.socolobsky@lambdaclass.com": "dsocolobsky",
+    "ignacio.avecilla@lambdaclass.com": "IAvecilla",
     "duerzy@gmail.com": "duerzy",
     "emozilla@nousresearch.com": "emozilla",
     "fancydirty@gmail.com": "fancydirty",
+    "farion1231@gmail.com": "farion1231",
     "floptopbot33@gmail.com": "flobo3",
     "fontana.pedro93@gmail.com": "pefontana",
     "francis.x.fitzpatrick@gmail.com": "fxfitz",
@@ -177,7 +235,9 @@ AUTHOR_MAP = {
     "juan.ovalle@mistral.ai": "jjovalle99",
     "julien.talbot@ergonomia.re": "Julientalbot",
     "kagura.chen28@gmail.com": "kagura-agent",
+    "1342088860@qq.com": "youngDoo",
     "kamil@gwozdz.me": "kamil-gwozdz",
+    "skmishra1991@gmail.com": "bugkill3r",
     "karamusti912@gmail.com": "MustafaKara7",
     "kira@ariaki.me": "kira-ariaki",
     "knopki@duck.com": "knopki",
@@ -188,6 +248,7 @@ AUTHOR_MAP = {
     "82095453+iacker@users.noreply.github.com": "iacker",
     "sontianye@users.noreply.github.com": "sontianye",
     "jackjin1997@users.noreply.github.com": "jackjin1997",
+    "1037461232@qq.com": "jackjin1997",
     "danieldoderlein@users.noreply.github.com": "danieldoderlein",
     "lrawnsley@users.noreply.github.com": "lrawnsley",
     "taeuk178@users.noreply.github.com": "taeuk178",
@@ -195,10 +256,13 @@ AUTHOR_MAP = {
     "cola-runner@users.noreply.github.com": "cola-runner",
     "ygd58@users.noreply.github.com": "ygd58",
     "vominh1919@users.noreply.github.com": "vominh1919",
+    "iamagenius00@users.noreply.github.com": "iamagenius00",
+    "9219265+cresslank@users.noreply.github.com": "cresslank",
     "trevmanthony@gmail.com": "trevthefoolish",
     "ziliangpeng@users.noreply.github.com": "ziliangpeng",
     "centripetal-star@users.noreply.github.com": "centripetal-star",
     "LeonSGP43@users.noreply.github.com": "LeonSGP43",
+    "154585401+LeonSGP43@users.noreply.github.com": "LeonSGP43",
     "Lubrsy706@users.noreply.github.com": "Lubrsy706",
     "niyant@spicefi.xyz": "spniyant",
     "olafthiele@gmail.com": "olafthiele",
@@ -231,12 +295,47 @@ AUTHOR_MAP = {
     "zaynjarvis@gmail.com": "ZaynJarvis",
     "zhiheng.liu@bytedance.com": "ZaynJarvis",
     "mbelleau@Michels-MacBook-Pro.local": "malaiwah",
+    "michel.belleau@malaiwah.com": "malaiwah",
+    "gnanasekaran.sekareee@gmail.com": "gnanam1990",
+    "jz.pentest@gmail.com": "0xyg3n",
+    "hypnosis.mda@gmail.com": "Hypn0sis",
+    "ywt000818@gmail.com": "OwenYWT",
     "dhandhalyabhavik@gmail.com": "v1k22",
+    "rucchizhao@zhaochenfeideMacBook-Pro.local": "RucchiZ",
+    "tannerfokkens@Mac.attlocal.net": "tannerfokkens-maker",
+    "lehaolin98@outlook.com": "LehaoLin",
+    "yuewang1@microsoft.com": "imink",
+    "1736355688@qq.com": "hedgeho9X",
+    "bernylinville@devopsthink.org": "bernylinville",
+    "brian@bde.io": "briandevans",
+    "hubin_ll@qq.com": "LLQWQ",
+    "memosr_email@gmail.com": "memosr",
+    "anthhub@163.com": "anthhub",
+    "shenuu@gmail.com": "shenuu",
+    "xiayh17@gmail.com": "xiayh0107",
+    "zhujianxyz@gmail.com": "opriz",
+    "asurla@nvidia.com": "anniesurla",
+    "limkuan24@gmail.com": "WideLee",
+    "aviralarora002@gmail.com": "AviArora02-commits",
+    "draixagent@gmail.com": "draix",
+    "junminliu@gmail.com": "JimLiu",
+    "jarvischer@gmail.com": "maxchernin",
+    "levantam.98.2324@gmail.com": "LVT382009",
+    "zhurongcheng@rcrai.com": "heykb",
+    "withapurpose37@gmail.com": "StefanIsMe",
+    "261797239+lumenradley@users.noreply.github.com": "lumenradley",
+    "166376523+sjz-ks@users.noreply.github.com": "sjz-ks",
+    "haileymarshall005@gmail.com": "haileymarshall",
+    "aniruddhaadak80@users.noreply.github.com": "aniruddhaadak80",
+    "zheng.jerilyn@gmail.com": "jerilynzheng",
+    "asslaenn5@gmail.com": "Aslaaen",
+    "shalompmc0505@naver.com": "pinion05",
+    "105142614+VTRiot@users.noreply.github.com": "VTRiot",
 }
 
 
 def git(*args, cwd=None):
-    """运行 git 命令并返回 stdout 输出。"""
+    """Run a git command and return stdout."""
     result = subprocess.run(
         ["git"] + list(args),
         capture_output=True, text=True,
@@ -249,7 +348,7 @@ def git(*args, cwd=None):
 
 
 def git_result(*args, cwd=None):
-    """运行 git 命令并返回完整的 CompletedProcess 对象。"""
+    """Run a git command and return the full CompletedProcess."""
     return subprocess.run(
         ["git"] + list(args),
         capture_output=True,
@@ -259,7 +358,7 @@ def git_result(*args, cwd=None):
 
 
 def get_last_tag():
-    """获取最近的 CalVer 标签。"""
+    """Get the most recent CalVer tag."""
     tags = git("tag", "--list", "v20*", "--sort=-v:refname")
     if tags:
         return tags.split("\n")[0]
@@ -267,7 +366,7 @@ def get_last_tag():
 
 
 def next_available_tag(base_tag: str) -> tuple[str, str]:
-    """返回标签/CalVer 对，同一天多次发布时添加后缀。"""
+    """Return a tag/calver pair, suffixing same-day releases when needed."""
     if not git("tag", "--list", base_tag):
         return base_tag, base_tag.removeprefix("v")
 
@@ -279,14 +378,14 @@ def next_available_tag(base_tag: str) -> tuple[str, str]:
 
 
 def get_current_version():
-    """从 __init__.py 中读取当前语义版本号。"""
+    """Read current semver from __init__.py."""
     content = VERSION_FILE.read_text()
     match = re.search(r'__version__\s*=\s*"([^"]+)"', content)
     return match.group(1) if match else "0.0.0"
 
 
 def bump_version(current: str, part: str) -> str:
-    """升级语义版本号字符串。"""
+    """Bump a semver version string."""
     parts = current.split(".")
     if len(parts) != 3:
         parts = ["0", "0", "0"]
@@ -308,8 +407,8 @@ def bump_version(current: str, part: str) -> str:
 
 
 def update_version_files(semver: str, calver_date: str):
-    """更新源文件中的版本号字符串。"""
-    # 更新 __init__.py
+    """Update version strings in source files."""
+    # Update __init__.py
     content = VERSION_FILE.read_text()
     content = re.sub(
         r'__version__\s*=\s*"[^"]+"',
@@ -323,7 +422,7 @@ def update_version_files(semver: str, calver_date: str):
     )
     VERSION_FILE.write_text(content)
 
-    # 更新 pyproject.toml
+    # Update pyproject.toml
     pyproject = PYPROJECT_FILE.read_text()
     pyproject = re.sub(
         r'^version\s*=\s*"[^"]+"',
@@ -335,11 +434,11 @@ def update_version_files(semver: str, calver_date: str):
 
 
 def build_release_artifacts(semver: str) -> list[Path]:
-    """为当前发布构建 sdist/wheel 制品。
+    """Build sdist/wheel artifacts for the current release.
 
-    当本地环境有 ``python -m build`` 可用时返回制品路径。
-    如果构建工具缺失或构建失败，返回空列表并让发布继续进行，
-    不附带 Python 制品。
+    Returns the artifact paths when the local environment has ``python -m build``
+    available. If build tooling is missing or the build fails, returns an empty
+    list and lets the release proceed without attached Python artifacts.
     """
     dist_dir = REPO_ROOT / "dist"
     shutil.rmtree(dist_dir, ignore_errors=True)
@@ -370,31 +469,31 @@ def build_release_artifacts(semver: str) -> list[Path]:
 
 
 def resolve_author(name: str, email: str) -> str:
-    """将 git 作者解析为 GitHub @mention。"""
-    # 先尝试邮箱查找
+    """Resolve a git author to a GitHub @mention."""
+    # Try email lookup first
     gh_user = AUTHOR_MAP.get(email)
     if gh_user:
         return f"@{gh_user}"
 
-    # 尝试 noreply 模式
+    # Try noreply pattern
     noreply_match = re.match(r"(\d+)\+(.+)@users\.noreply\.github\.com", email)
     if noreply_match:
         return f"@{noreply_match.group(2)}"
 
-    # 尝试 username@users.noreply.github.com 格式
+    # Try username@users.noreply.github.com
     noreply_match2 = re.match(r"(.+)@users\.noreply\.github\.com", email)
     if noreply_match2:
         return f"@{noreply_match2.group(1)}"
 
-    # 回退使用 git 名称
+    # Fallback to git name
     return name
 
 
 def categorize_commit(subject: str) -> str:
-    """按约定式提交前缀对提交进行分类。"""
+    """Categorize a commit by its conventional commit prefix."""
     subject_lower = subject.lower()
 
-    # 匹配约定式提交模式
+    # Match conventional commit patterns
     patterns = {
         "breaking": [r"^breaking[\s:(]", r"^!:", r"BREAKING CHANGE"],
         "features": [r"^feat[\s:(]", r"^feature[\s:(]", r"^add[\s:(]"],
@@ -413,7 +512,7 @@ def categorize_commit(subject: str) -> str:
             if re.match(regex, subject_lower):
                 return category
 
-    # 启发式回退规则
+    # Heuristic fallbacks
     if any(w in subject_lower for w in ["add ", "new ", "implement", "support "]):
         return "features"
     if any(w in subject_lower for w in ["fix ", "fixed ", "resolve", "patch "]):
@@ -425,26 +524,26 @@ def categorize_commit(subject: str) -> str:
 
 
 def clean_subject(subject: str) -> str:
-    """清理提交标题以便显示。"""
-    # 移除约定式提交前缀
+    """Clean up a commit subject for display."""
+    # Remove conventional commit prefix
     cleaned = re.sub(r"^(feat|fix|docs|chore|refactor|test|perf|ci|build|improve|add|update|cleanup|hotfix|breaking|enhance|optimize|bugfix|bug|feature|tests|deps|bump)[\s:(!]+\s*", "", subject, flags=re.IGNORECASE)
-    # 移除与 PR 链接重复的尾部 issue 引用
+    # Remove trailing issue refs that are redundant with PR links
     cleaned = cleaned.strip()
-    # 首字母大写
+    # Capitalize first letter
     if cleaned:
         cleaned = cleaned[0].upper() + cleaned[1:]
     return cleaned
 
 
 def parse_coauthors(body: str) -> list:
-    """从提交消息正文中提取 Co-authored-by 尾注。
+    """Extract Co-authored-by trailers from a commit message body.
 
-    返回 {'name': ..., 'email': ...} 字典列表。
-    过滤掉 AI 助手和机器人（Claude、Copilot、Cursor 等）。
+    Returns a list of {'name': ..., 'email': ...} dicts.
+    Filters out AI assistants and bots (Claude, Copilot, Cursor, etc.).
     """
     if not body:
         return []
-    # 需要忽略的 AI/机器人 co-author 尾注中的邮箱
+    # AI/bot emails to ignore in co-author trailers
     _ignored_emails = {"noreply@anthropic.com", "noreply@github.com",
                        "cursoragent@cursor.com", "hermes@nousresearch.com"}
     _ignored_names = re.compile(r"^(Claude|Copilot|Cursor Agent|GitHub Actions?|dependabot|renovate)", re.IGNORECASE)
@@ -459,14 +558,14 @@ def parse_coauthors(body: str) -> list:
 
 
 def get_commits(since_tag=None):
-    """获取指定标签之后的提交记录（如果为 None 则获取所有提交）。"""
+    """Get commits since a tag (or all commits if None)."""
     if since_tag:
         range_spec = f"{since_tag}..HEAD"
     else:
         range_spec = "HEAD"
 
-    # 格式: hash|author_name|author_email|subject\0body
-    # 使用 %x00（空字节）作为 subject 和 body 之间的分隔符
+    # Format: hash|author_name|author_email|subject\0body
+    # Using %x00 (null) as separator between subject and body
     log = git(
         "log", range_spec,
         "--format=%H|%an|%ae|%s%x00%b%x00",
@@ -477,13 +576,13 @@ def get_commits(since_tag=None):
         return []
 
     commits = []
-    # 按双空字节分割以获取每个提交条目，因为 body 以 \0 结尾
-    # 且格式也以 \0 结尾，所以每条记录之间有 \0\0
+    # Split on double-null to get each commit entry, since body ends with \0
+    # and format ends with \0, each record ends with \0\0 between entries
     for entry in log.split("\0\0"):
         entry = entry.strip()
         if not entry:
             continue
-        # 按首个空字节分割，将 "hash|name|email|subject" 与 "body" 分开
+        # Split on first null to separate "hash|name|email|subject" from "body"
         if "\0" in entry:
             header, body = entry.split("\0", 1)
             body = body.strip()
@@ -511,7 +610,7 @@ def get_commits(since_tag=None):
 
 
 def get_pr_number(subject: str) -> str:
-    """从提交标题中提取 PR 编号（如果存在）。"""
+    """Extract PR number from commit subject if present."""
     match = re.search(r"#(\d+)", subject)
     if match:
         return match.group(1)
@@ -520,10 +619,10 @@ def get_pr_number(subject: str) -> str:
 
 def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/NousResearch/hermes-agent",
                        prev_tag=None, first_release=False):
-    """从分类后的提交生成 Markdown 变更日志。"""
+    """Generate markdown changelog from categorized commits."""
     lines = []
 
-    # 标题头部
+    # Header
     now = datetime.now()
     date_str = now.strftime("%B %d, %Y")
     lines.append(f"# Hermes Agent v{semver} ({tag_name})")
@@ -536,7 +635,7 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
         lines.append("> for Hermes Agent. See below for everything included in this initial release.")
         lines.append("")
 
-    # 按类别分组提交
+    # Group commits by category
     categories = defaultdict(list)
     all_authors = set()
     teknium_aliases = {"@teknium1"}
@@ -550,7 +649,7 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
             if coauthor not in teknium_aliases:
                 all_authors.add(coauthor)
 
-    # 类别显示顺序和图标
+    # Category display order and emoji
     category_order = [
         ("breaking", "⚠️ Breaking Changes"),
         ("features", "✨ Features"),
@@ -575,7 +674,7 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
             pr_num = get_pr_number(commit["subject"])
             author = commit["github_author"]
 
-            # 构建每行内容
+            # Build the line
             parts = [f"- {subject}"]
             if pr_num:
                 parts.append(f"([#{pr_num}]({repo_url}/pull/{pr_num}))")
@@ -589,9 +688,9 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
 
         lines.append("")
 
-    # 贡献者部分
+    # Contributors section
     if all_authors:
-        # 按提交数量排序贡献者
+        # Sort contributors by commit count
         author_counts = defaultdict(int)
         for commit in commits:
             author = commit["github_author"]
@@ -612,7 +711,7 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
             lines.append(f"- {author} ({count} {commit_word})")
         lines.append("")
 
-    # 完整变更日志链接
+    # Full changelog link
     if prev_tag:
         lines.append(f"**Full Changelog**: [{prev_tag}...{tag_name}]({repo_url}/compare/{prev_tag}...{tag_name})")
     else:
@@ -636,7 +735,7 @@ def main():
                         help="Write changelog to file instead of stdout")
     args = parser.parse_args()
 
-    # 确定 CalVer 日期
+    # Determine CalVer date
     if args.date:
         calver_date = args.date
     else:
@@ -648,21 +747,21 @@ def main():
     if tag_name != base_tag:
         print(f"Note: Tag {base_tag} already exists, using {tag_name}")
 
-    # 确定语义版本号
+    # Determine semver
     current_version = get_current_version()
     if args.bump:
         new_version = bump_version(current_version, args.bump)
     else:
         new_version = current_version
 
-    # 获取上一个标签
+    # Get previous tag
     prev_tag = get_last_tag()
     if not prev_tag and not args.first_release:
         print("No previous tags found. Use --first-release for the initial release.")
         print(f"Would create tag: {tag_name}")
         print(f"Would set version: {new_version}")
 
-    # 获取提交记录
+    # Get commits
     commits = get_commits(since_tag=prev_tag)
     if not commits:
         print("No new commits since last tag.")
@@ -681,7 +780,7 @@ def main():
     print(f"{'='*60}")
     print()
 
-    # 生成变更日志
+    # Generate changelog
     changelog = generate_changelog(
         commits, tag_name, new_version,
         prev_tag=prev_tag,
@@ -699,12 +798,12 @@ def main():
         print("  Publishing release...")
         print(f"{'='*60}")
 
-        # 更新版本号文件
+        # Update version files
         if args.bump:
             update_version_files(new_version, calver_date)
             print(f"  ✓ Updated version files to v{new_version} ({calver_date})")
 
-            # 提交版本号升级
+            # Commit version bump
             add_result = git_result("add", str(VERSION_FILE), str(PYPROJECT_FILE))
             if add_result.returncode != 0:
                 print(f"  ✗ Failed to stage version files: {add_result.stderr.strip()}")
@@ -718,7 +817,7 @@ def main():
                 return
             print(f"  ✓ Committed version bump")
 
-        # 创建带注释的标签
+        # Create annotated tag
         tag_result = git_result(
             "tag", "-a", tag_name, "-m",
             f"Hermes Agent v{new_version} ({calver_date})\n\nWeekly release"
@@ -728,7 +827,7 @@ def main():
             return
         print(f"  ✓ Created tag {tag_name}")
 
-        # 推送到远程仓库
+        # Push
         push_result = git_result("push", "origin", "HEAD", "--tags")
         if push_result.returncode == 0:
             print(f"  ✓ Pushed to origin")
@@ -737,15 +836,15 @@ def main():
             print("    Continue manually after fixing access:")
             print("    git push origin HEAD --tags")
 
-        # 构建带语义版本号命名的 Python 制品，以便下游打包工具
-        # （如 Homebrew）可以通过它们来定位，而不依赖 CalVer 标签名。
+        # Build semver-named Python artifacts so downstream packagers
+        # (e.g. Homebrew) can target them without relying on CalVer tag names.
         artifacts = build_release_artifacts(new_version)
         if artifacts:
             print("  ✓ Built release artifacts:")
             for artifact in artifacts:
                 print(f"    - {artifact.relative_to(REPO_ROOT)}")
 
-        # 创建 GitHub 发布
+        # Create GitHub release
         changelog_file = REPO_ROOT / ".release_notes.md"
         changelog_file.write_text(changelog)
 

@@ -1,16 +1,16 @@
 """
-Hermes Agent 的多提供者认证系统。
+Multi-provider authentication system for Hermes Agent.
 
-支持 OAuth 设备码流程（Nous Portal，未来支持 OpenAI Codex）和
-传统 API 密钥提供者（OpenRouter、自定义端点）。认证状态
-通过跨进程文件锁持久化在 ~/.hermes/auth.json 中。
+Supports OAuth device code flows (Nous Portal, future: OpenAI Codex) and
+traditional API key providers (OpenRouter, custom endpoints). Auth state
+is persisted in ~/.hermes/auth.json with cross-process file locking.
 
-架构:
-- ProviderConfig 注册表定义已知的 OAuth 提供者
-- Auth store (auth.json) 保存每个提供者的凭证状态
-- resolve_provider() 通过优先级链选择活跃的提供者
-- resolve_*_runtime_credentials() 处理令牌刷新和密钥铸造
-- logout_command() 是清除认证的 CLI 入口点
+Architecture:
+- ProviderConfig registry defines known OAuth providers
+- Auth store (auth.json) holds per-provider credential state
+- resolve_provider() picks the active provider via priority chain
+- resolve_*_runtime_credentials() handles token refresh and key minting
+- logout_command() is the CLI entry point for clearing auth
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ import logging
 import os
 import shutil
 import shlex
+import ssl
 import stat
 import base64
 import hashlib
@@ -52,13 +53,13 @@ except Exception:
     msvcrt = None
 
 # =============================================================================
-# 常量
+# Constants
 # =============================================================================
 
 AUTH_STORE_VERSION = 1
 AUTH_LOCK_TIMEOUT_SECONDS = 15.0
 
-# Nous Portal 默认值
+# Nous Portal defaults
 DEFAULT_NOUS_PORTAL_URL = "https://portal.nousresearch.com"
 DEFAULT_NOUS_INFERENCE_URL = "https://inference-api.nousresearch.com/v1"
 DEFAULT_NOUS_CLIENT_ID = "hermes-cli"
@@ -78,18 +79,18 @@ QWEN_OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
 QWEN_OAUTH_TOKEN_URL = "https://chat.qwen.ai/api/v1/oauth2/token"
 QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 
-# Google Gemini OAuth（google-gemini-cli 提供者，Cloud Code Assist 后端）
+# Google Gemini OAuth (google-gemini-cli provider, Cloud Code Assist backend)
 DEFAULT_GEMINI_CLOUDCODE_BASE_URL = "cloudcode-pa://google"
 GEMINI_OAUTH_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 60  # refresh 60s before expiry
 
 
 # =============================================================================
-# 提供者注册表
+# Provider Registry
 # =============================================================================
 
 @dataclass
 class ProviderConfig:
-    """描述一个已知的推理提供者。"""
+    """Describes a known inference provider."""
     id: str
     name: str
     auth_type: str  # "oauth_device_code", "oauth_external", or "api_key"
@@ -98,9 +99,9 @@ class ProviderConfig:
     client_id: str = ""
     scope: str = ""
     extra: Dict[str, Any] = field(default_factory=dict)
-    # 对于 API 密钥提供者：要检查的环境变量（按优先级排序）
+    # For API-key providers: env vars to check (in priority order)
     api_key_env_vars: tuple = ()
-    # 可选的 base URL 覆盖环境变量
+    # Optional env var for base URL override
     base_url_env_var: str = ""
 
 
@@ -151,7 +152,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="gemini",
         name="Google AI Studio",
         auth_type="api_key",
-        inference_base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        inference_base_url="https://generativelanguage.googleapis.com/v1beta",
         api_key_env_vars=("GOOGLE_API_KEY", "GEMINI_API_KEY"),
         base_url_env_var="GEMINI_BASE_URL",
     ),
@@ -233,6 +234,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("XAI_API_KEY",),
         base_url_env_var="XAI_BASE_URL",
     ),
+    "nvidia": ProviderConfig(
+        id="nvidia",
+        name="NVIDIA NIM",
+        auth_type="api_key",
+        inference_base_url="https://integrate.api.nvidia.com/v1",
+        api_key_env_vars=("NVIDIA_API_KEY",),
+        base_url_env_var="NVIDIA_BASE_URL",
+    ),
     "ai-gateway": ProviderConfig(
         id="ai-gateway",
         name="Vercel AI Gateway",
@@ -305,15 +314,15 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
 
 
 # =============================================================================
-# Anthropic 密钥辅助函数
+# Anthropic Key Helper
 # =============================================================================
 
 def get_anthropic_key() -> str:
-    """返回第一个可用的 Anthropic 凭证，如果没有则返回空字符串。
+    """Return the first usable Anthropic credential, or ``""``.
 
-    同时检查 ``.env`` 文件（通过 ``get_env_value``）和进程
-    环境（``os.getenv``）。回退顺序与
-    ``PROVIDER_REGISTRY["anthropic"].api_key_env_vars`` 元组一致：
+    Checks both the ``.env`` file (via ``get_env_value``) and the process
+    environment (``os.getenv``).  The fallback order mirrors the
+    ``PROVIDER_REGISTRY["anthropic"].api_key_env_vars`` tuple:
 
         ANTHROPIC_API_KEY -> ANTHROPIC_TOKEN -> CLAUDE_CODE_OAUTH_TOKEN
     """
@@ -327,24 +336,27 @@ def get_anthropic_key() -> str:
 
 
 # =============================================================================
-# Kimi 编程端点检测
+# Kimi Code Endpoint Detection
 # =============================================================================
 
-# Kimi Code（kimi.com/code）签发的密钥以 "sk-kimi-" 为前缀，只能在
-# api.kimi.com/coding/v1 上使用。来自 platform.moonshot.ai 的旧版密钥可在
-# api.moonshot.ai/v1（默认端点）上使用。当用户未显式设置
-# KIMI_BASE_URL 时自动检测。
+# Kimi Code (kimi.com/code) issues keys prefixed "sk-kimi-" that only work
+# on api.kimi.com/coding/v1.  Legacy keys from platform.moonshot.ai work on
+# api.moonshot.ai/v1 (the default).  Auto-detect when user hasn't set
+# KIMI_BASE_URL explicitly.
 KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1"
 
 
 def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) -> str:
-    """根据 API 密钥前缀返回正确的 Kimi base URL。
+    """Return the correct Kimi base URL based on the API key prefix.
 
-    如果用户显式设置了 KIMI_BASE_URL，则始终使用用户设置的值。
-    否则，带 sk-kimi- 前缀的密钥路由到 api.kimi.com/coding/v1。
+    If the user has explicitly set KIMI_BASE_URL, that always wins.
+    Otherwise, sk-kimi- prefixed keys route to api.kimi.com/coding/v1.
     """
     if env_override:
         return env_override
+    # No key → nothing to infer from.  Return default without inspecting.
+    if not api_key:
+        return default_url
     if api_key.startswith("sk-kimi-"):
         return KIMI_CODE_BASE_URL
     return default_url
@@ -367,7 +379,7 @@ _PLACEHOLDER_SECRET_VALUES = {
 
 
 def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
-    """当配置的密钥看起来可用（非空/非占位符）时返回 True。"""
+    """Return True when a configured secret looks usable, not empty/placeholder."""
     if not isinstance(value, str):
         return False
     cleaned = value.strip()
@@ -381,9 +393,9 @@ def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
 def _resolve_api_key_provider_secret(
     provider_id: str, pconfig: ProviderConfig
 ) -> tuple[str, str]:
-    """解析 API 密钥提供者的令牌，并指示其来源。"""
+    """Resolve an API-key provider's token and indicate where it came from."""
     if provider_id == "copilot":
-        # 使用专用的 copilot 认证模块进行正确的令牌验证
+        # Use the dedicated copilot auth module for proper token validation
         try:
             from hermes_cli.copilot_auth import resolve_copilot_token
             token, source = resolve_copilot_token()
@@ -404,14 +416,15 @@ def _resolve_api_key_provider_secret(
 
 
 # =============================================================================
-# Z.AI 端点检测
+# Z.AI Endpoint Detection
 # =============================================================================
 
-# Z.AI 的通用方案和编程方案有独立的计费，全球端点和中国端点也是如此。
-# 一个在某端点上可用的密钥可能在另一个端点上返回 "Insufficient balance"。
-# 我们在设置时进行探测并保存可用的端点。
-# 每个条目列出要按顺序尝试的候选模型 -- 较新的编程方案账户
-# 可能只能访问最近的模型（glm-5.1、glm-5v-turbo），而旧账户仍使用 glm-4.7。
+# Z.AI has separate billing for general vs coding plans, and global vs China
+# endpoints.  A key that works on one may return "Insufficient balance" on
+# another.  We probe at setup time and store the working endpoint.
+# Each entry lists candidate models to try in order — newer coding plan accounts
+# may only have access to recent models (glm-5.1, glm-5v-turbo) while older
+# ones still use glm-4.7.
 
 ZAI_ENDPOINTS = [
     # (id, base_url, probe_models, label)
@@ -423,10 +436,11 @@ ZAI_ENDPOINTS = [
 
 
 def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str, str]]:
-    """探测 z.ai 端点以找到接受此 API 密钥的端点。
+    """Probe z.ai endpoints to find one that accepts this API key.
 
-    返回第一个可用端点的 {"id": ..., "base_url": ..., "model": ..., "label": ...}，
-    如果全部失败则返回 None。对于有多个候选模型的端点，按顺序尝试并返回第一个成功的。
+    Returns {"id": ..., "base_url": ..., "model": ..., "label": ...} for the
+    first working endpoint, or None if all fail.  For endpoints with multiple
+    candidate models, tries each in order and returns the first that succeeds.
     """
     for ep_id, base_url, probe_models, label in ZAI_ENDPOINTS:
         for model in probe_models:
@@ -460,17 +474,25 @@ def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str
 
 
 def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> str:
-    """通过探测端点返回正确的 Z.AI base URL。
+    """Return the correct Z.AI base URL by probing endpoints.
 
-    如果用户显式设置了 GLM_BASE_URL，则始终使用用户的值。
-    否则探测候选端点以找到接受该密钥的端点。检测到的端点会
-    缓存在 provider state（auth.json）中，以 API 密钥哈希为键，
-    以便后续启动跳过探测。
+    If the user has explicitly set GLM_BASE_URL, that always wins.
+    Otherwise, probe the candidate endpoints to find one that accepts the
+    key.  The detected endpoint is cached in provider state (auth.json) keyed
+    on a hash of the API key so subsequent starts skip the probe.
     """
     if env_override:
         return env_override
 
-    # 检查提供者状态缓存中是否有之前检测到的端点。
+    # No API key set → don't probe (would fire N×M HTTPS requests with an
+    # empty Bearer token, all returning 401).  This path is hit during
+    # auxiliary-client auto-detection when the user has no Z.AI credentials
+    # at all — the caller discards the result immediately, so the probe is
+    # pure latency for every AIAgent construction.
+    if not api_key:
+        return default_url
+
+    # Check provider-state cache for a previously-detected endpoint.
     auth_store = _load_auth_store()
     state = _load_provider_state(auth_store, "zai") or {}
     cached = state.get("detected_endpoint")
@@ -480,10 +502,10 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
             logger.debug("Z.AI: using cached endpoint %s", cached["base_url"])
             return cached["base_url"]
 
-    # 探测 -- 每个端点可能耗时约 8 秒。
+    # Probe — may take up to ~8s per endpoint.
     detected = detect_zai_endpoint(api_key)
     if detected and detected.get("base_url"):
-        # 将检测结果以 API 密钥哈希为键进行持久化。
+        # Persist the detection result keyed on the API key hash.
         key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
         state["detected_endpoint"] = {
             "base_url": detected["base_url"],
@@ -501,11 +523,11 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
 
 
 # =============================================================================
-# 错误类型
+# Error Types
 # =============================================================================
 
 class AuthError(RuntimeError):
-    """带有用户体验映射提示的结构化认证错误。"""
+    """Structured auth error with UX mapping hints."""
 
     def __init__(
         self,
@@ -522,7 +544,7 @@ class AuthError(RuntimeError):
 
 
 def format_auth_error(error: Exception) -> str:
-    """将认证失败映射为简洁的面向用户的指导信息。"""
+    """Map auth failures to concise user-facing guidance."""
     if not isinstance(error, AuthError):
         return str(error)
 
@@ -548,7 +570,7 @@ def format_auth_error(error: Exception) -> str:
 
 
 def _token_fingerprint(token: Any) -> Optional[str]:
-    """返回用于遥测的短哈希指纹，不泄露令牌字节。"""
+    """Return a short hash fingerprint for telemetry without leaking token bytes."""
     if not isinstance(token, str):
         return None
     cleaned = token.strip()
@@ -573,7 +595,7 @@ def _oauth_trace(event: str, *, sequence_id: Optional[str] = None, **fields: Any
 
 
 # =============================================================================
-# Auth Store -- ~/.hermes/auth.json 的持久化层
+# Auth Store — persistence layer for ~/.hermes/auth.json
 # =============================================================================
 
 def _auth_file_path() -> Path:
@@ -588,8 +610,8 @@ _auth_lock_holder = threading.local()
 
 @contextmanager
 def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
-    """auth.json 读写的跨进程咨询锁。支持可重入。"""
-    # 可重入：如果当前线程已持有锁，直接 yield。
+    """Cross-process advisory lock for auth.json reads+writes.  Reentrant."""
+    # Reentrant: if this thread already holds the lock, just yield.
     if getattr(_auth_lock_holder, "depth", 0) > 0:
         _auth_lock_holder.depth += 1
         try:
@@ -609,8 +631,8 @@ def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
             _auth_lock_holder.depth = 0
         return
 
-    # 在 Windows 上，msvcrt.locking 需要文件有内容且文件指针在位置 0。
-    # 确保锁文件至少有 1 个字节。
+    # On Windows, msvcrt.locking needs the file to have content and the
+    # file pointer at position 0.  Ensure the lock file has at least 1 byte.
     if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
         lock_path.write_text(" ", encoding="utf-8")
 
@@ -661,7 +683,7 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
         raw.setdefault("providers", {})
         return raw
 
-    # 从 PR 的 "systems" 格式迁移（如果存在）
+    # Migrate from PR's "systems" format if present
     if isinstance(raw, dict) and isinstance(raw.get("systems"), dict):
         systems = raw["systems"]
         providers = {}
@@ -701,7 +723,7 @@ def _save_auth_store(auth_store: Dict[str, Any]) -> Path:
                 tmp_path.unlink()
         except OSError:
             pass
-    # 将文件权限限制为仅所有者可读写
+    # Restrict file permissions to owner only
     try:
         auth_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
@@ -727,7 +749,7 @@ def _save_provider_state(auth_store: Dict[str, Any], provider_id: str, state: Di
 
 
 def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
-    """返回持久化的凭证池，或某个提供者的切片。"""
+    """Return the persisted credential pool, or one provider slice."""
     auth_store = _load_auth_store()
     pool = auth_store.get("credential_pool")
     if not isinstance(pool, dict):
@@ -739,7 +761,7 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
 
 
 def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Path:
-    """将一个提供者的凭证池持久化到 auth.json 中。"""
+    """Persist one provider's credential pool under auth.json."""
     with _auth_store_lock():
         auth_store = _load_auth_store()
         pool = auth_store.get("credential_pool")
@@ -751,7 +773,7 @@ def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Pa
 
 
 def suppress_credential_source(provider_id: str, source: str) -> None:
-    """将凭证来源标记为已抑制，以便不再被重新注入。"""
+    """Mark a credential source as suppressed so it won't be re-seeded."""
     with _auth_store_lock():
         auth_store = _load_auth_store()
         suppressed = auth_store.setdefault("suppressed_sources", {})
@@ -762,7 +784,7 @@ def suppress_credential_source(provider_id: str, source: str) -> None:
 
 
 def is_source_suppressed(provider_id: str, source: str) -> bool:
-    """检查凭证来源是否已被用户抑制。"""
+    """Check if a credential source has been suppressed by the user."""
     try:
         auth_store = _load_auth_store()
         suppressed = auth_store.get("suppressed_sources", {})
@@ -771,32 +793,56 @@ def is_source_suppressed(provider_id: str, source: str) -> bool:
         return False
 
 
+def unsuppress_credential_source(provider_id: str, source: str) -> bool:
+    """Clear a suppression marker so the source will be re-seeded on the next load.
+
+    Returns True if a marker was cleared, False if no marker existed.
+    """
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        suppressed = auth_store.get("suppressed_sources")
+        if not isinstance(suppressed, dict):
+            return False
+        provider_list = suppressed.get(provider_id)
+        if not isinstance(provider_list, list) or source not in provider_list:
+            return False
+        provider_list.remove(source)
+        if not provider_list:
+            suppressed.pop(provider_id, None)
+        if not suppressed:
+            auth_store.pop("suppressed_sources", None)
+        _save_auth_store(auth_store)
+        return True
+
+
 def get_provider_auth_state(provider_id: str) -> Optional[Dict[str, Any]]:
-    """返回提供者的持久化认证状态，如果没有则返回 None。"""
+    """Return persisted auth state for a provider, or None."""
     auth_store = _load_auth_store()
     return _load_provider_state(auth_store, provider_id)
 
 
 def get_active_provider() -> Optional[str]:
-    """从 auth store 返回当前激活的提供者 ID。"""
+    """Return the currently active provider ID from auth store."""
     auth_store = _load_auth_store()
     return auth_store.get("active_provider")
 
 
 def is_provider_explicitly_configured(provider_id: str) -> bool:
-    """仅当用户明确配置了此提供者时返回 True。
+    """Return True only if the user has explicitly configured this provider.
 
-    检查项:
-      1. auth.json 中的 active_provider 是否匹配
-      2. config.yaml 中的 model.provider 是否匹配
-      3. 提供者特定的环境变量是否已设置（如 ANTHROPIC_API_KEY）
+    Checks:
+      1. active_provider in auth.json matches
+      2. model.provider in config.yaml matches
+      3. Provider-specific env vars are set (e.g. ANTHROPIC_API_KEY)
 
-    用于限制外部凭证（如 Claude Code 的 ~/.claude/.credentials.json）的
-    自动发现，确保在用户未明确选择时不会使用它们。
+    This is used to gate auto-discovery of external credentials (e.g.
+    Claude Code's ~/.claude/.credentials.json) so they are never used
+    without the user's explicit choice.  See PR #4210 for the same
+    pattern applied to the setup wizard gate.
     """
     normalized = (provider_id or "").strip().lower()
 
-    # 1. 检查 auth.json 中的 active_provider
+    # 1. Check auth.json active_provider
     try:
         auth_store = _load_auth_store()
         active = (auth_store.get("active_provider") or "").strip().lower()
@@ -805,7 +851,7 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     except Exception:
         pass
 
-    # 2. 检查 config.yaml 中的 model.provider
+    # 2. Check config.yaml model.provider
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
@@ -817,9 +863,9 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     except Exception:
         pass
 
-    # 3. 检查提供者特定的环境变量
-    # 排除 CLAUDE_CODE_OAUTH_TOKEN -- 它由 Claude Code 自身设置，
-    # 而非用户在 Hermes 中显式配置 anthropic。
+    # 3. Check provider-specific env vars
+    # Exclude CLAUDE_CODE_OAUTH_TOKEN — it's set by Claude Code itself,
+    # not by the user explicitly configuring anthropic in Hermes.
     _IMPLICIT_ENV_VARS = {"CLAUDE_CODE_OAUTH_TOKEN"}
     pconfig = PROVIDER_REGISTRY.get(normalized)
     if pconfig and pconfig.auth_type == "api_key":
@@ -834,9 +880,9 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
 
 def clear_provider_auth(provider_id: Optional[str] = None) -> bool:
     """
-    清除提供者的认证状态。由 `hermes logout` 使用。
-    如果 provider_id 为 None，则清除活跃提供者。
-    如果有内容被清除则返回 True。
+    Clear auth state for a provider. Used by `hermes logout`.
+    If provider_id is None, clears the active provider.
+    Returns True if something was cleared.
     """
     with _auth_store_lock():
         auth_store = _load_auth_store()
@@ -872,9 +918,9 @@ def clear_provider_auth(provider_id: Optional[str] = None) -> bool:
 
 def deactivate_provider() -> None:
     """
-    清除 auth.json 中的 active_provider，但不删除凭证。
-    当用户切换到非 OAuth 提供者（OpenRouter、自定义）时使用，
-    以防止自动解析继续选择 OAuth 提供者。
+    Clear active_provider in auth.json without deleting credentials.
+    Used when the user switches to a non-OAuth provider (OpenRouter, custom)
+    so auto-resolution doesn't keep picking the OAuth provider.
     """
     with _auth_store_lock():
         auth_store = _load_auth_store()
@@ -883,15 +929,15 @@ def deactivate_provider() -> None:
 
 
 # =============================================================================
-# 提供者解析 -- 选择使用哪个提供者
+# Provider Resolution — picks which provider to use
 # =============================================================================
 
 
 def _get_config_hint_for_unknown_provider(provider_name: str) -> str:
-    """当提供者解析失败时返回有用的提示字符串。
+    """Return a helpful hint string when provider resolution fails.
 
-    检查常见的 config.yaml 错误（格式错误的 custom_providers 等），
-    返回人类可读的诊断信息，如果未发现问题则返回空字符串。
+    Checks for common config.yaml mistakes (malformed custom_providers, etc.)
+    and returns a human-readable diagnostic, or empty string if nothing found.
     """
     try:
         from hermes_cli.config import validate_config_structure
@@ -903,7 +949,7 @@ def _get_config_hint_for_unknown_provider(provider_name: str) -> str:
         for ci in issues:
             prefix = "ERROR" if ci.severity == "error" else "WARNING"
             lines.append(f"  [{prefix}] {ci.message}")
-            # 显示提示的第一行
+            # Show first line of hint
             first_hint = ci.hint.splitlines()[0] if ci.hint else ""
             if first_hint:
                 lines.append(f"    → {first_hint}")
@@ -919,18 +965,18 @@ def resolve_provider(
     explicit_base_url: Optional[str] = None,
 ) -> str:
     """
-    确定要使用哪个推理提供者。
+    Determine which inference provider to use.
 
-    优先级（当 requested="auto" 或 None 时）:
-    1. auth.json 中有有效凭证的 active_provider
-    2. 显式 CLI api_key/base_url -> "openrouter"
-    3. OPENAI_API_KEY 或 OPENROUTER_API_KEY 环境变量 -> "openrouter"
-    4. 提供者特定的 API 密钥（GLM、Kimi、MiniMax）-> 对应提供者
-    5. 回退: "openrouter"
+    Priority (when requested="auto" or None):
+    1. active_provider in auth.json with valid credentials
+    2. Explicit CLI api_key/base_url -> "openrouter"
+    3. OPENAI_API_KEY or OPENROUTER_API_KEY env vars -> "openrouter"
+    4. Provider-specific API keys (GLM, Kimi, MiniMax) -> that provider
+    5. Fallback: "openrouter"
     """
     normalized = (requested or "auto").strip().lower()
 
-    # 标准化提供者别名
+    # Normalize provider aliases
     _PROVIDER_ALIASES = {
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
@@ -951,7 +997,7 @@ def resolve_provider(
         "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock", "amazon": "bedrock",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
-        # 本地服务器别名 -- 通过通用自定义提供者路由
+        # Local server aliases — route through the generic custom provider
         "lmstudio": "custom", "lm-studio": "custom", "lm_studio": "custom",
         "ollama": "custom", "ollama_cloud": "ollama-cloud",
         "vllm": "custom", "llamacpp": "custom",
@@ -966,7 +1012,7 @@ def resolve_provider(
     if normalized in PROVIDER_REGISTRY:
         return normalized
     if normalized != "auto":
-        # 检查常见的 config.yaml 问题
+        # Check for common config.yaml issues that cause this error
         _config_hint = _get_config_hint_for_unknown_provider(normalized)
         msg = f"Unknown provider '{normalized}'."
         if _config_hint:
@@ -975,11 +1021,11 @@ def resolve_provider(
             msg += " Check 'hermes model' for available providers, or run 'hermes doctor' to diagnose config issues."
         raise AuthError(msg, code="invalid_provider")
 
-    # 显式的一次性 CLI 凭证意味着 openrouter/custom
+    # Explicit one-off CLI creds always mean openrouter/custom
     if explicit_api_key or explicit_base_url:
         return "openrouter"
 
-    # 检查 auth store 中是否有活跃的 OAuth 提供者
+    # Check auth store for an active OAuth provider
     try:
         auth_store = _load_auth_store()
         active = auth_store.get("active_provider")
@@ -993,26 +1039,27 @@ def resolve_provider(
     if has_usable_secret(os.getenv("OPENAI_API_KEY")) or has_usable_secret(os.getenv("OPENROUTER_API_KEY")):
         return "openrouter"
 
-    # 通过检查环境变量自动检测 API 密钥提供者
+    # Auto-detect API-key providers by checking their env vars
     for pid, pconfig in PROVIDER_REGISTRY.items():
         if pconfig.auth_type != "api_key":
             continue
-        # GitHub 令牌通常用于仓库/工具访问，不应劫持推理自动选择，
-        # 除非用户明确选择 Copilot/GitHub Models 作为提供者。
+        # GitHub tokens are commonly present for repo/tool access but should not
+        # hijack inference auto-selection unless the user explicitly chooses
+        # Copilot/GitHub Models as the provider.
         if pid == "copilot":
             continue
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
                 return pid
 
-    # AWS Bedrock -- 通过 boto3 凭证链检测（IAM 角色、SSO、环境变量）。
-    # 在 API 密钥提供者之后运行，确保显式密钥始终优先。
+    # AWS Bedrock — detect via boto3 credential chain (IAM roles, SSO, env vars).
+    # This runs after API-key providers so explicit keys always win.
     try:
         from agent.bedrock_adapter import has_aws_credentials
         if has_aws_credentials():
             return "bedrock"
     except ImportError:
-        pass  # boto3 未安装 -- 跳过 Bedrock 自动检测
+        pass  # boto3 not installed — skip Bedrock auto-detection
 
     raise AuthError(
         "No inference provider configured. Run 'hermes model' to choose a "
@@ -1023,7 +1070,7 @@ def resolve_provider(
 
 
 # =============================================================================
-# 时间戳 / TTL 辅助函数
+# Timestamp / TTL helpers
 # =============================================================================
 
 def _parse_iso_timestamp(value: Any) -> Optional[float]:
@@ -1257,19 +1304,19 @@ def get_qwen_auth_status() -> Dict[str, Any]:
 
 
 # =============================================================================
-# Google Gemini OAuth（google-gemini-cli）-- PKCE 流程 + Cloud Code Assist。
+# Google Gemini OAuth (google-gemini-cli) — PKCE flow + Cloud Code Assist.
 #
-# 令牌存储在 ~/.hermes/auth/google_oauth.json（由 agent.google_oauth 管理）。
-# 此处的 `base_url` 是标记 "cloudcode-pa://google"，run_agent.py
-# 使用它来构造 GeminiCloudCodeClient 而非默认的 OpenAI SDK。
-# 实际的 HTTP 流量发往 https://cloudcode-pa.googleapis.com/v1internal:*。
+# Tokens live in ~/.hermes/auth/google_oauth.json (managed by agent.google_oauth).
+# The `base_url` here is the marker "cloudcode-pa://google" that run_agent.py
+# uses to construct a GeminiCloudCodeClient instead of the default OpenAI SDK.
+# Actual HTTP traffic goes to https://cloudcode-pa.googleapis.com/v1internal:*.
 # =============================================================================
 
 def resolve_gemini_oauth_runtime_credentials(
     *,
     force_refresh: bool = False,
 ) -> Dict[str, Any]:
-    """解析 google-gemini-cli 的运行时 OAuth 凭证。"""
+    """Resolve runtime OAuth creds for google-gemini-cli."""
     try:
         from agent.google_oauth import (
             GoogleOAuthError,
@@ -1308,7 +1355,7 @@ def resolve_gemini_oauth_runtime_credentials(
 
 
 def get_gemini_oauth_auth_status() -> Dict[str, Any]:
-    """返回用于 `hermes auth list` / `hermes status` 的状态字典。"""
+    """Return a status dict for `hermes auth list` / `hermes status`."""
     try:
         from agent.google_oauth import _credentials_path, load_credentials
     except ImportError:
@@ -1334,27 +1381,27 @@ def get_gemini_oauth_auth_status() -> Dict[str, Any]:
 
 
 # =============================================================================
-# SSH / 远程会话检测
+# SSH / remote session detection
 # =============================================================================
 
 def _is_remote_session() -> bool:
-    """检测是否运行在 SSH 会话中（此时 webbrowser.open() 无法工作）。"""
+    """Detect if running in an SSH session where webbrowser.open() won't work."""
     return bool(os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY"))
 
 
 # =============================================================================
-# OpenAI Codex 认证 -- 令牌存储在 ~/.hermes/auth.json（非 ~/.codex/）
+# OpenAI Codex auth — tokens stored in ~/.hermes/auth.json (not ~/.codex/)
 #
-# Hermes 维护自己独立的 Codex OAuth 会话，与 Codex CLI
-# 和 VS Code 扩展分离。这可以防止刷新令牌轮换冲突，
-# 即一个应用的刷新会使另一个应用的会话失效。
+# Hermes maintains its own Codex OAuth session separate from the Codex CLI
+# and VS Code extension. This prevents refresh token rotation conflicts
+# where one app's refresh invalidates the other's session.
 # =============================================================================
 
 def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
-    """从 Hermes auth store (~/.hermes/auth.json) 读取 Codex OAuth 令牌。
-
-    返回包含 'tokens'（access_token、refresh_token）和 'last_refresh' 的字典。
-    如果没有存储 Codex 令牌则抛出 AuthError。
+    """Read Codex OAuth tokens from Hermes auth store (~/.hermes/auth.json).
+    
+    Returns dict with 'tokens' (access_token, refresh_token) and 'last_refresh'.
+    Raises AuthError if no Codex tokens are stored.
     """
     if _lock:
         with _auth_store_lock():
@@ -1399,51 +1446,8 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     }
 
 
-def _write_codex_cli_tokens(
-    access_token: str,
-    refresh_token: str,
-    *,
-    last_refresh: Optional[str] = None,
-) -> None:
-    """将刷新后的令牌写回 ~/.codex/auth.json。
-
-    OpenAI OAuth 刷新令牌是一次性的，每次刷新都会轮换。
-    当 Hermes 刷新令牌时会消耗旧的 refresh_token；如果不将新的
-    令牌对写回，Codex CLI（或 VS Code 扩展）在下次刷新时会因
-    ``refresh_token_reused`` 而失败。
-
-    这与通过 ``_write_claude_code_credentials()`` 写回
-    ~/.claude/.credentials.json 的 Anthropic 模式相同。
-    """
-    codex_home = os.getenv("CODEX_HOME", "").strip()
-    if not codex_home:
-        codex_home = str(Path.home() / ".codex")
-    auth_path = Path(codex_home).expanduser() / "auth.json"
-    try:
-        existing: Dict[str, Any] = {}
-        if auth_path.is_file():
-            existing = json.loads(auth_path.read_text(encoding="utf-8"))
-        if not isinstance(existing, dict):
-            existing = {}
-
-        tokens_dict = existing.get("tokens")
-        if not isinstance(tokens_dict, dict):
-            tokens_dict = {}
-        tokens_dict["access_token"] = access_token
-        tokens_dict["refresh_token"] = refresh_token
-        existing["tokens"] = tokens_dict
-        if last_refresh is not None:
-            existing["last_refresh"] = last_refresh
-
-        auth_path.parent.mkdir(parents=True, exist_ok=True)
-        auth_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-        auth_path.chmod(0o600)
-    except (OSError, IOError) as exc:
-        logger.debug("Failed to write refreshed tokens to %s: %s", auth_path, exc)
-
-
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
-    """将 Codex OAuth 令牌保存到 Hermes auth store (~/.hermes/auth.json)。"""
+    """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     with _auth_store_lock():
@@ -1462,7 +1466,7 @@ def refresh_codex_oauth_pure(
     *,
     timeout_seconds: float = 20.0,
 ) -> Dict[str, Any]:
-    """在不修改 Hermes 认证状态的情况下刷新 Codex OAuth 令牌。"""
+    """Refresh Codex OAuth tokens without mutating Hermes auth state."""
     del access_token  # Access token is only used by callers to decide whether to refresh.
     if not isinstance(refresh_token, str) or not refresh_token.strip():
         raise AuthError(
@@ -1509,6 +1513,11 @@ def refresh_codex_oauth_pure(
                 "then run `hermes auth` to re-authenticate."
             )
             relogin_required = True
+        # A 401/403 from the token endpoint always means the refresh token
+        # is invalid/expired — force relogin even if the body error code
+        # wasn't one of the known strings above.
+        if response.status_code in (401, 403) and not relogin_required:
+            relogin_required = True
         raise AuthError(
             message,
             provider="openai-codex",
@@ -1550,9 +1559,9 @@ def _refresh_codex_auth_tokens(
     tokens: Dict[str, str],
     timeout_seconds: float,
 ) -> Dict[str, str]:
-    """使用刷新令牌来刷新 Codex 访问令牌。
-
-    自动将新令牌保存到 Hermes auth store。
+    """Refresh Codex access token using the refresh token.
+    
+    Saves the new tokens to Hermes auth store automatically.
     """
     refreshed = refresh_codex_oauth_pure(
         str(tokens.get("access_token", "") or ""),
@@ -1564,20 +1573,14 @@ def _refresh_codex_auth_tokens(
     updated_tokens["refresh_token"] = refreshed["refresh_token"]
 
     _save_codex_tokens(updated_tokens)
-    # 写回 ~/.codex/auth.json 以便 Codex CLI / VS Code 保持同步。
-    _write_codex_cli_tokens(
-        refreshed["access_token"],
-        refreshed["refresh_token"],
-        last_refresh=refreshed.get("last_refresh"),
-    )
     return updated_tokens
 
 
 def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
-    """尝试从 ~/.codex/auth.json（Codex CLI 共享文件）读取令牌。
-
-    如果令牌有效且未过期则返回令牌字典，否则返回 None。
-    不会写入共享文件。
+    """Try to read tokens from ~/.codex/auth.json (Codex CLI shared file).
+    
+    Returns tokens dict if valid and not expired, None otherwise.
+    Does NOT write to the shared file.
     """
     codex_home = os.getenv("CODEX_HOME", "").strip()
     if not codex_home:
@@ -1594,8 +1597,9 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
         refresh_token = tokens.get("refresh_token")
         if not access_token or not refresh_token:
             return None
-        # 拒绝已过期的令牌 -- 从 ~/.codex/ 导入过期令牌
-        # 会导致用户看到 "Login successful!" 但实际没有可用凭证。
+        # Reject expired tokens — importing stale tokens from ~/.codex/
+        # that can't be refreshed leaves the user stuck with "Login successful!"
+        # but no working credentials.
         if _codex_access_token_is_expiring(access_token, 0):
             logger.debug(
                 "Codex CLI tokens at %s are expired — skipping import.", auth_path,
@@ -1612,26 +1616,8 @@ def resolve_codex_runtime_credentials(
     refresh_if_expiring: bool = True,
     refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
 ) -> Dict[str, Any]:
-    """从 Hermes 自有的 Codex 令牌存储中解析运行时凭证。"""
-    try:
-        data = _read_codex_tokens()
-    except AuthError as orig_err:
-        # 仅在完全没有存储令牌时尝试迁移
-        # （code == "codex_auth_missing"），而非令牌存在但无效时。
-        if orig_err.code != "codex_auth_missing":
-            raise
-
-        # 迁移：用户之前使用旧存储方式（~/.codex/）配置了 Codex 提供者。
-        cli_tokens = _import_codex_cli_tokens()
-        if cli_tokens:
-            logger.info("Migrating Codex credentials from ~/.codex/ to Hermes auth store")
-            print("⚠️  Migrating Codex credentials to Hermes's own auth store.")
-            print("   This avoids conflicts with Codex CLI and VS Code.")
-            print("   Run `hermes auth` to create a fully independent session.\n")
-            _save_codex_tokens(cli_tokens)
-            data = _read_codex_tokens()
-        else:
-            raise
+    """Resolve runtime credentials from Hermes's own Codex token store."""
+    data = _read_codex_tokens()
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
     refresh_timeout_seconds = float(os.getenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20"))
@@ -1640,7 +1626,7 @@ def resolve_codex_runtime_credentials(
     if (not should_refresh) and refresh_if_expiring:
         should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
     if should_refresh:
-        # 在锁内重新读取以避免与其他 Hermes 进程竞争
+        # Re-read under lock to avoid racing with other Hermes processes
         with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
             data = _read_codex_tokens(_lock=False)
             tokens = dict(data["tokens"])
@@ -1670,7 +1656,7 @@ def resolve_codex_runtime_credentials(
 
 
 # =============================================================================
-# TLS 验证辅助函数
+# TLS verification helper
 # =============================================================================
 
 def _resolve_verify(
@@ -1678,7 +1664,7 @@ def _resolve_verify(
     insecure: Optional[bool] = None,
     ca_bundle: Optional[str] = None,
     auth_state: Optional[Dict[str, Any]] = None,
-) -> bool | str:
+) -> bool | ssl.SSLContext:
     tls_state = auth_state.get("tls") if isinstance(auth_state, dict) else {}
     tls_state = tls_state if isinstance(tls_state, dict) else {}
 
@@ -1698,18 +1684,17 @@ def _resolve_verify(
     if effective_ca:
         ca_path = str(effective_ca)
         if not os.path.isfile(ca_path):
-            import logging
-            logging.getLogger("hermes.auth").warning(
+            logger.warning(
                 "CA bundle path does not exist: %s — falling back to default certificates",
                 ca_path,
             )
             return True
-        return ca_path
+        return ssl.create_default_context(cafile=ca_path)
     return True
 
 
 # =============================================================================
-# OAuth 设备码流程 -- 通用的、按提供者参数化的实现
+# OAuth Device Code Flow — generic, parameterized by provider
 # =============================================================================
 
 def _request_device_code(
@@ -1718,7 +1703,7 @@ def _request_device_code(
     client_id: str,
     scope: Optional[str],
 ) -> Dict[str, Any]:
-    """POST 到设备码端点。返回 device_code、user_code 等。"""
+    """POST to the device code endpoint. Returns device_code, user_code, etc."""
     response = client.post(
         f"{portal_base_url}/api/oauth/device/code",
         data={
@@ -1747,7 +1732,7 @@ def _poll_for_token(
     expires_in: int,
     poll_interval: int,
 ) -> Dict[str, Any]:
-    """轮询令牌端点，直到用户批准或验证码过期。"""
+    """Poll the token endpoint until the user approves or the code expires."""
     deadline = time.time() + max(1, expires_in)
     current_interval = max(1, min(poll_interval, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS))
 
@@ -1789,7 +1774,7 @@ def _poll_for_token(
 
 
 # =============================================================================
-# Nous Portal -- 令牌刷新、Agent 密钥铸造、模型发现
+# Nous Portal — token refresh, agent key minting, model discovery
 # =============================================================================
 
 def _refresh_access_token(
@@ -1834,7 +1819,7 @@ def _mint_agent_key(
     access_token: str,
     min_ttl_seconds: int,
 ) -> Dict[str, Any]:
-    """铸造（或复用）一个短期推理 API 密钥。"""
+    """Mint (or reuse) a short-lived inference API key."""
     response = client.post(
         f"{portal_base_url}/api/oauth/agent-key",
         headers={"Authorization": f"Bearer {access_token}"},
@@ -1867,7 +1852,7 @@ def fetch_nous_models(
     timeout_seconds: float = 15.0,
     verify: bool | str = True,
 ) -> List[str]:
-    """从 Nous 推理 API 获取可用的模型 ID 列表。"""
+    """Fetch available model IDs from the Nous inference API."""
     timeout = httpx.Timeout(timeout_seconds)
     with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
         response = client.get(
@@ -1896,13 +1881,13 @@ def fetch_nous_models(
         model_id = item.get("id")
         if isinstance(model_id, str) and model_id.strip():
             mid = model_id.strip()
-            # 跳过 Hermes 模型 -- 它们对 Agent 工具调用不够可靠
+            # Skip Hermes models — they're not reliable for agentic tool-calling
             if "hermes" in mid.lower():
                 continue
             model_ids.append(mid)
 
-    # 排序：优先 opus > pro > haiku/flash > sonnet（sonnet 便宜/快速，
-    # 想要最佳模型的用户应该先看到 opus）。
+    # Sort: prefer opus > pro > haiku/flash > sonnet (sonnet is cheap/fast,
+    # users who want the best model should see opus first).
     def _model_priority(mid: str) -> tuple:
         low = mid.lower()
         if "opus" in low:
@@ -1931,7 +1916,7 @@ def resolve_nous_access_token(
     ca_bundle: Optional[str] = None,
     refresh_skew_seconds: int = ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
 ) -> str:
-    """解析一个具有刷新感知能力的 Nous Portal 访问令牌，供托管工具网关使用。"""
+    """Resolve a refresh-aware Nous Portal access token for managed tool gateways."""
     with _auth_store_lock():
         auth_store = _load_auth_store()
         state = _load_provider_state(auth_store, "nous")
@@ -2027,7 +2012,7 @@ def refresh_nous_oauth_pure(
     force_refresh: bool = False,
     force_mint: bool = False,
 ) -> Dict[str, Any]:
-    """在不修改 auth.json 的情况下刷新 Nous OAuth 状态。"""
+    """Refresh Nous OAuth state without mutating auth.json."""
     state: Dict[str, Any] = {
         "access_token": access_token,
         "refresh_token": refresh_token,
@@ -2100,7 +2085,7 @@ def refresh_nous_oauth_from_state(
     force_refresh: bool = False,
     force_mint: bool = False,
 ) -> Dict[str, Any]:
-    """从状态字典刷新 Nous OAuth。是 refresh_nous_oauth_pure 的简易包装。"""
+    """Refresh Nous OAuth from a state dict. Thin wrapper around refresh_nous_oauth_pure."""
     tls = state.get("tls") or {}
     return refresh_nous_oauth_pure(
         state.get("access_token", ""),
@@ -2120,6 +2105,62 @@ def refresh_nous_oauth_from_state(
         ca_bundle=tls.get("ca_bundle"),
         force_refresh=force_refresh,
         force_mint=force_mint,
+    )
+
+
+NOUS_DEVICE_CODE_SOURCE = "device_code"
+
+
+def persist_nous_credentials(
+    creds: Dict[str, Any],
+    *,
+    label: Optional[str] = None,
+):
+    """Persist minted Nous OAuth credentials as the singleton provider state
+    and ensure the credential pool is in sync.
+
+    Nous credentials are read at runtime from two independent locations:
+
+    - ``providers.nous``: singleton state read by
+      ``resolve_nous_runtime_credentials()`` during 401 recovery and by
+      ``_seed_from_singletons()`` during pool load.
+    - ``credential_pool.nous``: used by the runtime ``pool.select()`` path.
+
+    Historically ``hermes auth add nous`` wrote a ``manual:device_code`` pool
+    entry only, skipping ``providers.nous``.  When the 24h agent_key TTL
+    expired, the recovery path read the empty singleton state and raised
+    ``AuthError`` silently (``logger.debug`` at INFO level).
+
+    This helper writes ``providers.nous`` then calls ``load_pool("nous")`` so
+    ``_seed_from_singletons`` materialises the canonical ``device_code`` pool
+    entry from the singleton.  Re-running login upserts the same entry in
+    place; the pool never accumulates duplicate device_code rows.
+
+    ``label`` is an optional user-chosen display name (from
+    ``hermes auth add nous --label <name>``).  It gets embedded in the
+    singleton state so that ``_seed_from_singletons`` uses it as the pool
+    entry's label on every subsequent ``load_pool("nous")`` instead of the
+    auto-derived token fingerprint.  When ``None``, the auto-derived label
+    via ``label_from_token`` is used (unchanged default behaviour).
+
+    Returns the upserted :class:`PooledCredential` entry (or ``None`` if
+    seeding somehow produced no match — shouldn't happen).
+    """
+    from agent.credential_pool import load_pool
+
+    state = dict(creds)
+    if label and str(label).strip():
+        state["label"] = str(label).strip()
+
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        _save_provider_state(auth_store, "nous", state)
+        _save_auth_store(auth_store)
+
+    pool = load_pool("nous")
+    return next(
+        (e for e in pool.entries() if e.source == NOUS_DEVICE_CODE_SOURCE),
+        None,
     )
 
 
@@ -2373,17 +2414,18 @@ def resolve_nous_runtime_credentials(
 
 
 # =============================================================================
-# 状态辅助函数
+# Status helpers
 # =============================================================================
 
 def get_nous_auth_status() -> Dict[str, Any]:
-    """用于 `hermes status` 输出的状态快照。
+    """Status snapshot for `hermes status` output.
 
-    首先检查凭证池（仪表板设备码流程和 ``hermes auth`` 在此存储凭证），
-    然后回退到旧版 auth-store 提供者状态。
+    Checks the credential pool first (where the dashboard device-code flow
+    and ``hermes auth`` store credentials), then falls back to the legacy
+    auth-store provider state.
     """
-    # 首先检查凭证池 -- 仪表板设备码流程会保存在此，
-    # 但可能还未写入 auth store。
+    # Check credential pool first — the dashboard device-code flow saves
+    # here but may not have written to the auth store yet.
     try:
         from agent.credential_pool import load_pool
         pool = load_pool("nous")
@@ -2409,7 +2451,7 @@ def get_nous_auth_status() -> Dict[str, Any]:
     except Exception:
         pass
 
-    # 回退到 auth-store 提供者状态
+    # Fall back to auth-store provider state
     state = get_provider_auth_state("nous")
     if not state:
         return {
@@ -2431,13 +2473,13 @@ def get_nous_auth_status() -> Dict[str, Any]:
 
 
 def get_codex_auth_status() -> Dict[str, Any]:
-    """Codex 认证的状态快照。
-
-    首先检查凭证池（`hermes auth` 在此存储凭证），
-    然后回退到旧版提供者状态。
+    """Status snapshot for Codex auth.
+    
+    Checks the credential pool first (where `hermes auth` stores credentials),
+    then falls back to the legacy provider state.
     """
-    # 首先检查凭证池 -- `hermes auth` 和
-    # `hermes model` 在此存储 device_code 令牌。
+    # Check credential pool first — this is where `hermes auth` and
+    # `hermes model` store device_code tokens.
     try:
         from agent.credential_pool import load_pool
         pool = load_pool("openai-codex")
@@ -2460,7 +2502,7 @@ def get_codex_auth_status() -> Dict[str, Any]:
     except Exception:
         pass
 
-    # 回退到旧版提供者状态
+    # Fall back to legacy provider state
     try:
         creds = resolve_codex_runtime_credentials()
         return {
@@ -2480,7 +2522,7 @@ def get_codex_auth_status() -> Dict[str, Any]:
 
 
 def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
-    """API 密钥提供者（z.ai、Kimi、MiniMax）的状态快照。"""
+    """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         return {"configured": False}
@@ -2511,7 +2553,7 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
 
 
 def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
-    """运行本地子进程的提供者的状态快照。"""
+    """Status snapshot for providers that run a local subprocess."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
@@ -2541,7 +2583,7 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
 
 
 def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
-    """通用的认证状态分发器。"""
+    """Generic auth status dispatcher."""
     target = provider_id or get_active_provider()
     if target == "nous":
         return get_nous_auth_status()
@@ -2553,11 +2595,11 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_gemini_oauth_auth_status()
     if target == "copilot-acp":
         return get_external_process_provider_status(target)
-    # API 密钥提供者
+    # API-key providers
     pconfig = PROVIDER_REGISTRY.get(target)
     if pconfig and pconfig.auth_type == "api_key":
         return get_api_key_provider_status(target)
-    # AWS SDK 提供者（Bedrock）-- 通过 boto3 凭证链检查
+    # AWS SDK providers (Bedrock) — check via boto3 credential chain
     if pconfig and pconfig.auth_type == "aws_sdk":
         try:
             from agent.bedrock_adapter import has_aws_credentials
@@ -2568,7 +2610,7 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
 
 
 def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
-    """解析 API 密钥提供者的 API 密钥和 base URL。
+    """Resolve API key and base URL for an API-key provider.
 
     Returns dict with: provider, api_key, base_url, source.
     """
@@ -2606,7 +2648,7 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
 
 
 def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str, Any]:
-    """解析基于本地子进程的提供者的运行时详情。"""
+    """Resolve runtime details for local subprocess-backed providers."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         raise AuthError(
@@ -2646,7 +2688,7 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
 
 
 # =============================================================================
-# CLI 命令 -- 登录 / 登出
+# CLI Commands — login / logout
 # =============================================================================
 
 def _update_config_for_provider(
@@ -2654,20 +2696,22 @@ def _update_config_for_provider(
     inference_base_url: str,
     default_model: Optional[str] = None,
 ) -> Path:
-    """更新 config.yaml 和 auth.json 以反映活跃提供者。
+    """Update config.yaml and auth.json to reflect the active provider.
 
-    当提供了 *default_model* 时，还会将其写为 ``model.default`` 值。
-    这可以防止竞态条件：网关（每条消息重新读取配置）可能在调用者完成模型选择
-    之前就获取了新的提供者，从而导致模型/提供者不匹配（例如将
-    ``anthropic/claude-opus-4.6`` 发送到 MiniMax 的 API）。
+    When *default_model* is provided the function also writes it as the
+    ``model.default`` value.  This prevents a race condition where the
+    gateway (which re-reads config per-message) picks up the new provider
+    before the caller has finished model selection, resulting in a
+    mismatched model/provider (e.g. ``anthropic/claude-opus-4.6`` sent to
+    MiniMax's API).
     """
-    # 在 auth.json 中设置 active_provider 以便自动解析选择此提供者
+    # Set active_provider in auth.json so auto-resolution picks this provider
     with _auth_store_lock():
         auth_store = _load_auth_store()
         auth_store["active_provider"] = provider_id
         _save_auth_store(auth_store)
 
-    # 更新 config.yaml 的 model 部分
+    # Update config.yaml model section
     config_path = get_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -2685,11 +2729,23 @@ def _update_config_for_provider(
     if inference_base_url and inference_base_url.strip():
         model_cfg["base_url"] = inference_base_url.rstrip("/")
     else:
-        # 清除过期的 base_url 以防止切换提供者时的污染
+        # Clear stale base_url to prevent contamination when switching providers
         model_cfg.pop("base_url", None)
 
-    # 切换到非 OpenRouter 提供者时，确保 model.default 对新提供者有效。
-    # OpenRouter 格式的名称如 "anthropic/claude-opus-4.6" 在直连 API 提供者上会失败。
+    # Clear stale api_key/api_mode left over from a previous custom provider.
+    # When the user switches from e.g. a MiniMax custom endpoint
+    # (api_mode=anthropic_messages, api_key=mxp-...) to a built-in provider
+    # (e.g. OpenRouter), the stale api_key/api_mode would override the new
+    # provider's credentials and transport choice.  Built-in providers that
+    # need a specific api_mode (copilot, xai) set it at request-resolution
+    # time via `_copilot_runtime_api_mode` / `_detect_api_mode_for_url`, so
+    # removing the persisted value here is safe.
+    model_cfg.pop("api_key", None)
+    model_cfg.pop("api_mode", None)
+
+    # When switching to a non-OpenRouter provider, ensure model.default is
+    # valid for the new provider.  An OpenRouter-formatted name like
+    # "anthropic/claude-opus-4.6" will fail on direct-API providers.
     if default_model:
         cur_default = model_cfg.get("default", "")
         if not cur_default or "/" in cur_default:
@@ -2702,7 +2758,7 @@ def _update_config_for_provider(
 
 
 def _reset_config_provider() -> Path:
-    """登出后将 config.yaml 的 provider 重置为 auto。"""
+    """Reset config.yaml provider back to auto after logout."""
     config_path = get_config_path()
     if not config_path.exists():
         return config_path
@@ -2727,19 +2783,19 @@ def _prompt_model_selection(
     unavailable_models: Optional[List[str]] = None,
     portal_url: str = "",
 ) -> Optional[str]:
-    """交互式模型选择。将 current_model 置于首位并带标记。返回选中的模型 ID 或 None。
+    """Interactive model selection. Puts current_model first with a marker. Returns chosen model ID or None.
 
-    如果提供了 *pricing*（``{model_id: {prompt, completion}}``），会在每个模型旁边
-    以对齐的列显示紧凑的价格指示器。
+    If *pricing* is provided (``{model_id: {prompt, completion}}``), a compact
+    price indicator is shown next to each model in aligned columns.
 
-    如果提供了 *unavailable_models*，这些模型会以灰色显示且不可选择，
-    并附带指向 *portal_url* 的升级链接。
+    If *unavailable_models* is provided, those models are shown grayed out
+    and unselectable, with an upgrade link to *portal_url*.
     """
     from hermes_cli.models import _format_price_per_mtok
 
     _unavailable = unavailable_models or []
 
-    # 重排序：当前模型优先，其余去重
+    # Reorder: current model first, then the rest (deduplicated)
     ordered = []
     if current_model and current_model in model_ids:
         ordered.append(current_model)
@@ -2897,15 +2953,15 @@ def _prompt_model_selection(
 
 
 def _save_model_choice(model_id: str) -> None:
-    """将选择的模型保存到 config.yaml（唯一的真实来源）。
+    """Save the selected model to config.yaml (single source of truth).
 
-    模型仅存储在 config.yaml 中 -- 不存储在 .env 中。这避免了
-    多 Agent 场景下环境变量相互覆盖的冲突。
+    The model is stored in config.yaml only — NOT in .env.  This avoids
+    conflicts in multi-agent setups where env vars would stomp each other.
     """
     from hermes_cli.config import save_config, load_config
 
     config = load_config()
-    # 始终使用字典格式以便 provider/base_url 可以同时存储
+    # Always use dict format so provider/base_url can be stored alongside
     if isinstance(config.get("model"), dict):
         config["model"]["default"] = model_id
     else:
@@ -2914,7 +2970,7 @@ def _save_model_choice(model_id: str) -> None:
 
 
 def login_command(args) -> None:
-    """已弃用：请使用 'hermes model' 或 'hermes setup'。"""
+    """Deprecated: use 'hermes model' or 'hermes setup' instead."""
     print("The 'hermes login' command has been removed.")
     print("Use 'hermes auth' to manage credentials,")
     print("'hermes model' to select a provider, or 'hermes setup' for full setup.")
@@ -2922,14 +2978,15 @@ def login_command(args) -> None:
 
 
 def _login_openai_codex(args, pconfig: ProviderConfig) -> None:
-    """通过设备码流程登录 OpenAI Codex。令牌存储在 ~/.hermes/auth.json 中。"""
+    """OpenAI Codex login via device code flow. Tokens stored in ~/.hermes/auth.json."""
 
-    # 检查现有的 Hermes 自有凭证
+    # Check for existing Hermes-owned credentials
     try:
         existing = resolve_codex_runtime_credentials()
-        # 验证解析出的令牌是否确实可用（未过期）。
-        # resolve_codex_runtime_credentials 会尝试刷新，所以如果执行到此处
-        # 令牌应该是有效的 -- 但在告诉用户 "Login successful!" 之前再次确认。
+        # Verify the resolved token is actually usable (not expired).
+        # resolve_codex_runtime_credentials attempts refresh, so if we get
+        # here the token should be valid — but double-check before telling
+        # the user "Login successful!".
         _resolved_key = existing.get("api_key", "")
         if isinstance(_resolved_key, str) and _resolved_key and not _codex_access_token_is_expiring(_resolved_key, 60):
             print("Existing Codex credentials found in Hermes auth store.")
@@ -2948,7 +3005,7 @@ def _login_openai_codex(args, pconfig: ProviderConfig) -> None:
     except AuthError:
         pass
 
-    # 检查现有的 Codex CLI 令牌是否可以导入
+    # Check for existing Codex CLI tokens we can import
     cli_tokens = _import_codex_cli_tokens()
     if cli_tokens:
         print("Found existing Codex CLI credentials at ~/.codex/auth.json")
@@ -2967,7 +3024,7 @@ def _login_openai_codex(args, pconfig: ProviderConfig) -> None:
             print(f"  Config updated: {config_path} (model.provider=openai-codex)")
             return
 
-    # 运行全新的设备码流程 -- Hermes 获得自己独立的 OAuth 会话
+    # Run a fresh device code flow — Hermes gets its own OAuth session
     print()
     print("Signing in to OpenAI Codex...")
     print("(Hermes creates its own session — won't affect Codex CLI or VS Code)")
@@ -2975,7 +3032,7 @@ def _login_openai_codex(args, pconfig: ProviderConfig) -> None:
 
     creds = _codex_device_code_login()
 
-    # 将令牌保存到 Hermes auth store
+    # Save tokens to Hermes auth store
     _save_codex_tokens(creds["tokens"], creds.get("last_refresh"))
     config_path = _update_config_for_provider("openai-codex", creds.get("base_url", DEFAULT_CODEX_BASE_URL))
     print()
@@ -2986,7 +3043,7 @@ def _login_openai_codex(args, pconfig: ProviderConfig) -> None:
 
 
 def _codex_device_code_login() -> Dict[str, Any]:
-    """运行 OpenAI 设备码登录流程并返回凭证字典。"""
+    """Run the OpenAI device code login flow and return credentials dict."""
     import time as _time
 
     issuer = "https://auth.openai.com"
@@ -3142,7 +3199,7 @@ def _nous_device_code_login(
     ca_bundle: Optional[str] = None,
     min_key_ttl_seconds: int = 5 * 60,
 ) -> Dict[str, Any]:
-    """运行 Nous 设备码流程并返回完整的 OAuth 状态，不进行持久化。"""
+    """Run the Nous device-code flow and return full OAuth state without persisting."""
     pconfig = PROVIDER_REGISTRY["nous"]
     portal_base_url = (
         portal_base_url
@@ -3262,7 +3319,7 @@ def _nous_device_code_login(
 
 
 def _login_nous(args, pconfig: ProviderConfig) -> None:
-    """Nous Portal 设备授权流程。"""
+    """Nous Portal device authorization flow."""
     timeout_seconds = getattr(args, "timeout", None) or 15.0
     insecure = bool(getattr(args, "insecure", False))
     ca_bundle = (
@@ -3391,7 +3448,7 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
 
 
 def logout_command(args) -> None:
-    """清除提供者的认证状态。"""
+    """Clear auth state for a provider."""
     provider_id = getattr(args, "provider", None)
 
     if provider_id and provider_id not in PROVIDER_REGISTRY:

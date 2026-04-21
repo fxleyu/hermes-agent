@@ -443,6 +443,7 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
             if not reasoning.get("has_any_reasoning", True):
                 print(f"   🚫 Prompt {prompt_index} discarded (no reasoning in any turn)")
                 discarded_no_reasoning += 1
+                completed_in_batch.append(prompt_index)
                 continue
             
             # 获取并标准化工具统计，确保所有条目的 schema 一致
@@ -1188,12 +1189,12 @@ def main(
     """
     # 处理列出分布
     if list_distributions:
-        from toolset_distributions import list_distributions as get_all_dists, print_distribution_info
-        
+        from toolset_distributions import print_distribution_info
+
         print("📊 Available Toolset Distributions")
         print("=" * 70)
-        
-        all_dists = get_all_dists()
+
+        all_dists = list_distributions()
         for dist_name in sorted(all_dists.keys()):
             print_distribution_info(dist_name)
         

@@ -1,7 +1,7 @@
 """
-hermes CLI 的状态命令。
+Status command for hermes CLI.
 
-显示所有 Hermes Agent 组件的状态。
+Shows the status of all Hermes Agent components.
 """
 
 import os
@@ -21,30 +21,27 @@ from hermes_constants import OPENROUTER_MODELS_URL
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 def check_mark(ok: bool) -> str:
-    """返回绿色对勾或红色叉号。"""
     if ok:
         return color("✓", Colors.GREEN)
     return color("✗", Colors.RED)
 
 def redact_key(key: str) -> str:
-    """将 API 密钥脱敏用于显示。"""
+    """Redact an API key for display."""
     if not key:
         return "(not set)"
     if len(key) < 12:
         return "***"
-    # 仅显示前 4 位和后 4 位，中间用省略号替代
     return key[:4] + "..." + key[-4:]
 
 
 def _format_iso_timestamp(value) -> str:
-    """将 ISO 时间戳格式化为状态输出，并转换为本地时区。"""
+    """Format ISO timestamps for status output, converting to local timezone."""
     if not value or not isinstance(value, str):
         return "(unknown)"
     from datetime import datetime, timezone
     text = value.strip()
     if not text:
         return "(unknown)"
-    # 将 Z 后缀转换为标准的 +00:00 格式
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
     try:
@@ -57,9 +54,8 @@ def _format_iso_timestamp(value) -> str:
 
 
 def _configured_model_label(config: dict) -> str:
-    """从 config.yaml 中返回配置的默认模型。"""
+    """Return the configured default model from config.yaml."""
     model_cfg = config.get("model")
-    # 支持字典格式和字符串格式两种配置方式
     if isinstance(model_cfg, dict):
         model = (model_cfg.get("default") or model_cfg.get("name") or "").strip()
     elif isinstance(model_cfg, str):
@@ -70,14 +66,13 @@ def _configured_model_label(config: dict) -> str:
 
 
 def _effective_provider_label() -> str:
-    """返回与当前 CLI 运行时解析结果匹配的提供者标签。"""
+    """Return the provider label matching current CLI runtime resolution."""
     requested = resolve_requested_provider()
     try:
         effective = resolve_provider(requested)
     except AuthError:
         effective = requested or "auto"
 
-    # 如果设置了自定义基础 URL，则视为自定义提供者
     if effective == "openrouter" and get_env_value("OPENAI_BASE_URL"):
         effective = "custom"
 
@@ -88,23 +83,23 @@ from hermes_constants import is_termux as _is_termux
 
 
 def show_status(args):
-    """显示所有 Hermes Agent 组件的状态。"""
+    """Show status of all Hermes Agent components."""
     show_all = getattr(args, 'all', False)
     deep = getattr(args, 'deep', False)
-
+    
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
     print(color("│                 ⚕ Hermes Agent Status                  │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
-
+    
     # =========================================================================
-    # 环境信息
+    # Environment
     # =========================================================================
     print()
     print(color("◆ Environment", Colors.CYAN, Colors.BOLD))
     print(f"  Project:      {PROJECT_ROOT}")
     print(f"  Python:       {sys.version.split()[0]}")
-
+    
     env_path = get_env_path()
     print(f"  .env file:    {check_mark(env_path.exists())} {'exists' if env_path.exists() else 'not found'}")
 
@@ -115,13 +110,13 @@ def show_status(args):
 
     print(f"  Model:        {_configured_model_label(config)}")
     print(f"  Provider:     {_effective_provider_label()}")
-
+    
     # =========================================================================
-    # API 密钥
+    # API Keys
     # =========================================================================
     print()
     print(color("◆ API Keys", Colors.CYAN, Colors.BOLD))
-
+    
     keys = {
         "OpenRouter": "OPENROUTER_API_KEY",
         "OpenAI": "OPENAI_API_KEY",
@@ -131,15 +126,15 @@ def show_status(args):
         "MiniMax-CN": "MINIMAX_CN_API_KEY",
         "Firecrawl": "FIRECRAWL_API_KEY",
         "Tavily": "TAVILY_API_KEY",
-        "Browser Use": "BROWSER_USE_API_KEY",  # 可选 —— 本地浏览器无需此密钥
-        "Browserbase": "BROWSERBASE_API_KEY",  # 可选 —— 仅直接凭据
+        "Browser Use": "BROWSER_USE_API_KEY",  # Optional — local browser works without this
+        "Browserbase": "BROWSERBASE_API_KEY",  # Optional — direct credentials only
         "FAL": "FAL_KEY",
         "Tinker": "TINKER_API_KEY",
         "WandB": "WANDB_API_KEY",
         "ElevenLabs": "ELEVENLABS_API_KEY",
         "GitHub": "GITHUB_TOKEN",
     }
-
+    
     for name, env_var in keys.items():
         value = get_env_value(env_var) or ""
         has_key = bool(value)
@@ -152,7 +147,7 @@ def show_status(args):
     print(f"  {'Anthropic':<12}  {check_mark(bool(anthropic_value))} {anthropic_display}")
 
     # =========================================================================
-    # 认证提供者（OAuth）
+    # Auth Providers (OAuth)
     # =========================================================================
     print()
     print(color("◆ Auth Providers", Colors.CYAN, Colors.BOLD))
@@ -167,7 +162,6 @@ def show_status(args):
         codex_status = {}
         qwen_status = {}
 
-    # Nous Portal 认证状态
     nous_logged_in = bool(nous_status.get("logged_in"))
     print(
         f"  {'Nous Portal':<12}  {check_mark(nous_logged_in)} "
@@ -183,7 +177,6 @@ def show_status(args):
         print(f"    Key exp:    {key_exp}")
         print(f"    Refresh:    {refresh_label}")
 
-    # OpenAI Codex 认证状态
     codex_logged_in = bool(codex_status.get("logged_in"))
     print(
         f"  {'OpenAI Codex':<12}  {check_mark(codex_logged_in)} "
@@ -198,7 +191,6 @@ def show_status(args):
     if codex_status.get("error") and not codex_logged_in:
         print(f"    Error:      {codex_status.get('error')}")
 
-    # Qwen OAuth 认证状态
     qwen_logged_in = bool(qwen_status.get("logged_in"))
     print(
         f"  {'Qwen OAuth':<12}  {check_mark(qwen_logged_in)} "
@@ -215,7 +207,7 @@ def show_status(args):
         print(f"    Error:      {qwen_status.get('error')}")
 
     # =========================================================================
-    # Nous 订阅功能
+    # Nous Subscription Features
     # =========================================================================
     if managed_nous_tools_enabled():
         features = get_nous_subscription_features(config)
@@ -239,7 +231,7 @@ def show_status(args):
                 state = "not configured"
             print(f"  {feature.label:<15} {check_mark(feature.available or feature.active or feature.managed_by_nous)} {state}")
     elif nous_logged_in:
-        # 已登录 Nous 但在免费层级 —— 显示升级提示
+        # Logged into Nous but on the free tier — show upgrade nudge
         print()
         print(color("◆ Nous Tool Gateway", Colors.CYAN, Colors.BOLD))
         print("  Your free-tier Nous account does not include Tool Gateway access.")
@@ -252,7 +244,7 @@ def show_status(args):
             pass
 
     # =========================================================================
-    # API 密钥提供者
+    # API-Key Providers
     # =========================================================================
     print()
     print(color("◆ API-Key Providers", Colors.CYAN, Colors.BOLD))
@@ -264,7 +256,6 @@ def show_status(args):
         "MiniMax (China)":  ("MINIMAX_CN_API_KEY",),
     }
     for pname, env_vars in apikey_providers.items():
-        # 按顺序检查多个环境变量，使用第一个有值的
         key_val = ""
         for ev in env_vars:
             key_val = get_env_value(ev) or ""
@@ -275,23 +266,22 @@ def show_status(args):
         print(f"  {pname:<16} {check_mark(configured)} {label}")
 
     # =========================================================================
-    # 终端配置
+    # Terminal Configuration
     # =========================================================================
     print()
     print(color("◆ Terminal Backend", Colors.CYAN, Colors.BOLD))
-
+    
     terminal_env = os.getenv("TERMINAL_ENV", "")
     if not terminal_env:
-        # 环境变量未设置时回退到配置文件中的值
-        # （hermes status 不经过 cli.py 的配置加载流程）
+        # Fall back to config file value when env var isn't set
+        # (hermes status doesn't go through cli.py's config loading)
         try:
             _cfg = load_config()
             terminal_env = _cfg.get("terminal", {}).get("backend", "local")
         except Exception:
             terminal_env = "local"
     print(f"  Backend:      {terminal_env}")
-
-    # 根据后端类型显示相应的配置详情
+    
     if terminal_env == "ssh":
         ssh_host = os.getenv("TERMINAL_SSH_HOST", "")
         ssh_user = os.getenv("TERMINAL_SSH_USER", "")
@@ -303,16 +293,16 @@ def show_status(args):
     elif terminal_env == "daytona":
         daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
         print(f"  Daytona Image: {daytona_image}")
-
+    
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")
-
+    
     # =========================================================================
-    # 消息平台
+    # Messaging Platforms
     # =========================================================================
     print()
     print(color("◆ Messaging Platforms", Colors.CYAN, Colors.BOLD))
-
+    
     platforms = {
         "Telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL"),
         "Discord": ("DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL"),
@@ -327,105 +317,68 @@ def show_status(args):
         "WeCom Callback": ("WECOM_CALLBACK_CORP_ID", None),
         "Weixin": ("WEIXIN_ACCOUNT_ID", "WEIXIN_HOME_CHANNEL"),
         "BlueBubbles": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_HOME_CHANNEL"),
-        "QQBot": ("QQ_APP_ID", "QQ_HOME_CHANNEL"),
+        "QQBot": ("QQ_APP_ID", "QQBOT_HOME_CHANNEL"),
     }
-
+    
     for name, (token_var, home_var) in platforms.items():
         token = os.getenv(token_var, "")
         has_token = bool(token)
-
+        
         home_channel = ""
         if home_var:
             home_channel = os.getenv(home_var, "")
-
+        # Back-compat: QQBot home channel was renamed from QQ_HOME_CHANNEL to QQBOT_HOME_CHANNEL
+        if not home_channel and home_var == "QQBOT_HOME_CHANNEL":
+            home_channel = os.getenv("QQ_HOME_CHANNEL", "")
+        
         status = "configured" if has_token else "not configured"
         if home_channel:
             status += f" (home: {home_channel})"
-
+        
         print(f"  {name:<12}  {check_mark(has_token)} {status}")
-
+    
     # =========================================================================
-    # 网关状态
+    # Gateway Status
     # =========================================================================
     print()
     print(color("◆ Gateway Service", Colors.CYAN, Colors.BOLD))
 
-    # 根据不同平台（Termux、Linux、macOS）使用不同的方式检查网关状态
-    if _is_termux():
-        try:
-            from hermes_cli.gateway import find_gateway_pids
-            gateway_pids = find_gateway_pids()
-        except Exception:
-            gateway_pids = []
-        is_running = bool(gateway_pids)
+    try:
+        from hermes_cli.gateway import get_gateway_runtime_snapshot, _format_gateway_pids
+
+        snapshot = get_gateway_runtime_snapshot()
+        is_running = snapshot.running
         print(f"  Status:       {check_mark(is_running)} {'running' if is_running else 'stopped'}")
-        print("  Manager:      Termux / manual process")
-        if gateway_pids:
-            rendered = ", ".join(str(pid) for pid in gateway_pids[:3])
-            if len(gateway_pids) > 3:
-                rendered += ", ..."
-            print(f"  PID(s):       {rendered}")
-        else:
+        print(f"  Manager:      {snapshot.manager}")
+        if snapshot.gateway_pids:
+            print(f"  PID(s):       {_format_gateway_pids(snapshot.gateway_pids)}")
+        if snapshot.has_process_service_mismatch:
+            print("  Service:      installed but not managing the current running gateway")
+        elif _is_termux() and not snapshot.gateway_pids:
             print("  Start with:   hermes gateway")
             print("  Note:         Android may stop background jobs when Termux is suspended")
-
-    elif sys.platform.startswith('linux'):
-        from hermes_constants import is_container
-        if is_container():
-            # Docker/Podman 环境：无 systemd —— 检查运行中的网关进程
-            try:
-                from hermes_cli.gateway import find_gateway_pids
-                gateway_pids = find_gateway_pids()
-                is_active = len(gateway_pids) > 0
-            except Exception:
-                is_active = False
-            print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
-            print("  Manager:      docker (foreground)")
+        elif snapshot.service_installed and not snapshot.service_running:
+            print("  Service:      installed but stopped")
+    except Exception:
+        if _is_termux():
+            print(f"  Status:       {color('unknown', Colors.DIM)}")
+            print("  Manager:      Termux / manual process")
+        elif sys.platform.startswith('linux'):
+            print(f"  Status:       {color('unknown', Colors.DIM)}")
+            print("  Manager:      systemd/manual")
+        elif sys.platform == 'darwin':
+            print(f"  Status:       {color('unknown', Colors.DIM)}")
+            print("  Manager:      launchd")
         else:
-            # 常规 Linux：通过 systemd 检查服务状态
-            try:
-                from hermes_cli.gateway import get_service_name
-                _gw_svc = get_service_name()
-            except Exception:
-                _gw_svc = "hermes-gateway"
-            try:
-                result = subprocess.run(
-                    ["systemctl", "--user", "is-active", _gw_svc],
-                    capture_output=True,
-                    text=True,
-                    timeout=5
-                )
-                is_active = result.stdout.strip() == "active"
-            except (FileNotFoundError, subprocess.TimeoutExpired):
-                is_active = False
-            print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
-            print("  Manager:      systemd (user)")
-
-    elif sys.platform == 'darwin':
-        # macOS：通过 launchd 检查服务状态
-        from hermes_cli.gateway import get_launchd_label
-        try:
-            result = subprocess.run(
-                ["launchctl", "list", get_launchd_label()],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            is_loaded = result.returncode == 0
-        except subprocess.TimeoutExpired:
-            is_loaded = False
-        print(f"  Status:       {check_mark(is_loaded)} {'loaded' if is_loaded else 'not loaded'}")
-        print("  Manager:      launchd")
-    else:
-        print(f"  Status:       {color('N/A', Colors.DIM)}")
-        print("  Manager:      (not supported on this platform)")
-
+            print(f"  Status:       {color('N/A', Colors.DIM)}")
+            print("  Manager:      (not supported on this platform)")
+    
     # =========================================================================
-    # 定时任务
+    # Cron Jobs
     # =========================================================================
     print()
     print(color("◆ Scheduled Jobs", Colors.CYAN, Colors.BOLD))
-
+    
     jobs_file = get_hermes_home() / "cron" / "jobs.json"
     if jobs_file.exists():
         import json
@@ -439,13 +392,13 @@ def show_status(args):
             print("  Jobs:         (error reading jobs file)")
     else:
         print("  Jobs:         0")
-
+    
     # =========================================================================
-    # 会话
+    # Sessions
     # =========================================================================
     print()
     print(color("◆ Sessions", Colors.CYAN, Colors.BOLD))
-
+    
     sessions_file = get_hermes_home() / "sessions" / "sessions.json"
     if sessions_file.exists():
         import json
@@ -457,15 +410,15 @@ def show_status(args):
             print("  Active:       (error reading sessions file)")
     else:
         print("  Active:       0")
-
+    
     # =========================================================================
-    # 深度检查
+    # Deep checks
     # =========================================================================
     if deep:
         print()
         print(color("◆ Deep Checks", Colors.CYAN, Colors.BOLD))
-
-        # 检查 OpenRouter 连通性
+        
+        # Check OpenRouter connectivity
         openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
         if openrouter_key:
             try:
@@ -479,21 +432,21 @@ def show_status(args):
                 print(f"  OpenRouter:   {check_mark(ok)} {'reachable' if ok else f'error ({response.status_code})'}")
             except Exception as e:
                 print(f"  OpenRouter:   {check_mark(False)} error: {e}")
-
-        # 检查网关端口
+        
+        # Check gateway port
         try:
             import socket
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(1)
             result = sock.connect_ex(('127.0.0.1', 18789))
             sock.close()
-            # 端口被占用 = 网关可能正在运行
+            # Port in use = gateway likely running
             port_in_use = result == 0
-            # 这是信息性的，不一定表示有问题
+            # This is informational, not necessarily bad
             print(f"  Port 18789:   {'in use' if port_in_use else 'available'}")
         except OSError:
             pass
-
+    
     print()
     print(color("─" * 60, Colors.DIM))
     print(color("  Run 'hermes doctor' for detailed diagnostics", Colors.DIM))

@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
 """
-文件操作模块
+File Operations Module
 
-提供跨所有终端后端（local、docker、singularity、ssh、modal、daytona）
-的文件操作能力（读取、写入、补丁、搜索）。
+Provides file manipulation capabilities (read, write, patch, search) that work
+across all terminal backends (local, docker, singularity, ssh, modal, daytona).
 
-核心思路是所有文件操作都可以表达为 shell 命令，
-因此我们封装终端后端的 execute() 接口来提供统一的文件 API。
+The key insight is that all file operations can be expressed as shell commands,
+so we wrap the terminal backend's execute() interface to provide a unified file API.
 
-用法：
+Usage:
     from tools.file_operations import ShellFileOperations
     from tools.terminal_tool import _active_environments
-
-    # 获取终端环境的文件操作
+    
+    # Get file operations for a terminal environment
     file_ops = ShellFileOperations(terminal_env)
-
-    # 读取文件
+    
+    # Read a file
     result = file_ops.read_file("/path/to/file.py")
-
-    # 写入文件
+    
+    # Write a file
     result = file_ops.write_file("/path/to/new.py", "print('hello')")
-
-    # 搜索内容
+    
+    # Search for content
     result = file_ops.search("TODO", path=".", file_glob="*.py")
 """
 
@@ -35,93 +35,48 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from tools.binary_extensions import BINARY_EXTENSIONS
 
+from agent.file_safety import (
+    build_write_denied_paths,
+    build_write_denied_prefixes,
+    get_safe_write_root as _shared_get_safe_write_root,
+    is_write_denied as _shared_is_write_denied,
+)
+
 
 # ---------------------------------------------------------------------------
-# 写入路径拒绝列表 — 阻止对敏感系统/凭证文件的写入
+# Write-path deny list — blocks writes to sensitive system/credential files
 # ---------------------------------------------------------------------------
 
 _HOME = str(Path.home())
 
-WRITE_DENIED_PATHS = {
-    os.path.realpath(p) for p in [
-        os.path.join(_HOME, ".ssh", "authorized_keys"),
-        os.path.join(_HOME, ".ssh", "id_rsa"),
-        os.path.join(_HOME, ".ssh", "id_ed25519"),
-        os.path.join(_HOME, ".ssh", "config"),
-        str(get_hermes_home() / ".env"),
-        os.path.join(_HOME, ".bashrc"),
-        os.path.join(_HOME, ".zshrc"),
-        os.path.join(_HOME, ".profile"),
-        os.path.join(_HOME, ".bash_profile"),
-        os.path.join(_HOME, ".zprofile"),
-        os.path.join(_HOME, ".netrc"),
-        os.path.join(_HOME, ".pgpass"),
-        os.path.join(_HOME, ".npmrc"),
-        os.path.join(_HOME, ".pypirc"),
-        "/etc/sudoers",
-        "/etc/passwd",
-        "/etc/shadow",
-    ]
-}
+WRITE_DENIED_PATHS = build_write_denied_paths(_HOME)
 
-WRITE_DENIED_PREFIXES = [
-    os.path.realpath(p) + os.sep for p in [
-        os.path.join(_HOME, ".ssh"),
-        os.path.join(_HOME, ".aws"),
-        os.path.join(_HOME, ".gnupg"),
-        os.path.join(_HOME, ".kube"),
-        "/etc/sudoers.d",
-        "/etc/systemd",
-        os.path.join(_HOME, ".docker"),
-        os.path.join(_HOME, ".azure"),
-        os.path.join(_HOME, ".config", "gh"),
-    ]
-]
+WRITE_DENIED_PREFIXES = build_write_denied_prefixes(_HOME)
 
 
 def _get_safe_write_root() -> Optional[str]:
-    """返回解析后的 HERMES_WRITE_SAFE_ROOT 路径，未设置时返回 None。
+    """Return the resolved HERMES_WRITE_SAFE_ROOT path, or None if unset.
 
-    设置后，所有 write_file/patch 操作都被限制在此目录树内。
-    即使目标不在静态拒绝列表中，在其外部的写入也会被拒绝。
-    这是 gateway/消息部署的可选加固，只允许操作工作区检出。
+    When set, all write_file/patch operations are constrained to this
+    directory tree.  Writes outside it are denied even if the target is
+    not on the static deny list.  Opt-in hardening for gateway/messaging
+    deployments that should only touch a workspace checkout.
     """
-    root = os.getenv("HERMES_WRITE_SAFE_ROOT", "")
-    if not root:
-        return None
-    try:
-        return os.path.realpath(os.path.expanduser(root))
-    except Exception:
-        return None
+    return _shared_get_safe_write_root()
 
 
 def _is_write_denied(path: str) -> bool:
-    """如果路径在写入拒绝列表中则返回 True。"""
-    resolved = os.path.realpath(os.path.expanduser(str(path)))
-
-    # 1) 静态拒绝列表
-    if resolved in WRITE_DENIED_PATHS:
-        return True
-    for prefix in WRITE_DENIED_PREFIXES:
-        if resolved.startswith(prefix):
-            return True
-
-    # 2) 可选的安全根目录沙箱
-    safe_root = _get_safe_write_root()
-    if safe_root:
-        if not (resolved == safe_root or resolved.startswith(safe_root + os.sep)):
-            return True
-
-    return False
+    """Return True if path is on the write deny list."""
+    return _shared_is_write_denied(path)
 
 
 # =============================================================================
-# 结果数据类
+# Result Data Classes
 # =============================================================================
 
 @dataclass
 class ReadResult:
-    """读取文件的结果。"""
+    """Result from reading a file."""
     content: str = ""
     total_lines: int = 0
     file_size: int = 0
@@ -131,7 +86,7 @@ class ReadResult:
     is_image: bool = False
     base64_content: Optional[str] = None
     mime_type: Optional[str] = None
-    dimensions: Optional[str] = None  # 图片："宽x高"
+    dimensions: Optional[str] = None  # For images: "WIDTHxHEIGHT"
     error: Optional[str] = None
     similar_files: List[str] = field(default_factory=list)
     
@@ -141,7 +96,7 @@ class ReadResult:
 
 @dataclass
 class WriteResult:
-    """写入文件的结果。"""
+    """Result from writing a file."""
     bytes_written: int = 0
     dirs_created: bool = False
     error: Optional[str] = None
@@ -153,7 +108,7 @@ class WriteResult:
 
 @dataclass
 class PatchResult:
-    """补丁文件的结果。"""
+    """Result from patching a file."""
     success: bool = False
     diff: str = ""
     files_modified: List[str] = field(default_factory=list)
@@ -181,16 +136,16 @@ class PatchResult:
 
 @dataclass
 class SearchMatch:
-    """单个搜索匹配项。"""
+    """A single search match."""
     path: str
     line_number: int
     content: str
-    mtime: float = 0.0  # 修改时间，用于排序
+    mtime: float = 0.0  # Modification time for sorting
 
 
 @dataclass
 class SearchResult:
-    """搜索的结果。"""
+    """Result from searching."""
     matches: List[SearchMatch] = field(default_factory=list)
     files: List[str] = field(default_factory=list)
     counts: Dict[str, int] = field(default_factory=dict)
@@ -218,7 +173,7 @@ class SearchResult:
 
 @dataclass
 class LintResult:
-    """文件语法检查的结果。"""
+    """Result from linting a file."""
     success: bool = True
     skipped: bool = False
     output: str = ""
@@ -235,75 +190,75 @@ class LintResult:
 
 @dataclass
 class ExecuteResult:
-    """执行 shell 命令的结果。"""
+    """Result from executing a shell command."""
     stdout: str = ""
     exit_code: int = 0
 
 
 # =============================================================================
-# 抽象接口
+# Abstract Interface
 # =============================================================================
 
 class FileOperations(ABC):
-    """跨终端后端的文件操作抽象接口。"""
+    """Abstract interface for file operations across terminal backends."""
     
     @abstractmethod
     def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
-        """读取文件，支持分页。"""
+        """Read a file with pagination support."""
         ...
 
     @abstractmethod
     def read_file_raw(self, path: str) -> ReadResult:
-        """以纯字符串读取完整文件内容。
+        """Read the complete file content as a plain string.
 
-        无分页、无行号前缀、无逐行截断。
-        返回 ReadResult，.content = 完整文件文本，
-        失败时设置 .error。无论文件大小始终读取到 EOF。
+        No pagination, no line-number prefixes, no per-line truncation.
+        Returns ReadResult with .content = full file text, .error set on
+        failure. Always reads to EOF regardless of file size.
         """
         ...
 
     @abstractmethod
     def write_file(self, path: str, content: str) -> WriteResult:
-        """将内容写入文件，按需创建目录。"""
+        """Write content to a file, creating directories as needed."""
         ...
 
     @abstractmethod
     def patch_replace(self, path: str, old_string: str, new_string: str,
                       replace_all: bool = False) -> PatchResult:
-        """使用模糊匹配替换文件中的文本。"""
+        """Replace text in a file using fuzzy matching."""
         ...
 
     @abstractmethod
     def patch_v4a(self, patch_content: str) -> PatchResult:
-        """应用 V4A 格式的补丁。"""
+        """Apply a V4A format patch."""
         ...
 
     @abstractmethod
     def delete_file(self, path: str) -> WriteResult:
-        """删除文件。失败时返回 WriteResult 并设置 .error。"""
+        """Delete a file. Returns WriteResult with .error set on failure."""
         ...
 
     @abstractmethod
     def move_file(self, src: str, dst: str) -> WriteResult:
-        """将文件从 src 移动/重命名到 dst。失败时返回 WriteResult 并设置 .error。"""
+        """Move/rename a file from src to dst. Returns WriteResult with .error set on failure."""
         ...
 
     @abstractmethod
     def search(self, pattern: str, path: str = ".", target: str = "content",
                file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
                output_mode: str = "content", context: int = 0) -> SearchResult:
-        """搜索内容或文件。"""
+        """Search for content or files."""
         ...
 
 
 # =============================================================================
-# 基于 Shell 的实现
+# Shell-based Implementation
 # =============================================================================
 
-# 图片扩展名（二进制文件的子集，可作为 base64 返回）
+# Image extensions (subset of binary that we can return as base64)
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico'}
 
-# 按文件扩展名配置的语法检查器
+# Linters by file extension
 LINTERS = {
     '.py': 'python -m py_compile {file} 2>&1',
     '.js': 'node --check {file} 2>&1',
@@ -312,7 +267,7 @@ LINTERS = {
     '.rs': 'rustfmt --check {file} 2>&1',
 }
 
-# 读取操作的最大限制
+# Max limits for read operations
 MAX_LINES = 2000
 MAX_LINE_LENGTH = 2000
 MAX_FILE_SIZE = 50 * 1024  # 50KB
@@ -320,54 +275,81 @@ MAX_FILE_SIZE = 50 * 1024  # 50KB
 
 class ShellFileOperations(FileOperations):
     """
-    通过 shell 命令实现的文件操作。
-
-    可与任何具有 execute(command, cwd) 方法的终端后端配合使用。
-    包括 local、docker、singularity、ssh、modal 和 daytona 环境。
+    File operations implemented via shell commands.
+    
+    Works with ANY terminal backend that has execute(command, cwd) method.
+    This includes local, docker, singularity, ssh, modal, and daytona environments.
     """
     
     def __init__(self, terminal_env, cwd: str = None):
         """
-        使用终端环境初始化文件操作。
+        Initialize file operations with a terminal environment.
 
         Args:
-            terminal_env: 任何具有 execute(command, cwd) 方法的对象。
-                         返回 {"output": str, "returncode": int}
-            cwd: 工作目录（默认为 env 的 cwd 或当前目录）
+            terminal_env: Any object with execute(command, cwd) method.
+                         Returns {"output": str, "returncode": int}
+            cwd: Optional explicit fallback cwd when the terminal env has
+                 no cwd attribute (rare — most backends track cwd live).
+
+        Note:
+            Every _exec() call prefers the LIVE ``terminal_env.cwd`` over
+            ``self.cwd`` so ``cd`` commands run via the terminal tool are
+            picked up immediately.  ``self.cwd`` is only used as a fallback
+            when the env has no cwd at all — it is NOT the authoritative
+            cwd, despite being settable at init time.
+
+            Historical bug (fixed): prior versions of this class used the
+            init-time cwd for every _exec() call, which caused relative
+            paths passed to patch/read/write to target the wrong directory
+            after the user ran ``cd`` in the terminal.  Patches would
+            claim success and return a plausible diff but land in the
+            original directory, producing apparent silent failures.
         """
         self.env = terminal_env
-        # 确定 cwd 的来源。
-        # 重要：不要回退到 os.getcwd()——那是主机的本地路径，
-        # 在容器/云后端（modal、docker）内不存在。
-        # 如果没有任何来源提供 cwd，使用 "/" 作为安全的通用默认值。
+        # Determine cwd from various possible sources.
+        # IMPORTANT: do NOT fall back to os.getcwd() -- that's the HOST's local
+        # path which doesn't exist inside container/cloud backends (modal, docker).
+        # If nothing provides a cwd, use "/" as a safe universal default.
         self.cwd = cwd or getattr(terminal_env, 'cwd', None) or \
                    getattr(getattr(terminal_env, 'config', None), 'cwd', None) or "/"
-        
-        # 命令可用性检查的缓存
+
+        # Cache for command availability checks
         self._command_cache: Dict[str, bool] = {}
     
     def _exec(self, command: str, cwd: str = None, timeout: int = None,
               stdin_data: str = None) -> ExecuteResult:
-        """通过终端后端执行命令。
+        """Execute command via terminal backend.
 
         Args:
-            stdin_data: 如果提供，通过管道传递给进程的 stdin，
-                        而非嵌入命令字符串中。绕过 ARG_MAX 限制。
+            stdin_data: If provided, piped to the process's stdin instead of
+                        embedding in the command string. Bypasses ARG_MAX.
+
+        Cwd resolution order (critical — see class docstring):
+          1. Explicit ``cwd`` arg (if provided)
+          2. Live ``self.env.cwd`` (tracks ``cd`` commands run via terminal)
+          3. Init-time ``self.cwd`` (fallback when env has no cwd attribute)
+
+        This ordering ensures relative paths in file operations follow the
+        terminal's current directory — not the directory this file_ops was
+        originally created in.  See test_file_ops_cwd_tracking.py.
         """
         kwargs = {}
         if timeout:
             kwargs['timeout'] = timeout
         if stdin_data is not None:
             kwargs['stdin_data'] = stdin_data
-        
-        result = self.env.execute(command, cwd=cwd or self.cwd, **kwargs)
+
+        # Resolve cwd from the live env so `cd` commands are picked up.
+        # Fall through to init-time self.cwd only if the env doesn't track cwd.
+        effective_cwd = cwd or getattr(self.env, 'cwd', None) or self.cwd
+        result = self.env.execute(command, cwd=effective_cwd, **kwargs)
         return ExecuteResult(
             stdout=result.get("output", ""),
             exit_code=result.get("returncode", 0)
         )
     
     def _has_command(self, cmd: str) -> bool:
-        """检查环境中是否存在某个命令（带缓存）。"""
+        """Check if a command exists in the environment (cached)."""
         if cmd not in self._command_cache:
             result = self._exec(f"command -v {cmd} >/dev/null 2>&1 && echo 'yes'")
             self._command_cache[cmd] = result.stdout.strip() == 'yes'
@@ -375,15 +357,15 @@ class ShellFileOperations(FileOperations):
     
     def _is_likely_binary(self, path: str, content_sample: str = None) -> bool:
         """
-        检查文件是否可能为二进制文件。
-
-        使用扩展名检查（快速） + 内容分析（回退）。
+        Check if a file is likely binary.
+        
+        Uses extension check (fast) + content analysis (fallback).
         """
         ext = os.path.splitext(path)[1].lower()
         if ext in BINARY_EXTENSIONS:
             return True
         
-        # 内容分析：>30% 非可打印字符 = 二进制
+        # Content analysis: >30% non-printable chars = binary
         if content_sample:
             non_printable = sum(1 for c in content_sample[:1000]
                                if ord(c) < 32 and c not in '\n\r\t')
@@ -392,16 +374,16 @@ class ShellFileOperations(FileOperations):
         return False
     
     def _is_image(self, path: str) -> bool:
-        """检查文件是否为可以作为 base64 返回的图片。"""
+        """Check if file is an image we can return as base64."""
         ext = os.path.splitext(path)[1].lower()
         return ext in IMAGE_EXTENSIONS
     
     def _add_line_numbers(self, content: str, start_line: int = 1) -> str:
-        """以 行号|内容 格式为内容添加行号。"""
+        """Add line numbers to content in LINE_NUM|CONTENT format."""
         lines = content.split('\n')
         numbered = []
         for i, line in enumerate(lines, start=start_line):
-            # 截断过长的行
+            # Truncate long lines
             if len(line) > MAX_LINE_LENGTH:
                 line = line[:MAX_LINE_LENGTH] + "... [truncated]"
             numbered.append(f"{i:6d}|{line}")
@@ -409,16 +391,17 @@ class ShellFileOperations(FileOperations):
     
     def _expand_path(self, path: str) -> str:
         """
-        展开 shell 风格路径，如 ~ 和 ~user 为绝对路径。
-
-        必须在 shell 转义之前完成，因为 ~ 在单引号内不会展开。
+        Expand shell-style paths like ~ and ~user to absolute paths.
+        
+        This must be done BEFORE shell escaping, since ~ doesn't expand
+        inside single quotes.
         """
         if not path:
             return path
         
         # Handle ~ and ~user
         if path.startswith('~'):
-            # 获取终端环境中的主目录
+            # Get home directory via the terminal environment
             result = self._exec("echo $HOME")
             if result.exit_code == 0 and result.stdout.strip():
                 home = result.stdout.strip()
@@ -426,14 +409,15 @@ class ShellFileOperations(FileOperations):
                     return home
                 elif path.startswith('~/'):
                     return home + path[1:]  # Replace ~ with home
-                # ~username 格式——在 shell 展开之前提取并验证用户名
-                # （防止通过 "~; rm -rf /" 等路径进行 shell 注入）。
+                # ~username format - extract and validate username before
+                # letting shell expand it (prevent shell injection via
+                # paths like "~; rm -rf /").
                 rest = path[1:]  # strip leading ~
                 slash_idx = rest.find('/')
                 username = rest[:slash_idx] if slash_idx >= 0 else rest
                 if username and re.fullmatch(r'[a-zA-Z0-9._-]+', username):
-                    # 仅展开 ~username（而非完整路径），以避免通过
-                    # "~user/$(malicious)" 等路径后缀进行 shell 注入。
+                    # Only expand ~username (not the full path) to avoid shell
+                    # injection via path suffixes like "~user/$(malicious)".
                     expand_result = self._exec(f"echo ~{username}")
                     if expand_result.exit_code == 0 and expand_result.stdout.strip():
                         user_home = expand_result.stdout.strip()
@@ -443,12 +427,12 @@ class ShellFileOperations(FileOperations):
         return path
     
     def _escape_shell_arg(self, arg: str) -> str:
-        """转义字符串以安全用于 shell 命令。"""
-        # 使用单引号并转义字符串中的任何单引号
+        """Escape a string for safe use in shell commands."""
+        # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
     
     def _unified_diff(self, old_content: str, new_content: str, filename: str) -> str:
-        """生成新旧内容之间的统一 diff。"""
+        """Generate unified diff between old and new content."""
         old_lines = old_content.splitlines(keepends=True)
         new_lines = new_content.splitlines(keepends=True)
         diff = difflib.unified_diff(
@@ -459,33 +443,33 @@ class ShellFileOperations(FileOperations):
         return ''.join(diff)
     
     # =========================================================================
-    # 读取实现
+    # READ Implementation
     # =========================================================================
     
     def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
         """
-        读取文件，支持分页、二进制检测和行号。
-
+        Read a file with pagination, binary detection, and line numbers.
+        
         Args:
-            path: 文件路径（绝对路径或相对于 cwd 的路径）
-            offset: 起始行号（1 为起始，默认 1）
-            limit: 最大返回行数（默认 500，最大 2000）
-
+            path: File path (absolute or relative to cwd)
+            offset: Line number to start from (1-indexed, default 1)
+            limit: Maximum lines to return (default 500, max 2000)
+        
         Returns:
-            包含内容、元数据或错误信息的 ReadResult
+            ReadResult with content, metadata, or error info
         """
-        # 展开 ~ 和其他 shell 路径
+        # Expand ~ and other shell paths
         path = self._expand_path(path)
-
-        # 限制上限
+        
+        # Clamp limit
         limit = min(limit, MAX_LINES)
-
-        # 检查文件是否存在并获取大小（wc -c 是 POSIX 标准，Linux + macOS 通用）
+        
+        # Check if file exists and get size (wc -c is POSIX, works on Linux + macOS)
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
         stat_result = self._exec(stat_cmd)
         
         if stat_result.exit_code != 0:
-            # 文件未找到 - 尝试建议相似文件
+            # File not found - try to suggest similar files
             return self._suggest_similar_files(path)
         
         try:
@@ -493,12 +477,12 @@ class ShellFileOperations(FileOperations):
         except ValueError:
             file_size = 0
         
-        # 检查文件是否过大
+        # Check if file is too large
         if file_size > MAX_FILE_SIZE:
-            # 仍尝试读取，但给出警告
+            # Still try to read, but warn
             pass
         
-        # 图片永远不会内联 — 重定向到 vision 工具
+        # Images are never inlined — redirect to the vision tool
         if self._is_image(path):
             return ReadResult(
                 is_image=True,
@@ -510,7 +494,7 @@ class ShellFileOperations(FileOperations):
                 ),
             )
         
-        # 读取样本以检查二进制内容
+        # Read a sample to check for binary content
         sample_cmd = f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null"
         sample_result = self._exec(sample_cmd)
         
@@ -521,7 +505,7 @@ class ShellFileOperations(FileOperations):
                 error="Binary file - cannot display as text. Use appropriate tools to handle this file type."
             )
         
-        # 使用 sed 进行分页读取
+        # Read with pagination using sed
         end_line = offset + limit - 1
         read_cmd = f"sed -n '{offset},{end_line}p' {self._escape_shell_arg(path)}"
         read_result = self._exec(read_cmd)
@@ -529,7 +513,7 @@ class ShellFileOperations(FileOperations):
         if read_result.exit_code != 0:
             return ReadResult(error=f"Failed to read file: {read_result.stdout}")
         
-        # 获取总行数
+        # Get total line count
         wc_cmd = f"wc -l < {self._escape_shell_arg(path)}"
         wc_result = self._exec(wc_cmd)
         try:
@@ -537,7 +521,7 @@ class ShellFileOperations(FileOperations):
         except ValueError:
             total_lines = 0
         
-        # 检查是否被截断
+        # Check if truncated
         truncated = total_lines > end_line
         hint = None
         if truncated:
@@ -552,14 +536,14 @@ class ShellFileOperations(FileOperations):
         )
     
     def _suggest_similar_files(self, path: str) -> ReadResult:
-        """当请求的文件未找到时建议相似的文件。"""
+        """Suggest similar files when the requested file is not found."""
         dir_path = os.path.dirname(path) or "."
         filename = os.path.basename(path)
         basename_no_ext = os.path.splitext(filename)[0]
         ext = os.path.splitext(filename)[1].lower()
         lower_name = filename.lower()
 
-        # 列出目标目录中的文件
+        # List files in the target directory
         ls_cmd = f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null | head -50"
         ls_result = self._exec(ls_cmd)
 
@@ -571,22 +555,22 @@ class ShellFileOperations(FileOperations):
                 lf = f.lower()
                 score = 0
 
-                # 完全匹配（不应发生，但作为保护）
+                # Exact match (shouldn't happen, but guard)
                 if lf == lower_name:
                     score = 100
-                # 相同基本名称，不同扩展名（如 config.yml vs config.yaml）
+                # Same base name, different extension (e.g. config.yml vs config.yaml)
                 elif os.path.splitext(f)[0].lower() == basename_no_ext.lower():
                     score = 90
-                # 目标是候选项的前缀或反之
+                # Target is prefix of candidate or vice-versa
                 elif lf.startswith(lower_name) or lower_name.startswith(lf):
                     score = 70
-                # 子字符串匹配（候选项包含查询）
+                # Substring match (candidate contains query)
                 elif lower_name in lf:
                     score = 60
-                # 反向子字符串（查询包含候选项名称）
+                # Reverse substring (query contains candidate name)
                 elif lf in lower_name and len(lf) > 2:
                     score = 40
-                # 相同扩展名且有一定重叠
+                # Same extension with some overlap
                 elif ext and os.path.splitext(f)[1].lower() == ext:
                     common = set(lower_name) & set(lf)
                     if len(common) >= max(len(lower_name), len(lf)) * 0.4:
@@ -604,10 +588,10 @@ class ShellFileOperations(FileOperations):
         )
     
     def read_file_raw(self, path: str) -> ReadResult:
-        """以纯字符串读取完整文件内容。
+        """Read the complete file content as a plain string.
 
-        无分页、无行号前缀、无逐行截断。
-        使用 cat 读取，无论文件大小都返回完整文件。
+        No pagination, no line-number prefixes, no per-line truncation.
+        Uses cat so the full file is returned regardless of size.
         """
         path = self._expand_path(path)
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
@@ -632,7 +616,7 @@ class ShellFileOperations(FileOperations):
         return ReadResult(content=cat_result.stdout, file_size=file_size)
 
     def delete_file(self, path: str) -> WriteResult:
-        """通过 rm 删除文件。"""
+        """Delete a file via rm."""
         path = self._expand_path(path)
         if _is_write_denied(path):
             return WriteResult(error=f"Delete denied: {path} is a protected path")
@@ -642,7 +626,7 @@ class ShellFileOperations(FileOperations):
         return WriteResult()
 
     def move_file(self, src: str, dst: str) -> WriteResult:
-        """通过 mv 移动文件。"""
+        """Move a file via mv."""
         src = self._expand_path(src)
         dst = self._expand_path(dst)
         for p in (src, dst):
@@ -656,32 +640,32 @@ class ShellFileOperations(FileOperations):
         return WriteResult()
 
     # =========================================================================
-    # 写入实现
+    # WRITE Implementation
     # =========================================================================
 
     def write_file(self, path: str, content: str) -> WriteResult:
         """
-        将内容写入文件，按需创建父目录。
+        Write content to a file, creating parent directories as needed.
 
-        通过 stdin 管道传递内容以避免大文件的 OS ARG_MAX 限制。
-        内容不会出现在 shell 命令字符串中——
-        只有文件路径会出现。
+        Pipes content through stdin to avoid OS ARG_MAX limits on large
+        files. The content never appears in the shell command string —
+        only the file path does.
 
         Args:
-            path: 要写入的文件路径
-            content: 要写入的内容
+            path: File path to write
+            content: Content to write
 
         Returns:
-            包含写入字节数或错误的 WriteResult
+            WriteResult with bytes written or error
         """
-        # 展开 ~ 和其他 shell 路径
+        # Expand ~ and other shell paths
         path = self._expand_path(path)
 
-        # 阻止对敏感路径的写入
+        # Block writes to sensitive paths
         if _is_write_denied(path):
             return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
-        # 创建父目录
+        # Create parent directories
         parent = os.path.dirname(path)
         dirs_created = False
         
@@ -691,15 +675,15 @@ class ShellFileOperations(FileOperations):
             if mkdir_result.exit_code == 0:
                 dirs_created = True
         
-        # 通过 stdin 管道写入 — 内容完全绕过 shell 参数解析，
-        # 因此无论文件大小都没有 ARG_MAX 限制。
+        # Write via stdin pipe — content bypasses shell arg parsing entirely,
+        # so there's no ARG_MAX limit regardless of file size.
         write_cmd = f"cat > {self._escape_shell_arg(path)}"
         write_result = self._exec(write_cmd, stdin_data=content)
         
         if write_result.exit_code != 0:
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
         
-        # 获取写入的字节数（wc -c 是 POSIX 标准，Linux + macOS 通用）
+        # Get bytes written (wc -c is POSIX, works on Linux + macOS)
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
         stat_result = self._exec(stat_cmd)
         
@@ -714,31 +698,31 @@ class ShellFileOperations(FileOperations):
         )
     
     # =========================================================================
-    # 补丁实现（替换模式）
+    # PATCH Implementation (Replace Mode)
     # =========================================================================
     
     def patch_replace(self, path: str, old_string: str, new_string: str,
                       replace_all: bool = False) -> PatchResult:
         """
-        使用模糊匹配替换文件中的文本。
+        Replace text in a file using fuzzy matching.
 
         Args:
-            path: 要修改的文件路径
-            old_string: 要查找的文本（除非 replace_all=True，否则必须唯一）
-            new_string: 替换文本
-            replace_all: 如果为 True，替换所有出现
+            path: File path to modify
+            old_string: Text to find (must be unique unless replace_all=True)
+            new_string: Replacement text
+            replace_all: If True, replace all occurrences
 
         Returns:
-            包含 diff 和语法检查结果的 PatchResult
+            PatchResult with diff and lint results
         """
-        # 展开 ~ 和其他 shell 路径
+        # Expand ~ and other shell paths
         path = self._expand_path(path)
 
-        # 阻止对敏感路径的写入
+        # Block writes to sensitive paths
         if _is_write_denied(path):
             return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
-        # 读取当前内容
+        # Read current content
         read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
         read_result = self._exec(read_cmd)
         
@@ -747,28 +731,47 @@ class ShellFileOperations(FileOperations):
         
         content = read_result.stdout
         
-        # 导入并使用模糊匹配
+        # Import and use fuzzy matching
         from tools.fuzzy_match import fuzzy_find_and_replace
         
         new_content, match_count, _strategy, error = fuzzy_find_and_replace(
             content, old_string, new_string, replace_all
         )
         
-        if error:
-            return PatchResult(error=error)
-        
-        if match_count == 0:
-            return PatchResult(error=f"Could not find match for old_string in {path}")
-        
-        # 写回
+        if error or match_count == 0:
+            err_msg = error or f"Could not find match for old_string in {path}"
+            try:
+                from tools.fuzzy_match import format_no_match_hint
+                err_msg += format_no_match_hint(err_msg, match_count, old_string, content)
+            except Exception:
+                pass
+            return PatchResult(error=err_msg)
+        # Write back
         write_result = self.write_file(path, new_content)
         if write_result.error:
             return PatchResult(error=f"Failed to write changes: {write_result.error}")
-        
-        # 生成 diff
+
+        # Post-write verification — re-read the file and confirm the bytes we
+        # intended to write actually landed. Catches silent persistence
+        # failures (backend FS oddities, race with another task, truncated
+        # pipe, etc.) that would otherwise return success-with-diff while the
+        # file is unchanged on disk.
+        verify_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+        verify_result = self._exec(verify_cmd)
+        if verify_result.exit_code != 0:
+            return PatchResult(error=f"Post-write verification failed: could not re-read {path}")
+        if verify_result.stdout != new_content:
+            return PatchResult(error=(
+                f"Post-write verification failed for {path}: on-disk content "
+                f"differs from intended write "
+                f"(wrote {len(new_content)} chars, read back {len(verify_result.stdout)}). "
+                "The patch did not persist. Re-read the file and try again."
+            ))
+
+        # Generate diff
         diff = self._unified_diff(content, new_content, path)
         
-        # 自动语法检查
+        # Auto-lint
         lint_result = self._check_lint(path)
         
         return PatchResult(
@@ -780,9 +783,9 @@ class ShellFileOperations(FileOperations):
     
     def patch_v4a(self, patch_content: str) -> PatchResult:
         """
-        应用 V4A 格式的补丁。
-
-        V4A 格式：
+        Apply a V4A format patch.
+        
+        V4A format:
             *** Begin Patch
             *** Update File: path/to/file.py
             @@ context hint @@
@@ -790,48 +793,48 @@ class ShellFileOperations(FileOperations):
             -removed line
             +added line
             *** End Patch
-
+        
         Args:
-            patch_content: V4A 格式的补丁字符串
-
+            patch_content: V4A format patch string
+        
         Returns:
-            包含所做更改的 PatchResult
+            PatchResult with changes made
         """
-        # 导入补丁解析器
+        # Import patch parser
         from tools.patch_parser import parse_v4a_patch, apply_v4a_operations
         
         operations, parse_error = parse_v4a_patch(patch_content)
         if parse_error:
             return PatchResult(error=f"Failed to parse patch: {parse_error}")
         
-        # 应用操作
+        # Apply operations
         result = apply_v4a_operations(operations, self)
         return result
     
     def _check_lint(self, path: str) -> LintResult:
         """
-        编辑后对文件运行语法检查。
-
+        Run syntax check on a file after editing.
+        
         Args:
-            path: 要检查的文件路径
-
+            path: File path to lint
+        
         Returns:
-            包含状态和任何错误的 LintResult
+            LintResult with status and any errors
         """
         ext = os.path.splitext(path)[1].lower()
         
         if ext not in LINTERS:
             return LintResult(skipped=True, message=f"No linter for {ext} files")
         
-        # 检查语法检查器命令是否可用
+        # Check if linter command is available
         linter_cmd = LINTERS[ext]
-        # 提取基础命令（第一个词）
+        # Extract the base command (first word)
         base_cmd = linter_cmd.split()[0]
         
         if not self._has_command(base_cmd):
             return LintResult(skipped=True, message=f"{base_cmd} not available")
         
-        # 运行语法检查器
+        # Run linter
         cmd = linter_cmd.replace("{file}", self._escape_shell_arg(path))
         result = self._exec(cmd, timeout=30)
         
@@ -841,39 +844,39 @@ class ShellFileOperations(FileOperations):
         )
     
     # =========================================================================
-    # 搜索实现
+    # SEARCH Implementation
     # =========================================================================
     
     def search(self, pattern: str, path: str = ".", target: str = "content",
                file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
                output_mode: str = "content", context: int = 0) -> SearchResult:
         """
-        搜索内容或文件。
-
+        Search for content or files.
+        
         Args:
-            pattern: 正则表达式（用于内容）或 glob 模式（用于文件）
-            path: 要搜索的目录/文件（默认：cwd）
-            target: "content"（grep）或 "files"（glob）
-            file_glob: 内容搜索的文件模式过滤器（如 "*.py"）
-            limit: 最大结果数（默认 50）
-            offset: 跳过前 N 个结果
-            output_mode: "content"、"files_only" 或 "count"
-            context: 匹配项周围的上下文行数
-
+            pattern: Regex (for content) or glob pattern (for files)
+            path: Directory/file to search (default: cwd)
+            target: "content" (grep) or "files" (glob)
+            file_glob: File pattern filter for content search (e.g., "*.py")
+            limit: Max results (default 50)
+            offset: Skip first N results
+            output_mode: "content", "files_only", or "count"
+            context: Lines of context around matches
+        
         Returns:
-            包含匹配结果或文件列表的 SearchResult
+            SearchResult with matches or file list
         """
-        # 展开 ~ 和其他 shell 路径
+        # Expand ~ and other shell paths
         path = self._expand_path(path)
-
-        # 搜索前验证路径是否存在
+        
+        # Validate that the path exists before searching
         check = self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
         if "not_found" in check.stdout:
-            # 尝试建议附近的路径
+            # Try to suggest nearby paths
             parent = os.path.dirname(path) or "."
             basename_query = os.path.basename(path)
             hint_parts = [f"Path not found: {path}"]
-            # 检查父目录是否存在并列出相似条目
+            # Check if parent directory exists and list similar entries
             parent_check = self._exec(
                 f"test -d {self._escape_shell_arg(parent)} && echo yes || echo no"
             )
@@ -906,20 +909,20 @@ class ShellFileOperations(FileOperations):
                                         output_mode, context)
     
     def _search_files(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
-        """按文件名模式（类 glob）搜索文件。"""
-        # 如果不存在则自动添加 **/ 前缀用于递归搜索
+        """Search for files by name pattern (glob-like)."""
+        # Auto-prepend **/ for recursive search if not already present
         if not pattern.startswith('**/') and '/' not in pattern:
             search_pattern = pattern
         else:
             search_pattern = pattern.split('/')[-1]
 
-        # 优先使用 ripgrep：遵循 .gitignore，默认排除隐藏目录，
-        # 并具有并行目录遍历（比 find 在宽树上快约 200 倍）。
-        # 与已使用 rg 的 _search_content 保持一致。
+        # Prefer ripgrep: respects .gitignore, excludes hidden dirs by
+        # default, and has parallel directory traversal (~200x faster than
+        # find on wide trees).  Mirrors _search_content which already uses rg.
         if self._has_command('rg'):
             return self._search_files_rg(search_pattern, path, limit, offset)
 
-        # 回退：find（较慢，无 .gitignore 感知）
+        # Fallback: find (slower, no .gitignore awareness)
         if not self._has_command('find'):
             return SearchResult(
                 error="File search requires 'rg' (ripgrep) or 'find'. "
@@ -927,7 +930,7 @@ class ShellFileOperations(FileOperations):
                       "https://github.com/BurntSushi/ripgrep#installation"
             )
 
-        # 排除隐藏目录（匹配 ripgrep 的默认行为）。
+        # Exclude hidden directories (matching ripgrep's default behavior).
         hidden_exclude = "-not -path '*/.*'"
 
         cmd = f"find {self._escape_shell_arg(path)} {hidden_exclude} -type f -name {self._escape_shell_arg(search_pattern)} " \
@@ -936,7 +939,7 @@ class ShellFileOperations(FileOperations):
         result = self._exec(cmd, timeout=60)
 
         if not result.stdout.strip():
-            # 尝试不使用 -printf（BSD find 兼容性 -- macOS）
+            # Try without -printf (BSD find compatibility -- macOS)
             cmd_simple = f"find {self._escape_shell_arg(path)} {hidden_exclude} -type f -name {self._escape_shell_arg(search_pattern)} " \
                         f"2>/dev/null | head -n {limit + offset} | tail -n +{offset + 1}"
             result = self._exec(cmd_simple, timeout=60)
@@ -957,22 +960,22 @@ class ShellFileOperations(FileOperations):
         )
 
     def _search_files_rg(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
-        """使用 ripgrep 的 --files 模式按文件名搜索。
+        """Search for files by name using ripgrep's --files mode.
 
-        rg --files 遵循 .gitignore 并默认排除隐藏目录，
-        使用并行目录遍历，比 find 在宽树上快约 200 倍。
-        当 rg >= 13.0 支持 --sortr 时，结果按修改时间排序
-        （最近编辑的排在前面）。
+        rg --files respects .gitignore and excludes hidden directories by
+        default, and uses parallel directory traversal for ~200x speedup
+        over find on wide trees.  Results are sorted by modification time
+        (most recently edited first) when rg >= 13.0 supports --sortr.
         """
-        # rg --files -g 使用 glob 模式；包装裸名称使其
-        # 在任意深度匹配（等同于 find -name）。
+        # rg --files -g uses glob patterns; wrap bare names so they match
+        # at any depth (equivalent to find -name).
         if '/' not in pattern and not pattern.startswith('*'):
             glob_pattern = f"*{pattern}"
         else:
             glob_pattern = pattern
 
         fetch_limit = limit + offset
-        # 先尝试按修改时间排序（rg 13+）；如果不支持则回退到无排序。
+        # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
         cmd_sorted = (
             f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
             f"{self._escape_shell_arg(path)} 2>/dev/null "
@@ -982,7 +985,7 @@ class ShellFileOperations(FileOperations):
         all_files = [f for f in result.stdout.strip().split('\n') if f]
 
         if not all_files:
-            # --sortr 在旧版 rg 上可能失败；不带它重试。
+            # --sortr may have failed on older rg; retry without it.
             cmd_plain = (
                 f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
                 f"{self._escape_shell_arg(path)} 2>/dev/null "
@@ -1001,8 +1004,8 @@ class ShellFileOperations(FileOperations):
     
     def _search_content(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
-        """在文件内容中搜索（类 grep）。"""
-        # 优先尝试 ripgrep（快速），回退到 grep（较慢但可用）
+        """Search for content inside files (grep-like)."""
+        # Try ripgrep first (fast), fallback to grep (slower but works)
         if self._has_command('rg'):
             return self._search_with_rg(pattern, path, file_glob, limit, offset, 
                                         output_mode, context)
@@ -1010,7 +1013,7 @@ class ShellFileOperations(FileOperations):
             return self._search_with_grep(pattern, path, file_glob, limit, offset,
                                           output_mode, context)
         else:
-            # rg 和 grep 都不可用（Windows 上没有 Git Bash 等）
+            # Neither rg nor grep available (Windows without Git Bash, etc.)
             return SearchResult(
                 error="Content search requires ripgrep (rg) or grep. "
                       "Install ripgrep: https://github.com/BurntSushi/ripgrep#installation"
@@ -1018,42 +1021,42 @@ class ShellFileOperations(FileOperations):
     
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
-        """使用 ripgrep 搜索。"""
+        """Search using ripgrep."""
         cmd_parts = ["rg", "--line-number", "--no-heading", "--with-filename"]
         
-        # 如果请求则添加上下文
+        # Add context if requested
         if context > 0:
             cmd_parts.extend(["-C", str(context)])
         
-        # 添加文件 glob 过滤器（必须加引号以防止 shell 展开）
+        # Add file glob filter (must be quoted to prevent shell expansion)
         if file_glob:
             cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
         
-        # 输出模式处理
+        # Output mode handling
         if output_mode == "files_only":
-            cmd_parts.append("-l")  # 仅文件名
+            cmd_parts.append("-l")  # Files only
         elif output_mode == "count":
-            cmd_parts.append("-c")  # 每个文件的匹配数
+            cmd_parts.append("-c")  # Count per file
         
-        # 添加模式和路径
+        # Add pattern and path
         cmd_parts.append(self._escape_shell_arg(pattern))
         cmd_parts.append(self._escape_shell_arg(path))
         
-        # 获取额外行以便在切片前报告真实总数。
-        # 对于上下文模式，rg 在组之间输出分隔行（"--"），
-        # 因此我们多获取一些并在 Python 中过滤。
+        # Fetch extra rows so we can report the true total before slicing.
+        # For context mode, rg emits separator lines ("--") between groups,
+        # so we grab generously and filter in Python.
         fetch_limit = limit + offset + 200 if context > 0 else limit + offset
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
         
         cmd = " ".join(cmd_parts)
         result = self._exec(cmd, timeout=60)
         
-        # rg 退出码: 0=找到匹配, 1=无匹配, 2=错误
+        # rg exit codes: 0=matches found, 1=no matches, 2=error
         if result.exit_code == 2 and not result.stdout.strip():
             error_msg = result.stderr.strip() if hasattr(result, 'stderr') and result.stderr else "Search error"
             return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
         
-        # 根据输出模式解析结果
+        # Parse results based on output mode
         if output_mode == "files_only":
             all_files = [f for f in result.stdout.strip().split('\n') if f]
             total = len(all_files)
@@ -1073,12 +1076,12 @@ class ShellFileOperations(FileOperations):
             return SearchResult(counts=counts, total_count=sum(counts.values()))
         
         else:
-            # 解析内容匹配和上下文行。
-            # rg 匹配行:   "file:lineno:content"  （冒号分隔）
-            # rg 上下文行: "file-lineno-content"   （连字符分隔）
-            # rg 组分隔:    "--"
-            # 注意: 在 Windows 上，路径包含驱动器号（如 C:\path），
-            # 所以简单的 split(":") 会出错。使用正则表达式处理两个平台。
+            # Parse content matches and context lines.
+            # rg match lines:   "file:lineno:content"  (colon separator)
+            # rg context lines: "file-lineno-content"   (dash separator)
+            # rg group seps:    "--"
+            # Note: on Windows, paths contain drive letters (e.g. C:\path),
+            # so naive split(":") breaks. Use regex to handle both platforms.
             _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
             _ctx_re = re.compile(r'^([A-Za-z]:)?(.*?)-(\d+)-(.*)$')
             matches = []
@@ -1086,7 +1089,7 @@ class ShellFileOperations(FileOperations):
                 if not line or line == "--":
                     continue
                 
-                # 先尝试匹配行（冒号分隔: file:line:content）
+                # Try match line first (colon-separated: file:line:content)
                 m = _match_re.match(line)
                 if m:
                     matches.append(SearchMatch(
@@ -1096,8 +1099,8 @@ class ShellFileOperations(FileOperations):
                     ))
                     continue
                 
-                # 尝试上下文行（连字符分隔: file-line-content）
-                # 仅在请求了上下文时尝试，以避免误报
+                # Try context line (dash-separated: file-line-content)
+                # Only attempt if context was requested to avoid false positives
                 if context > 0:
                     m = _ctx_re.match(line)
                     if m:
@@ -1117,39 +1120,39 @@ class ShellFileOperations(FileOperations):
     
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
                           limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
-        """使用 grep 的回退搜索。"""
-        cmd_parts = ["grep", "-rnH"]  # -H 即使单文件搜索也强制输出文件名
+        """Fallback search using grep."""
+        cmd_parts = ["grep", "-rnH"]  # -H forces filename even for single-file searches
         
-        # 排除隐藏目录（匹配 ripgrep 的默认行为）。
-        # 防止搜索 .hub/index-cache/、.git/ 等内部目录。
+        # Exclude hidden directories (matching ripgrep's default behavior).
+        # This prevents searching inside .hub/index-cache/, .git/, etc.
         cmd_parts.append("--exclude-dir='.*'")
         
-        # 如果请求则添加上下文
+        # Add context if requested
         if context > 0:
             cmd_parts.extend(["-C", str(context)])
         
-        # 添加文件模式过滤器（必须加引号以防止 shell 展开）
+        # Add file pattern filter (must be quoted to prevent shell expansion)
         if file_glob:
             cmd_parts.extend(["--include", self._escape_shell_arg(file_glob)])
         
-        # 输出模式处理
+        # Output mode handling
         if output_mode == "files_only":
             cmd_parts.append("-l")
         elif output_mode == "count":
             cmd_parts.append("-c")
         
-        # 添加模式和路径
+        # Add pattern and path
         cmd_parts.append(self._escape_shell_arg(pattern))
         cmd_parts.append(self._escape_shell_arg(path))
         
-        # 多获取一些以便在切片前计算总数
+        # Fetch generously so we can compute total before slicing
         fetch_limit = limit + offset + (200 if context > 0 else 0)
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
         
         cmd = " ".join(cmd_parts)
         result = self._exec(cmd, timeout=60)
         
-        # grep 退出码: 0=找到匹配, 1=无匹配, 2=错误
+        # grep exit codes: 0=matches found, 1=no matches, 2=error
         if result.exit_code == 2 and not result.stdout.strip():
             error_msg = result.stderr.strip() if hasattr(result, 'stderr') and result.stderr else "Search error"
             return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
@@ -1173,11 +1176,11 @@ class ShellFileOperations(FileOperations):
             return SearchResult(counts=counts, total_count=sum(counts.values()))
         
         else:
-            # grep 匹配行:   "file:lineno:content"（冒号）
-            # grep 上下文行: "file-lineno-content" （连字符）
-            # grep 组分隔:    "--"
-            # 注意: 在 Windows 上，路径包含驱动器号（如 C:\path），
-            # 所以简单的 split(":") 会出错。使用正则表达式处理两个平台。
+            # grep match lines:   "file:lineno:content" (colon)
+            # grep context lines: "file-lineno-content"  (dash)
+            # grep group seps:    "--"
+            # Note: on Windows, paths contain drive letters (e.g. C:\path),
+            # so naive split(":") breaks. Use regex to handle both platforms.
             _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
             _ctx_re = re.compile(r'^([A-Za-z]:)?(.*?)-(\d+)-(.*)$')
             matches = []

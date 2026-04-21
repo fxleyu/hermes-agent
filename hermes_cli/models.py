@@ -1,8 +1,8 @@
 """
-规范的模型目录和轻量级验证辅助工具。
+Canonical model catalogs and lightweight validation helpers.
 
-在此处添加、删除或重新排序条目 —— ``hermes setup`` 和
-``hermes`` 提供商选择都会自动获取更改。
+Add, remove, or reorder entries here — both `hermes setup` and
+`hermes` provider-selection will pick up the change automatically.
 """
 
 from __future__ import annotations
@@ -16,6 +16,12 @@ from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
 
+from hermes_cli import __version__ as _HERMES_VERSION
+
+# Identify ourselves so endpoints fronted by Cloudflare's Browser Integrity
+# Check (error 1010) don't reject the default ``Python-urllib/*`` signature.
+_HERMES_USER_AGENT = f"hermes-cli/{_HERMES_VERSION}"
+
 COPILOT_BASE_URL = "https://api.githubcopilot.com"
 COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
 COPILOT_EDITOR_VERSION = "vscode/1.104.1"
@@ -23,10 +29,11 @@ COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
 COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 
 
-# 当在线目录不可用时使用的 OpenRouter 回退快照。
-# (模型 ID, 菜单中显示的描述)
+# Fallback OpenRouter snapshot used when the live catalog is unavailable.
+# (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
-    ("anthropic/claude-opus-4.7",       "recommended"),
+    ("moonshotai/kimi-k2.6",            "recommended"),
+    ("anthropic/claude-opus-4.7",       ""),
     ("anthropic/claude-opus-4.6",       ""),
     ("anthropic/claude-sonnet-4.6",     ""),
     ("qwen/qwen3.6-plus",               ""),
@@ -49,7 +56,6 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("z-ai/glm-5.1",                    ""),
     ("z-ai/glm-5v-turbo",               ""),
     ("z-ai/glm-5-turbo",                ""),
-    ("moonshotai/kimi-k2.5",            ""),
     ("x-ai/grok-4.20",                  ""),
     ("nvidia/nemotron-3-super-120b-a12b",      ""),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
@@ -62,12 +68,37 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
 
 
-def _codex_curated_models() -> list[str]:
-    """从 codex_models.py 派生 openai-codex 的精选列表。
+# Fallback Vercel AI Gateway snapshot used when the live catalog is unavailable.
+# OSS / open-weight models prioritized first, then closed-source by family.
+# Slugs match Vercel's actual /v1/models catalog (e.g. alibaba/ for Qwen,
+# zai/ and xai/ without hyphens).
+VERCEL_AI_GATEWAY_MODELS: list[tuple[str, str]] = [
+    ("moonshotai/kimi-k2.6",                 "recommended"),
+    ("alibaba/qwen3.6-plus",                 ""),
+    ("zai/glm-5.1",                          ""),
+    ("minimax/minimax-m2.7",                 ""),
+    ("anthropic/claude-sonnet-4.6",          ""),
+    ("anthropic/claude-opus-4.7",            ""),
+    ("anthropic/claude-opus-4.6",            ""),
+    ("anthropic/claude-haiku-4.5",           ""),
+    ("openai/gpt-5.4",                       ""),
+    ("openai/gpt-5.4-mini",                  ""),
+    ("openai/gpt-5.3-codex",                 ""),
+    ("google/gemini-3.1-pro-preview",        ""),
+    ("google/gemini-3-flash",                ""),
+    ("google/gemini-3.1-flash-lite-preview", ""),
+    ("xai/grok-4.20-reasoning",              ""),
+]
 
-    单一事实来源：DEFAULT_CODEX_MODELS + 前向兼容合成。
-    这使网关 /model 选择器与 CLI `hermes model` 流程保持同步，
-    无需维护单独的静态列表。
+_ai_gateway_catalog_cache: list[tuple[str, str]] | None = None
+
+
+def _codex_curated_models() -> list[str]:
+    """Derive the openai-codex curated list from codex_models.py.
+
+    Single source of truth: DEFAULT_CODEX_MODELS + forward-compat synthesis.
+    This keeps the gateway /model picker in sync with the CLI `hermes model`
+    flow without maintaining a separate static list.
     """
     from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, _add_forward_compat_models
     return _add_forward_compat_models(list(DEFAULT_CODEX_MODELS))
@@ -75,6 +106,7 @@ def _codex_curated_models() -> list[str]:
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
+        "moonshotai/kimi-k2.6",
         "xiaomi/mimo-v2-pro",
         "anthropic/claude-opus-4.7",
         "anthropic/claude-opus-4.6",
@@ -96,7 +128,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "z-ai/glm-5.1",
         "z-ai/glm-5v-turbo",
         "z-ai/glm-5-turbo",
-        "moonshotai/kimi-k2.5",
         "x-ai/grok-4.20-beta",
         "nvidia/nemotron-3-super-120b-a12b",
         "nvidia/nemotron-3-super-120b-a12b:free",
@@ -128,19 +159,14 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "gemini": [
         "gemini-3.1-pro-preview",
+        "gemini-3-pro-preview",
         "gemini-3-flash-preview",
         "gemini-3.1-flash-lite-preview",
-        "gemini-2.5-pro",
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-        # Gemma 开源模型（也通过 AI Studio 提供服务）
-        "gemma-4-31b-it",
-        "gemma-4-26b-it",
     ],
     "google-gemini-cli": [
-        "gemini-2.5-pro",
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
+        "gemini-3.1-pro-preview",
+        "gemini-3-pro-preview",
+        "gemini-3-flash-preview",
     ],
     "zai": [
         "glm-5.1",
@@ -155,21 +181,38 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "grok-4.20-reasoning",
         "grok-4-1-fast-reasoning",
     ],
+    "nvidia": [
+        # NVIDIA flagship reasoning models
+        "nvidia/nemotron-3-super-120b-a12b",
+        "nvidia/nemotron-3-nano-30b-a3b",
+        "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+        # Third-party agentic models hosted on build.nvidia.com
+        # (map to OpenRouter defaults — users get familiar picks on NIM)
+        "qwen/qwen3.5-397b-a17b",
+        "deepseek-ai/deepseek-v3.2",
+        "moonshotai/kimi-k2.6",
+        "minimaxai/minimax-m2.5",
+        "z-ai/glm5",
+        "openai/gpt-oss-120b",
+    ],
     "kimi-coding": [
-        "kimi-for-coding",
+        "kimi-k2.6",
         "kimi-k2.5",
+        "kimi-for-coding",
         "kimi-k2-thinking",
         "kimi-k2-thinking-turbo",
         "kimi-k2-turbo-preview",
         "kimi-k2-0905-preview",
     ],
     "kimi-coding-cn": [
+        "kimi-k2.6",
         "kimi-k2.5",
         "kimi-k2-thinking",
         "kimi-k2-turbo-preview",
         "kimi-k2-0905-preview",
     ],
     "moonshot": [
+        "kimi-k2.6",
         "kimi-k2.5",
         "kimi-k2-thinking",
         "kimi-k2-turbo-preview",
@@ -212,10 +255,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "trinity-mini",
     ],
     "opencode-zen": [
+        "kimi-k2.5",
         "gpt-5.4-pro",
         "gpt-5.4",
         "gpt-5.3-codex",
-        "gpt-5.3-codex-spark",
         "gpt-5.2",
         "gpt-5.2-codex",
         "gpt-5.1",
@@ -243,34 +286,22 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-5",
         "glm-4.7",
         "glm-4.6",
-        "kimi-k2.5",
         "kimi-k2-thinking",
         "kimi-k2",
         "qwen3-coder",
         "big-pickle",
     ],
     "opencode-go": [
+        "kimi-k2.6",
+        "kimi-k2.5",
         "glm-5.1",
         "glm-5",
-        "kimi-k2.5",
         "mimo-v2-pro",
         "mimo-v2-omni",
         "minimax-m2.7",
         "minimax-m2.5",
-    ],
-    "ai-gateway": [
-        "anthropic/claude-opus-4.6",
-        "anthropic/claude-sonnet-4.6",
-        "anthropic/claude-sonnet-4.5",
-        "anthropic/claude-haiku-4.5",
-        "openai/gpt-5",
-        "openai/gpt-4.1",
-        "openai/gpt-4.1-mini",
-        "google/gemini-3-pro-preview",
-        "google/gemini-3-flash",
-        "google/gemini-2.5-pro",
-        "google/gemini-2.5-flash",
-        "deepseek/deepseek-v3.2",
+        "qwen3.6-plus",
+        "qwen3.5-plus",
     ],
     "kilocode": [
         "anthropic/claude-opus-4.6",
@@ -279,35 +310,37 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
     ],
-    # 阿里巴巴 DashScope 编码平台 (coding-intl) — 默认端点。
-    # 支持 Qwen 模型 + 第三方提供商（GLM、Kimi、MiniMax）。
-    # 使用传统 DashScope 密钥的用户应将 DASHSCOPE_BASE_URL 覆盖为
-    # https://dashscope-intl.aliyuncs.com/compatible-mode/v1（OpenAI 兼容）
-    # 或 https://dashscope-intl.aliyuncs.com/apps/anthropic（Anthropic 兼容）。
+    # Alibaba DashScope Coding platform (coding-intl) — default endpoint.
+    # Supports Qwen models + third-party providers (GLM, Kimi, MiniMax).
+    # Users with classic DashScope keys should override DASHSCOPE_BASE_URL
+    # to https://dashscope-intl.aliyuncs.com/compatible-mode/v1 (OpenAI-compat)
+    # or https://dashscope-intl.aliyuncs.com/apps/anthropic (Anthropic-compat).
     "alibaba": [
+        "kimi-k2.5",
         "qwen3.5-plus",
         "qwen3-coder-plus",
         "qwen3-coder-next",
-        # 编码国际版上可用的第三方模型
+        # Third-party models available on coding-intl
         "glm-5",
         "glm-4.7",
-        "kimi-k2.5",
         "MiniMax-M2.5",
     ],
-    # 精选的 HF 模型列表 — 仅包含映射到 OpenRouter 默认值的智能体模型。
+    # Curated HF model list — only agentic models that map to OpenRouter defaults.
     "huggingface": [
+        "moonshotai/Kimi-K2.5",
         "Qwen/Qwen3.5-397B-A17B",
         "Qwen/Qwen3.5-35B-A3B",
         "deepseek-ai/DeepSeek-V3.2",
-        "moonshotai/Kimi-K2.5",
         "MiniMaxAI/MiniMax-M2.5",
         "zai-org/GLM-5",
         "XiaomiMiMo/MiMo-V2-Flash",
         "moonshotai/Kimi-K2-Thinking",
+        "moonshotai/Kimi-K2.6",
     ],
-    # AWS Bedrock — 当动态发现不可用时（无 boto3、无凭证或 API 错误）使用的静态回退列表。
-    # 智能体优先通过 ListFoundationModels + ListInferenceProfiles 进行实时发现。
-    # 使用推理配置文件 ID（us.*），因为大多数模型需要它们。
+    # AWS Bedrock — static fallback list used when dynamic discovery is
+    # unavailable (no boto3, no credentials, or API error).  The agent
+    # prefers live discovery via ListFoundationModels + ListInferenceProfiles.
+    # Use inference profile IDs (us.*) since most models require them.
     "bedrock": [
         "us.anthropic.claude-sonnet-4-6",
         "us.anthropic.claude-opus-4-6-v1",
@@ -322,14 +355,20 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
 }
 
+# Vercel AI Gateway: derive the bare-model-id catalog from the curated
+# ``VERCEL_AI_GATEWAY_MODELS`` snapshot so both the picker (tuples with descriptions)
+# and the static fallback catalog (bare ids) stay in sync from a single
+# source of truth.
+_PROVIDER_MODELS["ai-gateway"] = [mid for mid, _ in VERCEL_AI_GATEWAY_MODELS]
+
 # ---------------------------------------------------------------------------
-# Nous Portal 免费模型过滤
+# Nous Portal free-model filtering
 # ---------------------------------------------------------------------------
-# 在 Nous Portal 上标记为免费时，允许出现的模型列表。
-# 其他任何免费模型都会被隐藏 — 防止促销/临时免费模型
-# 在用户是付费订阅者时干扰选择界面。
-# 此列表中的模型如果不是免费的也会被过滤掉（即它们只应
-# 在真正免费时出现在菜单中）。
+# Models that are ALLOWED to appear when priced as free on Nous Portal.
+# Any other free model is hidden — prevents promotional/temporary free models
+# from cluttering the selection when users are paying subscribers.
+# Models in this list are ALSO filtered out if they are NOT free (i.e. they
+# should only appear in the menu when they are genuinely free).
 _NOUS_ALLOWED_FREE_MODELS: frozenset[str] = frozenset({
     "xiaomi/mimo-v2-pro",
     "xiaomi/mimo-v2-omni",
@@ -337,7 +376,7 @@ _NOUS_ALLOWED_FREE_MODELS: frozenset[str] = frozenset({
 
 
 def _is_model_free(model_id: str, pricing: dict[str, dict[str, str]]) -> bool:
-    """当 *model_id* 的提示和补全定价均为零时返回 True。"""
+    """Return True if *model_id* has zero-cost prompt AND completion pricing."""
     p = pricing.get(model_id)
     if not p:
         return False
@@ -351,41 +390,41 @@ def filter_nous_free_models(
     model_ids: list[str],
     pricing: dict[str, dict[str, str]],
 ) -> list[str]:
-    """根据免费模型策略过滤 Nous Portal 模型列表。
+    """Filter the Nous Portal model list according to free-model policy.
 
-    规则：
-      * 不在允许列表中的付费模型 -> 保留（正常情况）。
-      * 不在允许列表中的免费模型 -> 移除。
-      * 在允许列表中且确实免费的模型 -> 保留。
-      * 在允许列表中但不免费的模型 -> 移除。
+    Rules:
+      • Paid models that are NOT in the allowlist → keep (normal case).
+      • Free models that are NOT in the allowlist → drop.
+      • Allowlist models that ARE free → keep.
+      • Allowlist models that are NOT free → drop.
     """
     if not pricing:
-        return model_ids  # 无定价数据——无法过滤，显示全部
+        return model_ids  # no pricing data — can't filter, show everything
 
     result: list[str] = []
     for mid in model_ids:
         free = _is_model_free(mid, pricing)
         if mid in _NOUS_ALLOWED_FREE_MODELS:
-            # 允许列表中的模型：仅在实际免费时显示
+            # Allowlist model: only show when it's actually free
             if free:
                 result.append(mid)
         else:
-            # 常规模型：仅在非免费时保留
+            # Regular model: keep only when it's NOT free
             if not free:
                 result.append(mid)
     return result
 
 
 # ---------------------------------------------------------------------------
-# Nous Portal 账户等级检测
+# Nous Portal account tier detection
 # ---------------------------------------------------------------------------
 
 def fetch_nous_account_tier(access_token: str, portal_base_url: str = "") -> dict[str, Any]:
-    """获取用户的 Nous Portal 账户/订阅信息。
+    """Fetch the user's Nous Portal account/subscription info.
 
-    使用 OAuth 访问令牌调用 ``<portal>/api/oauth/account``。
+    Calls ``<portal>/api/oauth/account`` with the OAuth access token.
 
-    成功时返回解析后的 JSON 字典，例如::
+    Returns the parsed JSON dict on success, e.g.::
 
         {
             "subscription": {
@@ -398,7 +437,7 @@ def fetch_nous_account_tier(access_token: str, portal_base_url: str = "") -> dic
             ...
         }
 
-    任何失败情况（网络、认证、解析）均返回空字典。
+    Returns an empty dict on any failure (network, auth, parse).
     """
     base = (portal_base_url or "https://portal.nousresearch.com").rstrip("/")
     url = f"{base}/api/oauth/account"
@@ -415,10 +454,10 @@ def fetch_nous_account_tier(access_token: str, portal_base_url: str = "") -> dic
 
 
 def is_nous_free_tier(account_info: dict[str, Any]) -> bool:
-    """当账户信息表明是免费（未付费）等级时返回 True。
+    """Return True if the account info indicates a free (unpaid) tier.
 
-    检查 ``subscription.monthly_charge == 0``。当字段缺失
-    或无法解析时返回 False（假定为付费——不阻止用户）。
+    Checks ``subscription.monthly_charge == 0``.  Returns False when
+    the field is missing or unparseable (assumes paid — don't block users).
     """
     sub = account_info.get("subscription")
     if not isinstance(sub, dict):
@@ -437,19 +476,19 @@ def partition_nous_models_by_tier(
     pricing: dict[str, dict[str, str]],
     free_tier: bool,
 ) -> tuple[list[str], list[str]]:
-    """根据用户等级将 Nous 模型拆分为（可选的, 不可用的）。
+    """Split Nous models into (selectable, unavailable) based on user tier.
 
-    付费等级用户：所有模型均可选，无不可用模型
-    （免费模型过滤由 ``filter_nous_free_models`` 单独处理）。
+    For paid-tier users: all models are selectable, none unavailable
+    (free-model filtering is handled separately by ``filter_nous_free_models``).
 
-    免费等级用户：仅免费模型可选；付费模型
-    作为不可用返回（在菜单中灰显）。
+    For free-tier users: only free models are selectable; paid models
+    are returned as unavailable (shown grayed out in the menu).
     """
     if not free_tier:
         return (model_ids, [])
 
     if not pricing:
-        return (model_ids, [])  # 无法判断，显示全部
+        return (model_ids, [])  # can't determine, show everything
 
     selectable: list[str] = []
     unavailable: list[str] = []
@@ -462,24 +501,23 @@ def partition_nous_models_by_tier(
 
 
 # ---------------------------------------------------------------------------
-# 免费等级检测的 TTL 缓存 — 避免在同一会话中重复 API 调用，
-# 同时仍能快速获取升级信息。
+# TTL cache for free-tier detection — avoids repeated API calls within a
+# session while still picking up upgrades quickly.
 # ---------------------------------------------------------------------------
-_FREE_TIER_CACHE_TTL: int = 180  # 秒（3 分钟）
-_free_tier_cache: tuple[bool, float] | None = None  # (结果, 时间戳)
+_FREE_TIER_CACHE_TTL: int = 180  # seconds (3 minutes)
+_free_tier_cache: tuple[bool, float] | None = None  # (result, timestamp)
 
 
 def check_nous_free_tier() -> bool:
-    """检查当前 Nous Portal 用户是否为免费（未付费）等级。
+    """Check if the current Nous Portal user is on a free (unpaid) tier.
 
-    结果缓存 ``_FREE_TIER_CACHE_TTL`` 秒，以避免每次调用都请求
-    Portal API。缓存生命周期较短，以便账户升级能在几分钟内反映。
+    Results are cached for ``_FREE_TIER_CACHE_TTL`` seconds to avoid
+    hitting the Portal API on every call.  The cache is short-lived so
+    that an account upgrade is reflected within a few minutes.
 
-    任何错误时返回 False（假定为付费）——绝不阻止付费用户。
+    Returns False (assume paid) on any error — never blocks paying users.
     """
     global _free_tier_cache
-    import time
-
     now = time.monotonic()
     if _free_tier_cache is not None:
         cached_result, cached_at = _free_tier_cache
@@ -489,7 +527,7 @@ def check_nous_free_tier() -> bool:
     try:
         from hermes_cli.auth import get_provider_auth_state, resolve_nous_runtime_credentials
 
-        # 确保有新鲜的令牌（如需要则触发刷新）
+        # Ensure we have a fresh token (triggers refresh if needed)
         resolve_nous_runtime_credentials(min_key_ttl_seconds=60)
 
         state = get_provider_auth_state("nous")
@@ -508,37 +546,39 @@ def check_nous_free_tier() -> bool:
         return result
     except Exception:
         _free_tier_cache = (False, now)
-        return False  # 出错时默认为付费——不阻止用户
+        return False  # default to paid on error — don't block users
 
 
 # ---------------------------------------------------------------------------
-# 规范提供商列表 — 提供商身份的单一事实来源。
-# 每个列出、显示或遍历提供商的代码路径都来源于此列表：
-# hermes model、/model、/provider、list_authenticated_providers。
+# Canonical provider list — single source of truth for provider identity.
+# Every code path that lists, displays, or iterates providers derives from
+# this list:  hermes model, /model, /provider, list_authenticated_providers.
 #
-# 字段：
-#   slug        — 内部提供商 ID（用于 config.yaml、--provider 标志）
-#   label       — 简短的显示名称
-#   tui_desc    — `hermes model` 交互式选择器的详细描述
+# Fields:
+#   slug        — internal provider ID (used in config.yaml, --provider flag)
+#   label       — short display name
+#   tui_desc    — longer description for the `hermes model` interactive picker
 # ---------------------------------------------------------------------------
 
 class ProviderEntry(NamedTuple):
     slug: str
     label: str
-    tui_desc: str   # `hermes model` TUI 的详细描述
+    tui_desc: str   # detailed description for `hermes model` TUI
 
 
 CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Nous Research subscription)"),
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (100+ models, pay-per-use)"),
+    ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway (200+ models, $5 free credit, no markup)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models — API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2 models — pro, omni, flash)"),
+    ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models — build.nvidia.com or local NIM)"),
     ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (reuses local Qwen CLI login)"),
     ProviderEntry("copilot",        "GitHub Copilot",           "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
     ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers (20+ open models)"),
-    ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Gemini models — OpenAI-compatible endpoint)"),
+    ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Gemini models — native Gemini API)"),
     ProviderEntry("google-gemini-cli", "Google Gemini (OAuth)",   "Google Gemini via OAuth + Code Assist (free tier supported; no API key needed)"),
     ProviderEntry("deepseek",       "DeepSeek",                 "DeepSeek (DeepSeek-V3, R1, coder — direct API)"),
     ProviderEntry("xai",            "xAI",                      "xAI (Grok models — direct API)"),
@@ -553,13 +593,12 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("kilocode",       "Kilo Code",                "Kilo Code (Kilo Gateway API)"),
     ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (35+ curated models, pay-as-you-go)"),
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
-    ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway (200+ models, pay-per-use)"),
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek — IAM or API key)"),
 ]
 
-# 派生字典 — 在整个代码库中使用
+# Derived dicts — used throughout the codebase
 _PROVIDER_LABELS = {p.slug: p.label for p in CANONICAL_PROVIDERS}
-_PROVIDER_LABELS["custom"] = "Custom endpoint"  # 特殊情况：不是命名提供商
+_PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
 
 
 _PROVIDER_ALIASES = {
@@ -616,26 +655,31 @@ _PROVIDER_ALIASES = {
     "grok": "xai",
     "x-ai": "xai",
     "x.ai": "xai",
-    "ollama": "custom",  # 裸 "ollama" = 本地；云端请用 "ollama-cloud"
+    "nim": "nvidia",
+    "nvidia-nim": "nvidia",
+    "build-nvidia": "nvidia",
+    "nemotron": "nvidia",
+    "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
 }
 
 
 def get_default_model_for_provider(provider: str) -> str:
-    """返回提供商的默认模型，未知时返回空字符串。
+    """Return the default model for a provider, or empty string if unknown.
 
-    使用 _PROVIDER_MODELS 中的第一个条目作为默认值。这是
-    用户在 ``hermes model`` 选择器中首先看到的模型。
+    Uses the first entry in _PROVIDER_MODELS as the default.  This is the
+    model a user would be offered first in the ``hermes model`` picker.
 
-    当用户配置了提供商但从未选择模型时用作回退
-    （例如 ``hermes auth add openai-codex`` 但未执行 ``hermes model``）。
+    Used as a fallback when the user has configured a provider but never
+    selected a model (e.g. ``hermes auth add openai-codex`` without
+    ``hermes model``).
     """
     models = _PROVIDER_MODELS.get(provider, [])
     return models[0] if models else ""
 
 
 def _openrouter_model_is_free(pricing: Any) -> bool:
-    """当提示和补全定价均为零时返回 True。"""
+    """Return True when both prompt and completion pricing are zero."""
     if not isinstance(pricing, dict):
         return False
     try:
@@ -644,12 +688,37 @@ def _openrouter_model_is_free(pricing: Any) -> bool:
         return False
 
 
+def _openrouter_model_supports_tools(item: Any) -> bool:
+    """Return True when the model's ``supported_parameters`` advertise tool calling.
+
+    hermes-agent is tool-calling-first — every provider path assumes the model
+    can invoke tools. Models that don't advertise ``tools`` in their
+    ``supported_parameters`` (e.g. image-only or completion-only models) cannot
+    be driven by the agent loop and would fail at the first tool call.
+
+    **Permissive when the field is missing.** Some OpenRouter-compatible gateways
+    (Nous Portal, private mirrors, older catalog snapshots) don't populate
+    ``supported_parameters`` at all. Treat that as "unknown capability → allow"
+    so the picker doesn't silently empty for those users. Only hide models
+    whose ``supported_parameters`` is an explicit list that omits ``tools``.
+
+    Ported from Kilo-Org/kilocode#9068.
+    """
+    if not isinstance(item, dict):
+        return True
+    params = item.get("supported_parameters")
+    if not isinstance(params, list):
+        # Field absent / malformed / None — be permissive.
+        return True
+    return "tools" in params
+
+
 def fetch_openrouter_models(
     timeout: float = 8.0,
     *,
     force_refresh: bool = False,
 ) -> list[tuple[str, str]]:
-    """返回精选的 OpenRouter 选择列表，尽可能从在线目录刷新。"""
+    """Return the curated OpenRouter picker list, refreshed from the live catalog when possible."""
     global _openrouter_catalog_cache
 
     if _openrouter_catalog_cache is not None and not force_refresh:
@@ -686,6 +755,11 @@ def fetch_openrouter_models(
         live_item = live_by_id.get(preferred_id)
         if live_item is None:
             continue
+        # Hide models that don't advertise tool-calling support — hermes-agent
+        # requires it and surfacing them leads to immediate runtime failures
+        # when the user selects them. Ported from Kilo-Org/kilocode#9068.
+        if not _openrouter_model_supports_tools(live_item):
+            continue
         desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
         curated.append((preferred_id, desc))
 
@@ -699,33 +773,120 @@ def fetch_openrouter_models(
 
 
 def model_ids(*, force_refresh: bool = False) -> list[str]:
-    """仅返回 OpenRouter 模型 ID 字符串。"""
+    """Return just the OpenRouter model-id strings."""
     return [mid for mid, _ in fetch_openrouter_models(force_refresh=force_refresh)]
 
 
+def _ai_gateway_model_is_free(pricing: Any) -> bool:
+    """Return True if an AI Gateway model has $0 input AND output pricing."""
+    if not isinstance(pricing, dict):
+        return False
+    try:
+        return float(pricing.get("input", "0")) == 0 and float(pricing.get("output", "0")) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def fetch_ai_gateway_models(
+    timeout: float = 8.0,
+    *,
+    force_refresh: bool = False,
+) -> list[tuple[str, str]]:
+    """Return the curated AI Gateway picker list, refreshed from the live catalog when possible."""
+    global _ai_gateway_catalog_cache
+
+    if _ai_gateway_catalog_cache is not None and not force_refresh:
+        return list(_ai_gateway_catalog_cache)
+
+    from hermes_constants import AI_GATEWAY_BASE_URL
+
+    fallback = list(VERCEL_AI_GATEWAY_MODELS)
+    preferred_ids = [mid for mid, _ in fallback]
+
+    try:
+        req = urllib.request.Request(
+            f"{AI_GATEWAY_BASE_URL.rstrip('/')}/models",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        return list(_ai_gateway_catalog_cache or fallback)
+
+    live_items = payload.get("data", [])
+    if not isinstance(live_items, list):
+        return list(_ai_gateway_catalog_cache or fallback)
+
+    live_by_id: dict[str, dict[str, Any]] = {}
+    for item in live_items:
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("id") or "").strip()
+        if not mid:
+            continue
+        live_by_id[mid] = item
+
+    curated: list[tuple[str, str]] = []
+    for preferred_id in preferred_ids:
+        live_item = live_by_id.get(preferred_id)
+        if live_item is None:
+            continue
+        desc = "free" if _ai_gateway_model_is_free(live_item.get("pricing")) else ""
+        curated.append((preferred_id, desc))
+
+    if not curated:
+        return list(_ai_gateway_catalog_cache or fallback)
+
+    # If the live catalog offers a free Moonshot model, auto-promote it to
+    # position #1 as "recommended" — dynamic discovery without a PR.
+    free_moonshot = next(
+        (
+            mid
+            for mid, item in live_by_id.items()
+            if mid.startswith("moonshotai/")
+            and _ai_gateway_model_is_free(item.get("pricing"))
+        ),
+        None,
+    )
+    if free_moonshot:
+        curated = [(mid, desc) for mid, desc in curated if mid != free_moonshot]
+        curated.insert(0, (free_moonshot, "recommended"))
+    else:
+        first_id, _ = curated[0]
+        curated[0] = (first_id, "recommended")
+
+    _ai_gateway_catalog_cache = curated
+    return list(curated)
+
+
+def ai_gateway_model_ids(*, force_refresh: bool = False) -> list[str]:
+    """Return just the AI Gateway model-id strings."""
+    return [mid for mid, _ in fetch_ai_gateway_models(force_refresh=force_refresh)]
+
+
 
 
 # ---------------------------------------------------------------------------
-# 定价辅助工具 — 从 OpenRouter 兼容的 /v1/models 获取实时定价
+# Pricing helpers — fetch live pricing from OpenRouter-compatible /v1/models
 # ---------------------------------------------------------------------------
 
-# 缓存：按端点将 model_id 映射为 {"prompt": str, "completion": str}
+# Cache: maps model_id → {"prompt": str, "completion": str} per endpoint
 _pricing_cache: dict[str, dict[str, dict[str, str]]] = {}
 
 
 def _format_price_per_mtok(per_token_str: str) -> str:
-    """将每 token 价格字符串转换为人类友好的 $/Mtok 字符串。
+    """Convert a per-token price string to a human-friendly $/Mtok string.
 
-    始终使用 2 位小数，以便在列中右对齐时价格垂直对齐
-    （小数点保持在同一位置）。
+    Always uses 2 decimal places so that prices align vertically when
+    right-justified in a column (the decimal point stays in the same position).
 
-    示例:
-        "0.000003"   -> "$3.00"      (每百万 token)
-        "0.00003"    -> "$30.00"
-        "0.00000015" -> "$0.15"
-        "0.0000001"  -> "$0.10"
-        "0.00018"    -> "$180.00"
-        "0"          -> "free"
+    Examples:
+        "0.000003"   → "$3.00"      (per million tokens)
+        "0.00003"    → "$30.00"
+        "0.00000015" → "$0.15"
+        "0.0000001"  → "$0.10"
+        "0.00018"    → "$180.00"
+        "0"          → "free"
     """
     try:
         val = float(per_token_str)
@@ -743,15 +904,15 @@ def format_model_pricing_table(
     current_model: str = "",
     indent: str = "      ",
 ) -> list[str]:
-    """构建列对齐的模型+定价表，用于终端显示。
+    """Build a column-aligned model+pricing table for terminal display.
 
-    返回预格式化的行列表，可直接打印。
-    *models* 格式为 ``[(model_id, description), ...]``。
+    Returns a list of pre-formatted lines ready to print.
+    *models* is ``[(model_id, description), ...]``.
     """
     if not models:
         return []
 
-    # 构建行: (model_id, input_price, output_price, cache_price, is_current)
+    # Build rows: (model_id, input_price, output_price, cache_price, is_current)
     rows: list[tuple[str, str, str, str, bool]] = []
     has_cache = False
     for mid, _desc in models:
@@ -769,19 +930,19 @@ def format_model_pricing_table(
         rows.append((mid, inp, out, cache, is_cur))
 
     name_col = max(len(r[0]) for r in rows) + 2
-    # 根据实际数据计算价格列宽度，以便小数点对齐
+    # Compute price column widths from the actual data so decimals align
     price_col = max(
         max((len(r[1]) for r in rows if r[1]), default=4),
         max((len(r[2]) for r in rows if r[2]), default=4),
-        3,  # 最小值: "In" / "Out" 表头
+        3,  # minimum: "In" / "Out" header
     )
     cache_col = max(
         max((len(r[3]) for r in rows if r[3]), default=4),
-        5,  # 最小值: "Cache" 表头
+        5,  # minimum: "Cache" header
     ) if has_cache else 0
     lines: list[str] = []
 
-    # 表头
+    # Header
     if has_cache:
         lines.append(f"{indent}{'Model':<{name_col}} {'In':>{price_col}}  {'Out':>{price_col}}  {'Cache':>{cache_col}}  /Mtok")
         lines.append(f"{indent}{'-' * name_col} {'-' * price_col}  {'-' * price_col}  {'-' * cache_col}")
@@ -806,10 +967,10 @@ def fetch_models_with_pricing(
     *,
     force_refresh: bool = False,
 ) -> dict[str, dict[str, str]]:
-    """获取 ``/v1/models`` 并返回 ``{model_id: {prompt, completion}}`` 定价。
+    """Fetch ``/v1/models`` and return ``{model_id: {prompt, completion}}`` pricing.
 
-    结果按 *base_url* 缓存，因此重复调用无开销。
-    适用于任何 OpenRouter 兼容端点（OpenRouter、Nous Portal）。
+    Results are cached per *base_url* so repeated calls are free.
+    Works with any OpenRouter-compatible endpoint (OpenRouter, Nous Portal).
     """
     cache_key = (base_url or "").rstrip("/")
     if not force_refresh and cache_key in _pricing_cache:
@@ -847,13 +1008,63 @@ def fetch_models_with_pricing(
     return result
 
 
+def fetch_ai_gateway_pricing(
+    timeout: float = 8.0,
+    *,
+    force_refresh: bool = False,
+) -> dict[str, dict[str, str]]:
+    """Fetch Vercel AI Gateway /v1/models and return hermes-shaped pricing.
+
+    Vercel uses ``input`` / ``output`` field names; hermes's picker expects
+    ``prompt`` / ``completion``. This translates. Cache read/write field names
+    already match.
+    """
+    from hermes_constants import AI_GATEWAY_BASE_URL
+
+    cache_key = AI_GATEWAY_BASE_URL.rstrip("/")
+    if not force_refresh and cache_key in _pricing_cache:
+        return _pricing_cache[cache_key]
+
+    try:
+        req = urllib.request.Request(
+            f"{cache_key}/models",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        _pricing_cache[cache_key] = {}
+        return {}
+
+    result: dict[str, dict[str, str]] = {}
+    for item in payload.get("data", []):
+        if not isinstance(item, dict):
+            continue
+        mid = item.get("id")
+        pricing = item.get("pricing")
+        if not (mid and isinstance(pricing, dict)):
+            continue
+        entry: dict[str, str] = {
+            "prompt": str(pricing.get("input", "")),
+            "completion": str(pricing.get("output", "")),
+        }
+        if pricing.get("input_cache_read"):
+            entry["input_cache_read"] = str(pricing["input_cache_read"])
+        if pricing.get("input_cache_write"):
+            entry["input_cache_write"] = str(pricing["input_cache_write"])
+        result[mid] = entry
+
+    _pricing_cache[cache_key] = result
+    return result
+
+
 def _resolve_openrouter_api_key() -> str:
-    """尽力获取用于定价查询的 OpenRouter API 密钥。"""
+    """Best-effort OpenRouter API key for pricing fetch."""
     return os.getenv("OPENROUTER_API_KEY", "").strip()
 
 
 def _resolve_nous_pricing_credentials() -> tuple[str, str]:
-    """返回 Nous Portal 定价的 ``(api_key, base_url)``，或空字符串。"""
+    """Return ``(api_key, base_url)`` for Nous Portal pricing, or empty strings."""
     try:
         from hermes_cli.auth import resolve_nous_runtime_credentials
         creds = resolve_nous_runtime_credentials()
@@ -865,7 +1076,7 @@ def _resolve_nous_pricing_credentials() -> tuple[str, str]:
 
 
 def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
-    """返回支持定价的提供商（openrouter、nous）的实时定价。"""
+    """Return live pricing for providers that support it (openrouter, nous, ai-gateway)."""
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
         return fetch_models_with_pricing(
@@ -873,11 +1084,13 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
             base_url="https://openrouter.ai/api",
             force_refresh=force_refresh,
         )
+    if normalized == "ai-gateway":
+        return fetch_ai_gateway_pricing(force_refresh=force_refresh)
     if normalized == "nous":
         api_key, base_url = _resolve_nous_pricing_credentials()
         if base_url:
-            # Nous 的 base_url 通常形如 https://inference-api.nousresearch.com/v1
-            # 我们的获取函数需要 /v1 之前的部分
+            # Nous base_url typically looks like https://inference-api.nousresearch.com/v1
+            # We need the part before /v1 for our fetch function
             stripped = base_url.rstrip("/")
             if stripped.endswith("/v1"):
                 stripped = stripped[:-3]
@@ -889,7 +1102,7 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
     return {}
 
 
-# 所有对 provider:model 语法有效的提供商 ID 和别名。
+# All provider IDs and aliases that are valid for the provider:model syntax.
 _KNOWN_PROVIDER_NAMES: set[str] = (
     set(_PROVIDER_LABELS.keys())
     | set(_PROVIDER_ALIASES.keys())
@@ -898,18 +1111,18 @@ _KNOWN_PROVIDER_NAMES: set[str] = (
 
 
 def list_available_providers() -> list[dict[str, str]]:
-    """返回用户可通过 ``provider:model`` 使用的所有提供商信息。
+    """Return info about all providers the user could use with ``provider:model``.
 
-    每个字典包含 ``id``、``label`` 和 ``aliases``。
-    检查哪些提供商已配置有效凭证。
+    Each dict has ``id``, ``label``, and ``aliases``.
+    Checks which providers have valid credentials configured.
 
-    提供商列表来源于 :data:`CANONICAL_PROVIDERS`（与
-    ``hermes model``、``/model`` 等共享的单一事实来源）。
+    Derives the provider list from :data:`CANONICAL_PROVIDERS` (single
+    source of truth shared with ``hermes model``, ``/model``, etc.).
     """
-    # 从规范列表 + custom 派生显示顺序
+    # Derive display order from canonical list + custom
     provider_order = [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]
 
-    # 构建反向别名映射
+    # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}
     for alias, canonical in _PROVIDER_ALIASES.items():
         aliases_for.setdefault(canonical, []).append(alias)
@@ -918,7 +1131,7 @@ def list_available_providers() -> list[dict[str, str]]:
     for pid in provider_order:
         label = _PROVIDER_LABELS.get(pid, pid)
         alias_list = aliases_for.get(pid, [])
-        # 检查此提供商是否有可用凭证
+        # Check if this provider has credentials available
         has_creds = False
         try:
             from hermes_cli.auth import get_auth_status, has_usable_secret
@@ -942,21 +1155,21 @@ def list_available_providers() -> list[dict[str, str]]:
 
 
 def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
-    """解析 ``/model`` 输入为 ``(provider, model)``。
+    """Parse ``/model`` input into ``(provider, model)``.
 
-    支持 ``provider:model`` 语法在运行时切换提供商::
+    Supports ``provider:model`` syntax to switch providers at runtime::
 
-        openrouter:anthropic/claude-sonnet-4.5  ->  ("openrouter", "anthropic/claude-sonnet-4.5")
-        nous:hermes-3                           ->  ("nous", "hermes-3")
-        anthropic/claude-sonnet-4.5             ->  (current_provider, "anthropic/claude-sonnet-4.5")
-        gpt-5.4                                 ->  (current_provider, "gpt-5.4")
+        openrouter:anthropic/claude-sonnet-4.5  →  ("openrouter", "anthropic/claude-sonnet-4.5")
+        nous:hermes-3                           →  ("nous", "hermes-3")
+        anthropic/claude-sonnet-4.5             →  (current_provider, "anthropic/claude-sonnet-4.5")
+        gpt-5.4                                 →  (current_provider, "gpt-5.4")
 
-    冒号仅在左侧是已识别的提供商名称或别名时才被视为提供商分隔符。
-    这避免了误解释碰巧包含冒号的模型名称
-    （如 ``anthropic/claude-3.5-sonnet:beta``）。
+    The colon is only treated as a provider delimiter if the left side is a
+    recognized provider name or alias.  This avoids misinterpreting model names
+    that happen to contain colons (e.g. ``anthropic/claude-3.5-sonnet:beta``).
 
-    返回 ``(provider, model)``，其中 *provider* 是输入中的显式提供商，
-    如果未指定则为 *current_provider*。
+    Returns ``(provider, model)`` where *provider* is either the explicit
+    provider from the input or *current_provider* if none was specified.
     """
     stripped = raw.strip()
     colon = stripped.find(":")
@@ -964,9 +1177,9 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
         provider_part = stripped[:colon].strip().lower()
         model_part = stripped[colon + 1:].strip()
         if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
-            # 支持 custom:name:model 三段式语法用于命名的自定义
-            # 提供商。``custom:local:qwen`` -> ("custom:local", "qwen")。
-            # 单冒号 ``custom:qwen`` -> ("custom", "qwen") 保持不变。
+            # Support custom:name:model triple syntax for named custom
+            # providers.  ``custom:local:qwen`` → ("custom:local", "qwen").
+            # Single colon ``custom:qwen`` → ("custom", "qwen") as before.
             if provider_part == "custom" and ":" in model_part:
                 second_colon = model_part.find(":")
                 custom_name = model_part[:second_colon].strip()
@@ -978,7 +1191,7 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
 
 
 def _get_custom_base_url() -> str:
-    """从 config.yaml 获取自定义端点的 base_url。"""
+    """Get the custom endpoint base_url from config.yaml."""
     try:
         from hermes_cli.config import load_config
         config = load_config()
@@ -995,21 +1208,22 @@ def curated_models_for_provider(
     *,
     force_refresh: bool = False,
 ) -> list[tuple[str, str]]:
-    """返回提供商模型列表的 ``(model_id, description)`` 元组。
+    """Return ``(model_id, description)`` tuples for a provider's model list.
 
-    首先尝试从提供商的 API 获取在线模型列表，
-    如果 API 不可达则回退到静态 ``_PROVIDER_MODELS`` 目录。
+    Tries to fetch the live model list from the provider's API first,
+    falling back to the static ``_PROVIDER_MODELS`` catalog if the API
+    is unreachable.
     """
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
         return fetch_openrouter_models(force_refresh=force_refresh)
 
-    # 先尝试在线 API（Codex、Nous 等都支持 /models）
+    # Try live API first (Codex, Nous, etc. all support /models)
     live = provider_model_ids(normalized)
     if live:
         return [(m, "") for m in live]
 
-    # 回退到静态目录
+    # Fallback to static catalog
     models = _PROVIDER_MODELS.get(normalized, [])
     return [(m, "") for m in models]
 
@@ -1018,17 +1232,17 @@ def detect_provider_for_model(
     model_name: str,
     current_provider: str,
 ) -> Optional[tuple[str, str]]:
-    """自动检测模型名称的最佳提供商。
+    """Auto-detect the best provider for a model name.
 
-    返回 ``(provider_id, model_name)`` — 模型名称可能被重新映射
-    （如裸名 ``deepseek-chat`` -> OpenRouter 的 ``deepseek/deepseek-chat``）。
-    无法可靠匹配时返回 ``None``。
+    Returns ``(provider_id, model_name)`` — the model name may be remapped
+    (e.g. bare ``deepseek-chat`` → ``deepseek/deepseek-chat`` for OpenRouter).
+    Returns ``None`` when no confident match is found.
 
-    优先级：
-    0. 裸提供商名称 -> 切换到该提供商的默认模型
-    1. 有凭证的直连提供商（最高优先级）
-    2. 无凭证的直连提供商 -> 重新映射到 OpenRouter slug
-    3. OpenRouter 目录匹配
+    Priority:
+    0. Bare provider name → switch to that provider's default model
+    1. Direct provider with credentials (highest)
+    2. Direct provider without credentials → remap to OpenRouter slug
+    3. OpenRouter catalog match
     """
     name = (model_name or "").strip()
     if not name:
@@ -1036,11 +1250,11 @@ def detect_provider_for_model(
 
     name_lower = name.lower()
 
-    # --- 步骤 0：裸提供商名称作为模型输入 ---
-    # 如果用户输入 `/model nous` 或 `/model anthropic`，将其视为
-    # 提供商切换并选择该提供商目录的第一个模型。
-    # 跳过 "custom" 和 "openrouter" — custom 没有模型目录，
-    # openrouter 需要显式的模型名称才有意义。
+    # --- Step 0: bare provider name typed as model ---
+    # If someone types `/model nous` or `/model anthropic`, treat it as a
+    # provider switch and pick the first model from that provider's catalog.
+    # Skip "custom" and "openrouter" — custom has no model catalog, and
+    # openrouter requires an explicit model name to be useful.
     resolved_provider = _PROVIDER_ALIASES.get(name_lower, name_lower)
     if resolved_provider not in {"custom", "openrouter"}:
         default_models = _PROVIDER_MODELS.get(resolved_provider, [])
@@ -1051,15 +1265,15 @@ def detect_provider_for_model(
         ):
             return (resolved_provider, default_models[0])
 
-    # 聚合器列出其他提供商的模型——永远不要自动切换到它们
+    # Aggregators list other providers' models — never auto-switch TO them
     _AGGREGATORS = {"nous", "openrouter", "ai-gateway", "copilot", "kilocode"}
 
-    # 如果模型属于当前提供商的目录，不建议切换
+    # If the model belongs to the current provider's catalog, don't suggest switching
     current_models = _PROVIDER_MODELS.get(current_provider, [])
     if any(name_lower == m.lower() for m in current_models):
         return None
 
-    # --- 步骤 1：在静态提供商目录中检查直接匹配 ---
+    # --- Step 1: check static provider catalogs for a direct match ---
     direct_match: Optional[str] = None
     for pid, models in _PROVIDER_MODELS.items():
         if pid == current_provider or pid in _AGGREGATORS:
@@ -1069,22 +1283,21 @@ def detect_provider_for_model(
             break
 
     if direct_match:
-        # 检查是否有此提供商的凭证——环境变量、
-        # 凭证池或认证存储条目。
+        # Check if we have credentials for this provider — env vars,
+        # credential pool, or auth store entries.
         has_creds = False
         try:
             from hermes_cli.auth import PROVIDER_REGISTRY
             pconfig = PROVIDER_REGISTRY.get(direct_match)
             if pconfig:
-                import os
                 for env_var in pconfig.api_key_env_vars:
                     if os.getenv(env_var, "").strip():
                         has_creds = True
                         break
         except Exception:
             pass
-        # 还要检查凭证池和认证存储——涵盖 OAuth、
-        # Claude Code 令牌和其他非环境变量凭证 (#10300)。
+        # Also check credential pool and auth store — covers OAuth,
+        # Claude Code tokens, and other non-env-var credentials (#10300).
         if not has_creds:
             try:
                 from agent.credential_pool import load_pool
@@ -1102,43 +1315,43 @@ def detect_provider_for_model(
             except Exception:
                 pass
 
-        # 始终返回直连提供商匹配结果。如果缺少凭证，
-        # 客户端初始化会给出明确的错误，而不是
-        # 静默地通过错误的提供商路由 (#10300)。
+        # Always return the direct provider match.  If credentials are
+        # missing, the client init will give a clear error rather than
+        # silently routing through the wrong provider (#10300).
         return (direct_match, name)
 
-    # --- 步骤 2：检查 OpenRouter 目录 ---
-    # 首先尝试精确匹配（处理 provider/model 格式）
+    # --- Step 2: check OpenRouter catalog ---
+    # First try exact match (handles provider/model format)
     or_slug = _find_openrouter_slug(name)
     if or_slug:
         if current_provider != "openrouter":
             return ("openrouter", or_slug)
-        # 已经在 openrouter 上，只需返回解析后的 slug
+        # Already on openrouter, just return the resolved slug
         if or_slug != name:
             return ("openrouter", or_slug)
-        return None  # 已经在 openrouter 上且名称匹配
+        return None  # already on openrouter with matching name
 
     return None
 
 
 def _find_openrouter_slug(model_name: str) -> Optional[str]:
-    """查找裸名或部分模型名称对应的完整 OpenRouter 模型 slug。
+    """Find the full OpenRouter model slug for a bare or partial model name.
 
-    处理:
-    - 精确匹配: ``anthropic/claude-opus-4.6`` -> 原样
-    - 裸名称: ``deepseek-chat`` -> ``deepseek/deepseek-chat``
-    - 裸名称: ``claude-opus-4.6`` -> ``anthropic/claude-opus-4.6``
+    Handles:
+    - Exact match: ``anthropic/claude-opus-4.6`` → as-is
+    - Bare name: ``deepseek-chat`` → ``deepseek/deepseek-chat``
+    - Bare name: ``claude-opus-4.6`` → ``anthropic/claude-opus-4.6``
     """
     name_lower = model_name.strip().lower()
     if not name_lower:
         return None
 
-    # 精确匹配（已有 provider/ 前缀）
+    # Exact match (already has provider/ prefix)
     for mid in model_ids():
         if name_lower == mid.lower():
             return mid
 
-    # 尝试仅匹配模型部分（/ 之后的部分）
+    # Try matching just the model part (after the /)
     for mid in model_ids():
         if "/" in mid:
             _, model_part = mid.split("/", 1)
@@ -1149,18 +1362,18 @@ def _find_openrouter_slug(model_name: str) -> Optional[str]:
 
 
 def normalize_provider(provider: Optional[str]) -> str:
-    """将提供商别名规范化为 Hermes 的规范提供商 ID。
+    """Normalize provider aliases to Hermes' canonical provider ids.
 
-    注意: ``"auto"`` 直接透传——使用
-    ``hermes_cli.auth.resolve_provider()`` 来根据凭证和环境
-    将其解析为具体的提供商。
+    Note: ``"auto"`` passes through unchanged — use
+    ``hermes_cli.auth.resolve_provider()`` to resolve it to a concrete
+    provider based on credentials and environment.
     """
     normalized = (provider or "openrouter").strip().lower()
     return _PROVIDER_ALIASES.get(normalized, normalized)
 
 
 def provider_label(provider: Optional[str]) -> str:
-    """返回提供商 ID 或别名的人类友好标签。"""
+    """Return a human-friendly label for a provider id or alias."""
     original = (provider or "openrouter").strip()
     normalized = original.lower()
     if normalized == "auto":
@@ -1169,9 +1382,9 @@ def provider_label(provider: Optional[str]) -> str:
     return _PROVIDER_LABELS.get(normalized, original or "OpenRouter")
 
 
-# 支持 OpenAI 优先处理（service_tier="priority"）的模型。
-# 参见 https://openai.com/api-priority-processing/ 获取规范列表。
-# 仅存储裸模型 slug（无厂商前缀）。
+# Models that support OpenAI Priority Processing (service_tier="priority").
+# See https://openai.com/api-priority-processing/ for the canonical list.
+# Only the bare model slug is stored (no vendor prefix).
 _PRIORITY_PROCESSING_MODELS: frozenset[str] = frozenset({
     "gpt-5.4",
     "gpt-5.4-mini",
@@ -1188,10 +1401,10 @@ _PRIORITY_PROCESSING_MODELS: frozenset[str] = frozenset({
     "o4-mini",
 })
 
-# 支持 Anthropic 快速模式（speed="fast"）的模型。
-# 参见 https://platform.claude.com/docs/en/build-with-claude/fast-mode
-# 目前仅限 Claude Opus 4.6。存储连字符和点号两种变体，
-# 以处理原生 Anthropic（claude-opus-4-6）和 OpenRouter（claude-opus-4.6）。
+# Models that support Anthropic Fast Mode (speed="fast").
+# See https://platform.claude.com/docs/en/build-with-claude/fast-mode
+# Currently only Claude Opus 4.6.  Both hyphen and dot variants are stored
+# to handle native Anthropic (claude-opus-4-6) and OpenRouter (claude-opus-4.6).
 _ANTHROPIC_FAST_MODE_MODELS: frozenset[str] = frozenset({
     "claude-opus-4-6",
     "claude-opus-4.6",
@@ -1199,7 +1412,7 @@ _ANTHROPIC_FAST_MODE_MODELS: frozenset[str] = frozenset({
 
 
 def _strip_vendor_prefix(model_id: str) -> str:
-    """移除模型 ID 的 vendor/ 前缀（如 'anthropic/claude-opus-4-6' -> 'claude-opus-4-6'）。"""
+    """Strip vendor/ prefix from a model ID (e.g. 'anthropic/claude-opus-4-6' -> 'claude-opus-4-6')."""
     raw = str(model_id or "").strip().lower()
     if "/" in raw:
         raw = raw.split("/", 1)[1]
@@ -1207,33 +1420,33 @@ def _strip_vendor_prefix(model_id: str) -> str:
 
 
 def model_supports_fast_mode(model_id: Optional[str]) -> bool:
-    """返回 Hermes 是否应为此模型暴露 /fast 切换。"""
+    """Return whether Hermes should expose the /fast toggle for this model."""
     raw = _strip_vendor_prefix(str(model_id or ""))
     if raw in _PRIORITY_PROCESSING_MODELS:
         return True
-    # Anthropic 快速模式——去除日期后缀（如 claude-opus-4-6-20260401）
-    # 和 OpenRouter 变体标签（:fast, :beta）以进行匹配。
+    # Anthropic fast mode — strip date suffixes (e.g. claude-opus-4-6-20260401)
+    # and OpenRouter variant tags (:fast, :beta) for matching.
     base = raw.split(":")[0]
     return base in _ANTHROPIC_FAST_MODE_MODELS
 
 
 def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
-    """当模型支持 Anthropic 快速模式（speed='fast'）时返回 True。"""
+    """Return True if the model supports Anthropic's fast mode (speed='fast')."""
     raw = _strip_vendor_prefix(str(model_id or ""))
     base = raw.split(":")[0]
     return base in _ANTHROPIC_FAST_MODE_MODELS
 
 
 def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | None:
-    """返回快速/优先模式的 request_overrides，不支持时返回 None。
+    """Return request_overrides for fast/priority mode, or None if unsupported.
 
-    返回适合提供商的覆盖参数：
-    - OpenAI 模型: ``{"service_tier": "priority"}``（优先处理）
-    - Anthropic 模型: ``{"speed": "fast"}``（Anthropic 快速模式 beta）
+    Returns provider-appropriate overrides:
+    - OpenAI models: ``{"service_tier": "priority"}`` (Priority Processing)
+    - Anthropic models: ``{"speed": "fast"}`` (Anthropic Fast Mode beta)
 
-    这些覆盖参数通过 run_agent.py 中的 ``_build_api_kwargs`` 注入到
-    API 请求的 kwargs 中——每个 API 路径处理自己的键
-    （OpenAI/Codex 用 service_tier，Anthropic Messages 用 speed）。
+    The overrides are injected into the API request kwargs by
+    ``_build_api_kwargs`` in run_agent.py — each API path handles its own
+    keys (service_tier for OpenAI/Codex, speed for Anthropic Messages).
     """
     if not model_supports_fast_mode(model_id):
         return None
@@ -1243,7 +1456,7 @@ def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | Non
 
 
 def _resolve_copilot_catalog_api_key() -> str:
-    """尽力获取 Copilot 模型目录的 GitHub 令牌。"""
+    """Best-effort GitHub token for fetching the Copilot model catalog."""
     try:
         from hermes_cli.auth import resolve_api_key_provider_credentials
 
@@ -1254,10 +1467,10 @@ def _resolve_copilot_catalog_api_key() -> str:
 
 
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
-    """返回提供商的最佳已知模型目录。
+    """Return the best known model catalog for a provider.
 
-    为支持在线端点的提供商（Codex、Nous）尝试实时 API，
-    回退到静态列表。
+    Tries live API endpoints for providers that support them (Codex, Nous),
+    falling back to static lists.
     """
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
@@ -1276,7 +1489,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         if normalized == "copilot-acp":
             return list(_PROVIDER_MODELS.get("copilot", []))
     if normalized == "nous":
-        # 尝试在线 Nous Portal /models 端点
+        # Try live Nous Portal /models endpoint
         try:
             from hermes_cli.auth import fetch_nous_models, resolve_nous_runtime_credentials
             creds = resolve_nous_runtime_credentials()
@@ -1301,7 +1514,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:
-            # 尝试自定义端点的常见 API 密钥环境变量
+            # Try common API key env vars for custom endpoints
             api_key = (
                 os.getenv("CUSTOM_API_KEY", "")
                 or os.getenv("OPENAI_API_KEY", "")
@@ -1314,10 +1527,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
 
 
 def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:
-    """从 Anthropic /v1/models 端点获取可用模型。
+    """Fetch available models from the Anthropic /v1/models endpoint.
 
-    使用 resolve_anthropic_token() 查找凭证（环境变量或
-    Claude Code 自动发现）。返回排序后的模型 ID 列表或 None。
+    Uses resolve_anthropic_token() to find credentials (env vars or
+    Claude Code auto-discovery).  Returns sorted model IDs or None.
     """
     try:
         from agent.anthropic_adapter import resolve_anthropic_token, _is_oauth_token
@@ -1344,12 +1557,12 @@ def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
             models = [m["id"] for m in data.get("data", []) if m.get("id")]
-            # 排序：最新/最大的优先（opus > sonnet > haiku，更高版本优先）
+            # Sort: latest/largest first (opus > sonnet > haiku, higher version first)
             return sorted(models, key=lambda m: (
-                "opus" not in m,      # opus 优先
-                "sonnet" not in m,    # 然后 sonnet
-                "haiku" not in m,     # 然后 haiku
-                m,                    # 同等级内按字母顺序
+                "opus" not in m,      # opus first
+                "sonnet" not in m,    # then sonnet
+                "haiku" not in m,     # then haiku
+                m,                    # alphabetical within tier
             ))
     except Exception as e:
         import logging
@@ -1368,10 +1581,10 @@ def _payload_items(payload: Any) -> list[dict[str, Any]]:
 
 
 def copilot_default_headers() -> dict[str, str]:
-    """Copilot API 请求的标准请求头。
+    """Standard headers for Copilot API requests.
 
-    包含 opencode 和 Copilot CLI 在每个请求中发送的
-    Openai-Intent 和 x-initiator 请求头。
+    Includes Openai-Intent and x-initiator headers that opencode and the
+    Copilot CLI send on every request.
     """
     try:
         from hermes_cli.copilot_auth import copilot_request_headers
@@ -1417,7 +1630,7 @@ def _copilot_catalog_item_is_text_model(item: dict[str, Any]) -> bool:
 def fetch_github_model_catalog(
     api_key: Optional[str] = None, timeout: float = 5.0
 ) -> Optional[list[dict[str, Any]]]:
-    """获取此账户的实时 GitHub Copilot 模型目录。"""
+    """Fetch the live GitHub Copilot model catalog for this account."""
     attempts: list[dict[str, str]] = []
     if api_key:
         attempts.append({
@@ -1484,6 +1697,19 @@ _COPILOT_MODEL_ALIASES = {
     "anthropic/claude-sonnet-4.6": "claude-sonnet-4.6",
     "anthropic/claude-sonnet-4.5": "claude-sonnet-4.5",
     "anthropic/claude-haiku-4.5": "claude-haiku-4.5",
+    # Dash-notation fallbacks: Hermes' default Claude IDs elsewhere use
+    # hyphens (anthropic native format), but Copilot's API only accepts
+    # dot-notation.  Accept both so users who configure copilot + a
+    # default hyphenated Claude model don't hit HTTP 400
+    # "model_not_supported".  See issue #6879.
+    "claude-opus-4-6": "claude-opus-4.6",
+    "claude-sonnet-4-6": "claude-sonnet-4.6",
+    "claude-sonnet-4-5": "claude-sonnet-4.5",
+    "claude-haiku-4-5": "claude-haiku-4.5",
+    "anthropic/claude-opus-4-6": "claude-opus-4.6",
+    "anthropic/claude-sonnet-4-6": "claude-sonnet-4.6",
+    "anthropic/claude-sonnet-4-5": "claude-sonnet-4.5",
+    "anthropic/claude-haiku-4-5": "claude-haiku-4.5",
 }
 
 
@@ -1554,12 +1780,12 @@ def _github_reasoning_efforts_for_model_id(model_id: str) -> list[str]:
 
 
 def _should_use_copilot_responses_api(model_id: str) -> bool:
-    """判断 Copilot 模型是否应使用 Responses API。
+    """Decide whether a Copilot model should use the Responses API.
 
-    复制 opencode 的 ``shouldUseCopilotResponsesApi`` 逻辑：
-    GPT-5+ 模型使用 Responses API，但 ``gpt-5-mini`` 使用
-    Chat Completions。所有非 GPT 模型（Claude、Gemini 等）使用
-    Chat Completions。
+    Replicates opencode's ``shouldUseCopilotResponsesApi`` logic:
+    GPT-5+ models use Responses API, except ``gpt-5-mini`` which uses
+    Chat Completions.  All non-GPT models (Claude, Gemini, etc.) use
+    Chat Completions.
     """
     import re
 
@@ -1576,13 +1802,14 @@ def copilot_model_api_mode(
     catalog: Optional[list[dict[str, Any]]] = None,
     api_key: Optional[str] = None,
 ) -> str:
-    """确定 Copilot 模型的 API 模式。
+    """Determine the API mode for a Copilot model.
 
-    使用模型 ID 模式（匹配 opencode 的方法）作为主要信号。
-    仅对模式检查未覆盖的模型回退到目录的 ``supported_endpoints``。
+    Uses the model ID pattern (matching opencode's approach) as the
+    primary signal.  Falls back to the catalog's ``supported_endpoints``
+    only for models not covered by the pattern check.
     """
-    # 获取目录一次，使 normalize + endpoint 检查可以共享
-    # （避免对非 GPT-5 模型进行两次冗余网络调用）。
+    # Fetch the catalog once so normalize + endpoint check share it
+    # (avoids two redundant network calls for non-GPT-5 models).
     if catalog is None and api_key:
         catalog = fetch_github_model_catalog(api_key=api_key)
 
@@ -1590,11 +1817,11 @@ def copilot_model_api_mode(
     if not normalized:
         return "chat_completions"
 
-    # 主要方式：模型 ID 模式（匹配 opencode 的 shouldUseCopilotResponsesApi）
+    # Primary: model ID pattern (matches opencode's shouldUseCopilotResponsesApi)
     if _should_use_copilot_responses_api(normalized):
         return "codex_responses"
 
-    # 备选方式：对非 GPT-5 模型检查目录（Claude 通过 /v1/messages 等）
+    # Secondary: check catalog for non-GPT-5 models (Claude via /v1/messages, etc.)
     if catalog:
         catalog_entry = next((item for item in catalog if item.get("id") == normalized), None)
         if isinstance(catalog_entry, dict):
@@ -1603,7 +1830,7 @@ def copilot_model_api_mode(
                 for endpoint in (catalog_entry.get("supported_endpoints") or [])
                 if str(endpoint).strip()
             }
-            # 对非 GPT-5 模型，检查是否仅支持 messages API
+            # For non-GPT-5 models, check if they only support messages API
             if "/v1/messages" in supported_endpoints and "/chat/completions" not in supported_endpoints:
                 return "anthropic_messages"
 
@@ -1611,7 +1838,7 @@ def copilot_model_api_mode(
 
 
 def normalize_opencode_model_id(provider_id: Optional[str], model_id: Optional[str]) -> str:
-    """将 OpenCode 配置 ID 规范化为 API 请求中使用的裸模型 slug。"""
+    """Normalize OpenCode config IDs to the bare model slug used in API requests."""
     provider = normalize_provider(provider_id)
     current = str(model_id or "").strip()
     if not current or provider not in {"opencode-zen", "opencode-go"}:
@@ -1624,18 +1851,18 @@ def normalize_opencode_model_id(provider_id: Optional[str], model_id: Optional[s
 
 
 def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str]) -> str:
-    """确定 OpenCode Zen / Go 模型的 API 模式。
+    """Determine the API mode for an OpenCode Zen / Go model.
 
-    OpenCode 将不同模型路由到不同的 API 接口：
+    OpenCode routes different models behind different API surfaces:
 
-    - Zen 上的 GPT-5 / Codex 模型使用 ``/v1/responses``
-    - Zen 上的 Claude 模型使用 ``/v1/messages``
-    - Go 上的 MiniMax 模型使用 ``/v1/messages``
-    - Go 上的 GLM / Kimi 使用 ``/v1/chat/completions``
-    - 其他 Zen 模型（Gemini、GLM、Kimi、MiniMax、Qwen 等）使用
+    - GPT-5 / Codex models on Zen use ``/v1/responses``
+    - Claude models on Zen use ``/v1/messages``
+    - MiniMax models on Go use ``/v1/messages``
+    - GLM / Kimi on Go use ``/v1/chat/completions``
+    - Other Zen models (Gemini, GLM, Kimi, MiniMax, Qwen, etc.) use
       ``/v1/chat/completions``
 
-    这遵循 OpenCode 发布的 Zen 和 Go 端点文档。
+    This follows the published OpenCode docs for Zen and Go endpoints.
     """
     provider = normalize_provider(provider_id)
     normalized = normalize_opencode_model_id(provider_id, model_id).lower()
@@ -1663,7 +1890,7 @@ def github_model_reasoning_efforts(
     catalog: Optional[list[dict[str, Any]]] = None,
     api_key: Optional[str] = None,
 ) -> list[str]:
-    """返回 Copilot 可见模型支持的推理力度级别。"""
+    """Return supported reasoning-effort levels for a Copilot-visible model."""
     normalized = normalize_copilot_model_id(model_id, catalog=catalog, api_key=api_key)
     if not normalized:
         return []
@@ -1706,7 +1933,7 @@ def probe_api_models(
     base_url: Optional[str],
     timeout: float = 5.0,
 ) -> dict[str, Any]:
-    """使用轻量级 URL 启发式探测 OpenAI 兼容的 ``/models`` 端点。"""
+    """Probe an OpenAI-compatible ``/models`` endpoint with light URL heuristics."""
     normalized = (base_url or "").strip().rstrip("/")
     if not normalized:
         return {
@@ -1737,7 +1964,7 @@ def probe_api_models(
         candidates.append((alternate_base, True))
 
     tried: list[str] = []
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     if normalized.startswith(COPILOT_BASE_URL):
@@ -1770,7 +1997,7 @@ def probe_api_models(
 
 
 def _fetch_ai_gateway_models(timeout: float = 5.0) -> Optional[list[str]]:
-    """从 AI Gateway 获取支持工具调用的可用语言模型。"""
+    """Fetch available language models with tool-use from AI Gateway."""
     api_key = os.getenv("AI_GATEWAY_API_KEY", "").strip()
     if not api_key:
         return None
@@ -1801,34 +2028,34 @@ def fetch_api_models(
     base_url: Optional[str],
     timeout: float = 5.0,
 ) -> Optional[list[str]]:
-    """从提供商的 ``/models`` 端点获取可用模型 ID 列表。
+    """Fetch the list of available model IDs from the provider's ``/models`` endpoint.
 
-    返回模型 ID 字符串列表，如果无法到达端点
-    （网络错误、超时、认证失败等）则返回 ``None``。
+    Returns a list of model ID strings, or ``None`` if the endpoint could not
+    be reached (network error, timeout, auth failure, etc.).
     """
     return probe_api_models(api_key, base_url, timeout=timeout).get("models")
 
 
 # ---------------------------------------------------------------------------
-# Ollama Cloud — 合并的模型发现与磁盘缓存
+# Ollama Cloud — merged model discovery with disk cache
 # ---------------------------------------------------------------------------
 
 
 
-_OLLAMA_CLOUD_CACHE_TTL = 3600  # 1 小时
+_OLLAMA_CLOUD_CACHE_TTL = 3600  # 1 hour
 
 
 def _ollama_cloud_cache_path() -> Path:
-    """返回 Ollama Cloud 模型缓存的路径。"""
+    """Return the path for the Ollama Cloud model cache."""
     from hermes_constants import get_hermes_home
     return get_hermes_home() / "ollama_cloud_models_cache.json"
 
 
 def _load_ollama_cloud_cache(*, ignore_ttl: bool = False) -> Optional[dict]:
-    """从磁盘加载缓存的 Ollama Cloud 模型。
+    """Load cached Ollama Cloud models from disk.
 
     Args:
-        ignore_ttl: 如果为 True，即使 TTL 已过期也返回数据（过期回退）。
+        ignore_ttl: If True, return data even if the TTL has expired (stale fallback).
     """
     try:
         cache_path = _ollama_cloud_cache_path()
@@ -1844,7 +2071,7 @@ def _load_ollama_cloud_cache(*, ignore_ttl: bool = False) -> Optional[dict]:
         if not ignore_ttl:
             cached_at = data.get("cached_at", 0)
             if (time.time() - cached_at) > _OLLAMA_CLOUD_CACHE_TTL:
-                return None  # 已过期
+                return None  # stale
         return data
     except Exception:
         pass
@@ -1852,7 +2079,7 @@ def _load_ollama_cloud_cache(*, ignore_ttl: bool = False) -> Optional[dict]:
 
 
 def _save_ollama_cloud_cache(models: list[str]) -> None:
-    """将合并的 Ollama Cloud 模型列表持久化到磁盘。"""
+    """Persist the merged Ollama Cloud model list to disk."""
     try:
         from utils import atomic_json_write
         cache_path = _ollama_cloud_cache_path()
@@ -1868,23 +2095,23 @@ def fetch_ollama_cloud_models(
     *,
     force_refresh: bool = False,
 ) -> list[str]:
-    """通过合并在线 API + models.dev 获取 Ollama Cloud 模型，带磁盘缓存。
+    """Fetch Ollama Cloud models by merging live API + models.dev, with disk cache.
 
-    解析顺序：
-      1. 磁盘缓存（如果新鲜，< 1 小时，且非 force_refresh）
-      2. 在线 ``/v1/models`` 端点（主要——最新来源）
-      3. models.dev 注册表（次要——填补未列出模型的空白）
-      4. 合并：在线模型优先，然后是 models.dev 补充（去重）
+    Resolution order:
+      1. Disk cache (if fresh, < 1 hour, and not force_refresh)
+      2. Live ``/v1/models`` endpoint (primary — freshest source)
+      3. models.dev registry (secondary — fills gaps for unlisted models)
+      4. Merge: live models first, then models.dev additions (deduped)
 
-    返回模型 ID 列表（不会返回 None——完全失败时返回空列表）。
+    Returns a list of model IDs (never None — empty list on total failure).
     """
-    # 1. 检查磁盘缓存
+    # 1. Check disk cache
     if not force_refresh:
         cached = _load_ollama_cloud_cache()
         if cached is not None:
             return cached["models"]
 
-    # 2. 在线 API 探测
+    # 2. Live API probe
     if not api_key:
         api_key = os.getenv("OLLAMA_API_KEY", "")
     if not base_url:
@@ -1896,7 +2123,7 @@ def fetch_ollama_cloud_models(
         if result:
             live_models = result
 
-    # 3. models.dev 注册表
+    # 3. models.dev registry
     mdev_models: list[str] = []
     try:
         from agent.models_dev import list_agentic_models
@@ -1904,7 +2131,7 @@ def fetch_ollama_cloud_models(
     except Exception:
         pass
 
-    # 4. 合并：在线模型优先，然后是 models.dev 补充（去重，保序）
+    # 4. Merge: live first, then models.dev additions (deduped, order-preserving)
     if live_models or mdev_models:
         seen: set[str] = set()
         merged: list[str] = []
@@ -1920,7 +2147,7 @@ def fetch_ollama_cloud_models(
             _save_ollama_cloud_cache(merged)
             return merged
 
-    # 完全失败——如果有过期缓存则返回（忽略 TTL）
+    # Total failure — return stale cache if available (ignore TTL)
     stale = _load_ollama_cloud_cache(ignore_ttl=True)
     if stale is not None:
         return stale["models"]
@@ -1936,15 +2163,16 @@ def validate_requested_model(
     base_url: Optional[str] = None,
 ) -> dict[str, Any]:
     """
-    验证活跃提供商的 ``/model`` 值。
+    Validate a ``/model`` value for the active provider.
 
-    先执行格式检查，然后探测在线 API 以确认模型实际存在。
+    Performs format checks first, then probes the live API to confirm
+    the model actually exists.
 
-    返回字典包含：
-      - accepted: CLI 是否应立即切换到请求的模型
-      - persist: 是否可以安全保存到配置
-      - recognized: 是否匹配已知的提供商目录
-      - message: 可选的警告/指导信息
+    Returns a dict with:
+      - accepted: whether the CLI should switch to the requested model now
+      - persist: whether it is safe to save to config
+      - recognized: whether it matched a known provider catalog
+      - message: optional warning / guidance for the user
     """
     requested = (model_name or "").strip()
     normalized = normalize_provider(provider)
@@ -1985,7 +2213,7 @@ def validate_requested_model(
                     "message": None,
                 }
 
-            # 如果最佳匹配非常相似则自动纠正（如打字错误）
+            # Auto-correct if the top match is very similar (e.g. typo)
             auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
             if auto:
                 return {
@@ -2013,8 +2241,8 @@ def validate_requested_model(
                 )
 
             return {
-                "accepted": True,
-                "persist": True,
+                "accepted": False,
+                "persist": False,
                 "recognized": False,
                 "message": message,
             }
@@ -2027,13 +2255,13 @@ def validate_requested_model(
             message += f"\n  If this server expects `/v1`, try base URL: `{probe.get('suggested_base_url')}`"
 
         return {
-            "accepted": True,
-            "persist": True,
+            "accepted": False,
+            "persist": False,
             "recognized": False,
             "message": message,
         }
 
-    # OpenAI Codex 有自己的目录路径；/v1/models 探测不是正确的验证路径。
+    # OpenAI Codex has its own catalog path; /v1/models probing is not the right validation path.
     if normalized == "openai-codex":
         try:
             codex_models = provider_model_ids("openai-codex")
@@ -2047,7 +2275,7 @@ def validate_requested_model(
                     "recognized": True,
                     "message": None,
                 }
-            # 如果最佳匹配非常相似则自动纠正（如打字错误）
+            # Auto-correct if the top match is very similar (e.g. typo)
             auto = get_close_matches(requested_for_lookup, codex_models, n=1, cutoff=0.9)
             if auto:
                 return {
@@ -2062,22 +2290,66 @@ def validate_requested_model(
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
             return {
-                "accepted": True,
-                "persist": True,
+                "accepted": False,
+                "persist": False,
                 "recognized": False,
                 "message": (
-                    f"Note: `{requested}` was not found in the OpenAI Codex model listing. "
-                    f"It may still work if your account has access to it."
+                    f"Model `{requested}` was not found in the OpenAI Codex model listing."
                     f"{suggestion_text}"
                 ),
             }
 
-    # 探测在线 API 以检查模型是否实际存在
+    # MiniMax providers don't expose a /models endpoint — validate against
+    # the static catalog instead, similar to openai-codex.
+    if normalized in ("minimax", "minimax-cn"):
+        try:
+            catalog_models = provider_model_ids(normalized)
+        except Exception:
+            catalog_models = []
+        if catalog_models:
+            # Case-insensitive lookup (catalog uses mixed case like MiniMax-M2.7)
+            catalog_lower = {m.lower(): m for m in catalog_models}
+            if requested_for_lookup.lower() in catalog_lower:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            # Auto-correct close matches (case-insensitive)
+            catalog_lower_list = list(catalog_lower.keys())
+            auto = get_close_matches(requested_for_lookup.lower(), catalog_lower_list, n=1, cutoff=0.9)
+            if auto:
+                corrected = catalog_lower[auto[0]]
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": corrected,
+                    "message": f"Auto-corrected `{requested}` → `{corrected}`",
+                }
+            suggestions = get_close_matches(requested_for_lookup.lower(), catalog_lower_list, n=3, cutoff=0.5)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{catalog_lower[s]}`" for s in suggestions)
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in the MiniMax catalog."
+                    f"{suggestion_text}"
+                    "\n  MiniMax does not expose a /models endpoint, so Hermes cannot verify the model name."
+                    "\n  The model may still work if it exists on the server."
+                ),
+            }
+
+    # Probe the live API to check if the model actually exists
     api_models = fetch_api_models(api_key, base_url)
 
     if api_models is not None:
         if requested_for_lookup in set(api_models):
-            # API 确认模型存在
+            # API confirmed the model exists
             return {
                 "accepted": True,
                 "persist": True,
@@ -2085,12 +2357,12 @@ def validate_requested_model(
                 "message": None,
             }
         else:
-            # API 已响应但模型未列出。仍然接受——
-            # 用户可能有权访问未在公开列表中显示的模型
-            # （如 Z.AI Pro/Max 套餐可以在编码端点使用 glm-5，
-            # 即使它不在 /models 中）。警告但允许。
+            # API responded but model is not listed.  Accept anyway —
+            # the user may have access to models not shown in the public
+            # listing (e.g. Z.AI Pro/Max plans can use glm-5 on coding
+            # endpoints even though it's not in /models).  Warn but allow.
 
-            # 如果最佳匹配非常相似则自动纠正（如打字错误）
+            # Auto-correct if the top match is very similar (e.g. typo)
             auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
             if auto:
                 return {
@@ -2106,23 +2378,22 @@ def validate_requested_model(
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
 
-            return {
-                "accepted": True,
-                "persist": True,
-                "recognized": False,
-                "message": (
-                    f"Note: `{requested}` was not found in this provider's model listing. "
-                    f"It may still work if your plan supports it."
-                    f"{suggestion_text}"
-                ),
-            }
+        return {
+            "accepted": False,
+            "persist": False,
+            "recognized": False,
+            "message": (
+                f"Model `{requested}` was not found in this provider's model listing."
+                f"{suggestion_text}"
+            ),
+        }
 
-    # api_models 为 None——无法到达 API。接受并持久化，
-    # 但发出警告以免打字错误悄悄破坏功能。
+    # api_models is None — couldn't reach API.  Accept and persist,
+    # but warn so typos don't silently break things.
 
-    # Bedrock：使用我们自己的发现而非 HTTP /models 端点。
-    # Bedrock 的 bedrock-runtime URL 不支持 /models——它使用
-    # AWS SDK 控制面板（ListFoundationModels + ListInferenceProfiles）。
+    # Bedrock: use our own discovery instead of HTTP /models endpoint.
+    # Bedrock's bedrock-runtime URL doesn't support /models — it uses the
+    # AWS SDK control plane (ListFoundationModels + ListInferenceProfiles).
     if normalized == "bedrock":
         try:
             from agent.bedrock_adapter import discover_bedrock_models, resolve_bedrock_region
@@ -2136,8 +2407,8 @@ def validate_requested_model(
                     "recognized": True,
                     "message": None,
                 }
-            # 不在发现列表中——仍然接受（用户可能有自定义
-            # 推理配置文件或跨账户访问），但发出警告。
+            # Not in discovered list — still accept (user may have custom
+            # inference profiles or cross-account access), but warn.
             suggestions = get_close_matches(requested, list(discovered_ids), n=3, cutoff=0.4)
             suggestion_text = ""
             if suggestions:
@@ -2153,15 +2424,72 @@ def validate_requested_model(
                 ),
             }
         except Exception:
-            pass  # 回退到通用警告
+            pass  # Fall through to generic warning
 
+    # Static-catalog fallback: when the /models probe was unreachable,
+    # validate against the curated list from provider_model_ids() — same
+    # pattern as the openai-codex and minimax branches above.  This fixes
+    # /model switches in the gateway for providers like opencode-go and
+    # opencode-zen whose /models endpoint returns 404 against the HTML
+    # marketing site.  Without this block, validate_requested_model would
+    # reject every model on such providers, switch_model() would return
+    # success=False, and the gateway would never write to
+    # _session_model_overrides.
     provider_label = _PROVIDER_LABELS.get(normalized, normalized)
+    try:
+        catalog_models = provider_model_ids(normalized)
+    except Exception:
+        catalog_models = []
+
+    if catalog_models:
+        catalog_lower = {m.lower(): m for m in catalog_models}
+        if requested_for_lookup.lower() in catalog_lower:
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": None,
+            }
+        catalog_lower_list = list(catalog_lower.keys())
+        auto = get_close_matches(
+            requested_for_lookup.lower(), catalog_lower_list, n=1, cutoff=0.9
+        )
+        if auto:
+            corrected = catalog_lower[auto[0]]
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "corrected_model": corrected,
+                "message": f"Auto-corrected `{requested}` → `{corrected}`",
+            }
+        suggestions = get_close_matches(
+            requested_for_lookup.lower(), catalog_lower_list, n=3, cutoff=0.5
+        )
+        suggestion_text = ""
+        if suggestions:
+            suggestion_text = "\n  Similar models: " + ", ".join(
+                f"`{catalog_lower[s]}`" for s in suggestions
+            )
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": False,
+            "message": (
+                f"Note: `{requested}` was not found in the {provider_label} curated catalog "
+                f"and the /models endpoint was unreachable.{suggestion_text}"
+                f"\n  The model may still work if it exists on the provider."
+            ),
+        }
+
+    # No catalog available — accept with a warning, matching the comment's
+    # stated intent ("Accept and persist, but warn").
     return {
         "accepted": True,
         "persist": True,
         "recognized": False,
         "message": (
-            f"Could not reach the {provider_label} API to validate `{requested}`. "
+            f"Note: could not reach the {provider_label} API to validate `{requested}`. "
             f"If the service isn't down, this model may not be valid."
         ),
     }

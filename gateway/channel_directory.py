@@ -1,9 +1,9 @@
 """
-频道目录 — 每个平台可达频道/联系人的缓存映射。
+Channel directory -- cached map of reachable channels/contacts per platform.
 
-在网关启动时构建，定期刷新（每 5 分钟），并保存到
-~/.hermes/channel_directory.json。send_message 工具读取此文件用于
-action="list" 和将人类友好的频道名称解析为数字 ID。
+Built on gateway startup, refreshed periodically (every 5 min), and saved to
+~/.hermes/channel_directory.json.  The send_message tool reads this file for
+action="list" and for resolving human-friendly channel names to numeric IDs.
 """
 
 import json
@@ -24,7 +24,7 @@ def _normalize_channel_query(value: str) -> str:
 
 
 def _channel_target_name(platform_name: str, channel: Dict[str, Any]) -> str:
-    """返回向用户展示的频道条目的人类可读目标标签。"""
+    """Return the human-facing target label shown to users for a channel entry."""
     name = channel["name"]
     if platform_name == "discord" and channel.get("guild"):
         return f"#{name}"
@@ -54,14 +54,14 @@ def _session_entry_name(origin: Dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 构建 / 刷新
+# Build / refresh
 # ---------------------------------------------------------------------------
 
 def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     """
-    从已连接的平台适配器和会话数据构建频道目录。
+    Build a channel directory from connected platform adapters and session data.
 
-    返回目录字典并写入 DIRECTORY_PATH。
+    Returns the directory dict and writes it to DIRECTORY_PATH.
     """
     from gateway.config import Platform
 
@@ -76,8 +76,9 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
         except Exception as e:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
-    # 不支持直接频道枚举的平台会自动通过会话发现。
-    # 跳过非消息平台的基础设施条目 — 其余通过 _build_from_sessions() 处理。
+    # Platforms that don't support direct channel enumeration get session-based
+    # discovery automatically.  Skip infrastructure entries that aren't messaging
+    # platforms — everything else falls through to _build_from_sessions().
     _SKIP_SESSION_DISCOVERY = frozenset({"local", "api_server", "webhook"})
     for plat in Platform:
         plat_name = plat.value
@@ -99,7 +100,7 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
 
 
 def _build_discord(adapter) -> List[Dict[str, str]]:
-    """枚举 Discord 机器人能看到的所有文字频道。"""
+    """Enumerate all text channels and forum channels the Discord bot can see."""
     channels = []
     client = getattr(adapter, "_client", None)
     if not client:
@@ -118,15 +119,25 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
                 "guild": guild.name,
                 "type": "channel",
             })
-        # 通过服务器枚举无法获取可 DM 的用户；这些来自会话。
+        # Forum channels (type 15) — creating a message auto-spawns a thread post.
+        forums = getattr(guild, "forum_channels", None) or []
+        for ch in forums:
+            channels.append({
+                "id": str(ch.id),
+                "name": ch.name,
+                "guild": guild.name,
+                "type": "forum",
+            })
+        # Also include DM-capable users we've interacted with is not
+        # feasible via guild enumeration; those come from sessions.
 
-    # 合并会话历史中的 DM
+    # Merge any DMs from session history
     channels.extend(_build_from_sessions("discord"))
     return channels
 
 
 def _build_slack(adapter) -> List[Dict[str, str]]:
-    """列出机器人已加入的 Slack 频道。"""
+    """List Slack channels the bot has joined."""
     # Slack adapter may expose a web client
     client = getattr(adapter, "_app", None) or getattr(adapter, "_client", None)
     if not client:
@@ -138,12 +149,12 @@ def _build_slack(adapter) -> List[Dict[str, str]]:
     except Exception:
         pass
 
-    # 兜底到会话数据
+    # Fallback to session data
     return _build_from_sessions("slack")
 
 
 def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
-    """从 sessions.json 的 origin 数据中提取已知的频道/联系人。"""
+    """Pull known channels/contacts from sessions.json origin data."""
     sessions_path = get_hermes_home() / "sessions" / "sessions.json"
     if not sessions_path.exists():
         return []
@@ -175,11 +186,11 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# 读取 / 解析
+# Read / resolve
 # ---------------------------------------------------------------------------
 
 def load_directory() -> Dict[str, Any]:
-    """从磁盘加载缓存的频道目录。"""
+    """Load the cached channel directory from disk."""
     if not DIRECTORY_PATH.exists():
         return {"updated_at": None, "platforms": {}}
     try:
@@ -189,14 +200,23 @@ def load_directory() -> Dict[str, Any]:
         return {"updated_at": None, "platforms": {}}
 
 
+def lookup_channel_type(platform_name: str, chat_id: str) -> Optional[str]:
+    """Return the channel ``type`` string (e.g. ``"channel"``, ``"forum"``) for *chat_id*, or *None* if unknown."""
+    directory = load_directory()
+    for ch in directory.get("platforms", {}).get(platform_name, []):
+        if ch.get("id") == chat_id:
+            return ch.get("type")
+    return None
+
+
 def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     """
-    将人类友好的频道名称解析为数字 ID。
+    Resolve a human-friendly channel name to a numeric ID.
 
-    匹配策略（不区分大小写，首次匹配优先）：
-    - Discord："bot-home"、"#bot-home"、"GuildName/bot-home"
-    - Telegram：显示名称或群组名称
-    - Slack："engineering"、"#engineering"
+    Matching strategy (case-insensitive, first match wins):
+    - Discord: "bot-home", "#bot-home", "GuildName/bot-home"
+    - Telegram: display name or group name
+    - Slack: "engineering", "#engineering"
     """
     directory = load_directory()
     channels = directory.get("platforms", {}).get(platform_name, [])
@@ -205,14 +225,14 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
 
     query = _normalize_channel_query(name)
 
-    # 1. 精确名称匹配，包括 send_message(action="list") 显示的标签
+    # 1. Exact name match, including the display labels shown by send_message(action="list")
     for ch in channels:
         if _normalize_channel_query(ch["name"]) == query:
             return ch["id"]
         if _normalize_channel_query(_channel_target_name(platform_name, ch)) == query:
             return ch["id"]
 
-    # 2. Discord 的服务器限定匹配（"GuildName/channel"）
+    # 2. Guild-qualified match for Discord ("GuildName/channel")
     if "/" in query:
         guild_part, ch_part = query.rsplit("/", 1)
         for ch in channels:
@@ -220,7 +240,7 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
             if guild == guild_part and _normalize_channel_query(ch["name"]) == ch_part:
                 return ch["id"]
 
-    # 3. 部分前缀匹配（仅在结果无歧义时）
+    # 3. Partial prefix match (only if unambiguous)
     matches = [ch for ch in channels if _normalize_channel_query(ch["name"]).startswith(query)]
     if len(matches) == 1:
         return matches[0]["id"]
@@ -229,7 +249,7 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
 
 
 def format_directory_for_display() -> str:
-    """将频道目录格式化为供模型使用的人类可读列表。"""
+    """Format the channel directory as a human-readable list for the model."""
     directory = load_directory()
     platforms = directory.get("platforms", {})
 
@@ -242,7 +262,7 @@ def format_directory_for_display() -> str:
         if not channels:
             continue
 
-        # 按服务器分组 Discord 频道
+        # Group Discord channels by guild
         if plat_name == "discord":
             guilds: Dict[str, List] = {}
             dms: List = []

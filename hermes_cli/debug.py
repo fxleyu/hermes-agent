@@ -1,12 +1,15 @@
-"""``hermes debug`` —— Hermes Agent 的调试工具。
+"""``hermes debug`` — debug tools for Hermes Agent.
 
-目前支持:
-    hermes debug share    上传调试报告（系统信息 + 日志）到
-                          粘贴服务并打印可分享的 URL。
+Currently supports:
+    hermes debug share    Upload debug report (system info + logs) to a
+                          paste service and print a shareable URL.
 """
 
 import io
+import json
+import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -17,22 +20,135 @@ from hermes_constants import get_hermes_home
 
 
 # ---------------------------------------------------------------------------
-# 粘贴服务 — 优先尝试 paste.rs，dpaste.com 作为回退。
+# Paste services — try paste.rs first, dpaste.com as fallback.
 # ---------------------------------------------------------------------------
 
 _PASTE_RS_URL = "https://paste.rs/"
 _DPASTE_COM_URL = "https://dpaste.com/api/"
 
-# 单个日志文件上传时读取的最大字节数。
-# paste.rs 上限约 1 MB；我们留有余量保持在此之下。
+# Maximum bytes to read from a single log file for upload.
+# paste.rs caps at ~1 MB; we stay under that with headroom.
 _MAX_LOG_BYTES = 512_000
 
-# 粘贴在此秒数后自动删除（6 小时）。
+# Auto-delete pastes after this many seconds (6 hours).
 _AUTO_DELETE_SECONDS = 21600
 
 
 # ---------------------------------------------------------------------------
-# 隐私 / 删除辅助函数
+# Pending-deletion tracking (replaces the old fork-and-sleep subprocess).
+# ---------------------------------------------------------------------------
+
+def _pending_file() -> Path:
+    """Path to ``~/.hermes/pastes/pending.json``.
+
+    Each entry: ``{"url": "...", "expire_at": <unix_ts>}``.  Scheduled
+    DELETEs used to be handled by spawning a detached Python process per
+    paste that slept for 6 hours; those accumulated forever if the user
+    ran ``hermes debug share`` repeatedly.  We now persist the schedule
+    to disk and sweep expired entries on the next debug invocation.
+    """
+    return get_hermes_home() / "pastes" / "pending.json"
+
+
+def _load_pending() -> list[dict]:
+    path = _pending_file()
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            # Filter to well-formed entries only
+            return [
+                e for e in data
+                if isinstance(e, dict) and "url" in e and "expire_at" in e
+            ]
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    return []
+
+
+def _save_pending(entries: list[dict]) -> None:
+    path = _pending_file()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(entries, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        # Non-fatal — worst case the user has to run ``hermes debug delete``
+        # manually.
+        pass
+
+
+def _record_pending(urls: list[str], delay_seconds: int = _AUTO_DELETE_SECONDS) -> None:
+    """Record *urls* for deletion at ``now + delay_seconds``.
+
+    Only paste.rs URLs are recorded (dpaste.com auto-expires).  Entries
+    are merged into any existing pending.json.
+    """
+    paste_rs_urls = [u for u in urls if _extract_paste_id(u)]
+    if not paste_rs_urls:
+        return
+
+    entries = _load_pending()
+    # Dedupe by URL: keep the later expire_at if same URL appears twice
+    by_url: dict[str, float] = {e["url"]: float(e["expire_at"]) for e in entries}
+    expire_at = time.time() + delay_seconds
+    for u in paste_rs_urls:
+        by_url[u] = max(expire_at, by_url.get(u, 0.0))
+    merged = [{"url": u, "expire_at": ts} for u, ts in by_url.items()]
+    _save_pending(merged)
+
+
+def _sweep_expired_pastes(now: Optional[float] = None) -> tuple[int, int]:
+    """Synchronously DELETE any pending pastes whose ``expire_at`` has passed.
+
+    Returns ``(deleted, remaining)``.  Best-effort: failed deletes stay in
+    the pending file and will be retried on the next sweep.  Silent —
+    intended to be called from every ``hermes debug`` invocation with
+    minimal noise.
+    """
+    entries = _load_pending()
+    if not entries:
+        return (0, 0)
+
+    current = time.time() if now is None else now
+    deleted = 0
+    remaining: list[dict] = []
+
+    for entry in entries:
+        try:
+            expire_at = float(entry.get("expire_at", 0))
+        except (TypeError, ValueError):
+            continue  # drop malformed entries
+        if expire_at > current:
+            remaining.append(entry)
+            continue
+
+        url = entry.get("url", "")
+        try:
+            if delete_paste(url):
+                deleted += 1
+                continue
+        except Exception:
+            # Network hiccup, 404 (already gone), etc. — drop the entry
+            # after a grace period; don't retry forever.
+            pass
+
+        # Retain failed deletes for up to 24h past expiration, then give up.
+        if expire_at + 86400 > current:
+            remaining.append(entry)
+        else:
+            deleted += 1  # count as reaped (paste.rs will GC eventually)
+
+    if deleted:
+        _save_pending(remaining)
+
+    return (deleted, len(remaining))
+
+
+# ---------------------------------------------------------------------------
+# Privacy / delete helpers
 # ---------------------------------------------------------------------------
 
 _PRIVACY_NOTICE = """\
@@ -57,9 +173,9 @@ _GATEWAY_PRIVACY_NOTICE = (
 
 
 def _extract_paste_id(url: str) -> Optional[str]:
-    """从 paste.rs 或 dpaste.com URL 中提取粘贴 ID。
+    """Extract the paste ID from a paste.rs or dpaste.com URL.
 
-    返回 ID 字符串，若 URL 不匹配已知服务则返回 None。
+    Returns the ID string, or None if the URL doesn't match a known service.
     """
     url = url.strip().rstrip("/")
     for prefix in ("https://paste.rs/", "http://paste.rs/"):
@@ -69,10 +185,10 @@ def _extract_paste_id(url: str) -> Optional[str]:
 
 
 def delete_paste(url: str) -> bool:
-    """从 paste.rs 删除粘贴。成功时返回 True。
+    """Delete a paste from paste.rs.  Returns True on success.
 
-    仅 paste.rs 支持未认证的 DELETE。dpaste.com 的粘贴
-    会自动过期但无法通过 API 删除。
+    Only paste.rs supports unauthenticated DELETE.  dpaste.com pastes
+    expire automatically but cannot be deleted via API.
     """
     paste_id = _extract_paste_id(url)
     if not paste_id:
@@ -90,52 +206,34 @@ def delete_paste(url: str) -> bool:
 
 
 def _schedule_auto_delete(urls: list[str], delay_seconds: int = _AUTO_DELETE_SECONDS):
-    """启动一个分离进程，在 *delay_seconds* 秒后删除 paste.rs 粘贴。
+    """Record *urls* for deletion ``delay_seconds`` from now.
 
-    子进程完全分离（``start_new_session=True``），因此在父进程
-    退出后仍然存活（对 CLI 模式很重要）。仅尝试 paste.rs URL ——
-    dpaste.com 的粘贴会自行过期。
+    Previously this spawned a detached Python subprocess per call that slept
+    for 6 hours and then issued DELETE requests.  Those subprocesses leaked —
+    every ``hermes debug share`` invocation added ~20 MB of resident Python
+    interpreters that never exited until the sleep completed.
+
+    The replacement is stateless: we append to ``~/.hermes/pastes/pending.json``
+    and rely on opportunistic sweeps (``_sweep_expired_pastes``) called from
+    every ``hermes debug`` invocation.  If the user never runs ``hermes debug``
+    again, paste.rs's own retention policy handles cleanup.
     """
-    import subprocess
-
-    paste_rs_urls = [u for u in urls if _extract_paste_id(u)]
-    if not paste_rs_urls:
-        return
-
-    # 构建一个小型内联 Python 脚本。仅需标准库导入。
-    url_list = ", ".join(f'"{u}"' for u in paste_rs_urls)
-    script = (
-        "import time, urllib.request; "
-        f"time.sleep({delay_seconds}); "
-        f"[urllib.request.urlopen(urllib.request.Request(u, method='DELETE', "
-        f"headers={{'User-Agent': 'hermes-agent/auto-delete'}}), timeout=15) "
-        f"for u in [{url_list}]]"
-    )
-
-    try:
-        subprocess.Popen(
-            [sys.executable, "-c", script],
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except Exception:
-        pass  # 尽力而为；手动删除仍然可用。
+    _record_pending(urls, delay_seconds=delay_seconds)
 
 
 def _delete_hint(url: str) -> str:
-    """返回给定粘贴 URL 的一行删除命令。"""
+    """Return a one-liner delete command for the given paste URL."""
     paste_id = _extract_paste_id(url)
     if paste_id:
         return f"hermes debug delete {url}"
-    # dpaste.com — 无 API 删除，按其策略自动过期。
+    # dpaste.com — no API delete, expires on its own.
     return "(auto-expires per dpaste.com policy)"
 
 
 def _upload_paste_rs(content: str) -> str:
-    """上传到 paste.rs。返回粘贴 URL。
+    """Upload to paste.rs.  Returns the paste URL.
 
-    paste.rs 接受纯文本 POST 正文并直接返回 URL。
+    paste.rs accepts a plain POST body and returns the URL directly.
     """
     data = content.encode("utf-8")
     req = urllib.request.Request(
@@ -153,9 +251,9 @@ def _upload_paste_rs(content: str) -> str:
 
 
 def _upload_dpaste_com(content: str, expiry_days: int = 7) -> str:
-    """上传到 dpaste.com。返回粘贴 URL。
+    """Upload to dpaste.com.  Returns the paste URL.
 
-    dpaste.com 使用 multipart 表单数据。
+    dpaste.com uses multipart form data.
     """
     boundary = "----HermesDebugBoundary9f3c"
 
@@ -189,19 +287,19 @@ def _upload_dpaste_com(content: str, expiry_days: int = 7) -> str:
 
 
 def upload_to_pastebin(content: str, expiry_days: int = 7) -> str:
-    """将 *content* 上传到粘贴服务，先尝试 paste.rs 再尝试 dpaste.com。
+    """Upload *content* to a paste service, trying paste.rs then dpaste.com.
 
-    成功时返回粘贴 URL，全部失败时抛出异常。
+    Returns the paste URL on success, raises on total failure.
     """
     errors: list[str] = []
 
-    # 先尝试 paste.rs（简单、快速）
+    # Try paste.rs first (simple, fast)
     try:
         return _upload_paste_rs(content)
     except Exception as exc:
         errors.append(f"paste.rs: {exc}")
 
-    # 回退：dpaste.com（支持过期时间）
+    # Fallback: dpaste.com (supports expiry)
     try:
         return _upload_dpaste_com(content, expiry_days=expiry_days)
     except Exception as exc:
@@ -213,13 +311,13 @@ def upload_to_pastebin(content: str, expiry_days: int = 7) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 日志文件读取
+# Log file reading
 # ---------------------------------------------------------------------------
 
 def _resolve_log_path(log_name: str) -> Optional[Path]:
-    """查找 *log_name* 的日志文件，回退到 .1 轮转文件。
+    """Find the log file for *log_name*, falling back to the .1 rotation.
 
-    找到时返回路径，否则返回 None。
+    Returns the path if found, or None.
     """
     from hermes_cli.logs import LOG_FILES
 
@@ -232,7 +330,7 @@ def _resolve_log_path(log_name: str) -> Optional[Path]:
     if primary.exists() and primary.stat().st_size > 0:
         return primary
 
-    # 回退到最近的轮转文件（.1）。
+    # Fall back to the most recent rotated file (.1).
     rotated = log_dir / f"{filename}.1"
     if rotated.exists() and rotated.stat().st_size > 0:
         return rotated
@@ -241,7 +339,7 @@ def _resolve_log_path(log_name: str) -> Optional[Path]:
 
 
 def _read_log_tail(log_name: str, num_lines: int) -> str:
-    """读取日志文件的最后 *num_lines* 行，或返回占位符。"""
+    """Read the last *num_lines* from a log file, or return a placeholder."""
     from hermes_cli.logs import _read_last_n_lines
 
     log_path = _resolve_log_path(log_name)
@@ -256,10 +354,10 @@ def _read_log_tail(log_name: str, num_lines: int) -> str:
 
 
 def _read_full_log(log_name: str, max_bytes: int = _MAX_LOG_BYTES) -> Optional[str]:
-    """读取日志文件用于独立上传。
+    """Read a log file for standalone upload.
 
-    返回文件内容（若截断则为最后 *max_bytes* 字节），
-    若文件不存在或为空则返回 None。
+    Returns the file content (last *max_bytes* if truncated), or None if the
+    file doesn't exist or is empty.
     """
     log_path = _resolve_log_path(log_name)
     if log_path is None:
@@ -273,10 +371,10 @@ def _read_full_log(log_name: str, max_bytes: int = _MAX_LOG_BYTES) -> Optional[s
         if size <= max_bytes:
             return log_path.read_text(encoding="utf-8", errors="replace")
 
-        # 文件大于 max_bytes — 读取尾部。
+        # File is larger than max_bytes — read the tail.
         with open(log_path, "rb") as f:
             f.seek(size - max_bytes)
-            # 跳过定位点处的不完整行。
+            # Skip partial line at the seek point.
             f.readline()
             content = f.read().decode("utf-8", errors="replace")
         return f"[... truncated — showing last ~{max_bytes // 1024}KB ...]\n{content}"
@@ -285,11 +383,11 @@ def _read_full_log(log_name: str, max_bytes: int = _MAX_LOG_BYTES) -> Optional[s
 
 
 # ---------------------------------------------------------------------------
-# 调试报告收集
+# Debug report collection
 # ---------------------------------------------------------------------------
 
 def _capture_dump() -> str:
-    """运行 ``hermes dump`` 并将其标准输出作为字符串返回。"""
+    """Run ``hermes dump`` and return its stdout as a string."""
     from hermes_cli.dump import run_dump
 
     class _FakeArgs:
@@ -308,16 +406,17 @@ def _capture_dump() -> str:
 
 
 def collect_debug_report(*, log_lines: int = 200, dump_text: str = "") -> str:
-    """构建摘要调试报告：系统转储 + 日志尾部。
+    """Build the summary debug report: system dump + log tails.
 
-    参数
+    Parameters
     ----------
     log_lines
-        每个日志文件包含的最近行数。
+        Number of recent lines to include per log file.
     dump_text
-        预先捕获的转储输出。若为空，则内部运行 ``hermes dump``。
+        Pre-captured dump output.  If empty, ``hermes dump`` is run
+        internally.
 
-    返回可直接上传的纯文本报告字符串。
+    Returns the report as a plain-text string ready for upload.
     """
     buf = io.StringIO()
 
@@ -325,7 +424,7 @@ def collect_debug_report(*, log_lines: int = 200, dump_text: str = "") -> str:
         dump_text = _capture_dump()
     buf.write(dump_text)
 
-    # ── 最近的日志尾部（仅摘要）──────────────────────────────────
+    # ── Recent log tails (summary only) ──────────────────────────────────
     buf.write("\n\n")
     buf.write(f"--- agent.log (last {log_lines} lines) ---\n")
     buf.write(_read_log_tail("agent", log_lines))
@@ -344,11 +443,11 @@ def collect_debug_report(*, log_lines: int = 200, dump_text: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
-# CLI 入口点
+# CLI entry points
 # ---------------------------------------------------------------------------
 
 def run_debug_share(args):
-    """收集调试报告 + 完整日志，逐个上传，打印 URL。"""
+    """Collect debug report + full logs, upload each, print URLs."""
     log_lines = getattr(args, "lines", 200)
     expiry = getattr(args, "expire", 7)
     local_only = getattr(args, "local", False)
@@ -454,6 +553,16 @@ def run_debug_delete(args):
 
 def run_debug(args):
     """Route debug subcommands."""
+    # Opportunistic sweep of expired pastes on every ``hermes debug`` call.
+    # Replaces the old per-paste sleeping subprocess that used to leak as
+    # one orphaned Python interpreter per scheduled deletion.  Silent and
+    # best-effort — any failure is swallowed so ``hermes debug`` stays
+    # reliable even when offline.
+    try:
+        _sweep_expired_pastes()
+    except Exception:
+        pass
+
     subcmd = getattr(args, "debug_command", None)
     if subcmd == "share":
         run_debug_share(args)

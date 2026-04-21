@@ -534,6 +534,19 @@ def _get_approval_timeout() -> int:
         return 60
 
 
+def _get_cron_approval_mode() -> str:
+    """Read the cron approval mode from config. Returns 'deny' or 'approve'."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        mode = str(config.get("approvals", {}).get("cron_mode", "deny")).lower().strip()
+        if mode in ("approve", "off", "allow", "yes"):
+            return "approve"
+        return "deny"
+    except Exception:
+        return "deny"
+
+
 def _smart_approve(command: str, description: str) -> str:
     """使用辅助 LLM 评估风险并决定是否批准。
 
@@ -544,12 +557,7 @@ def _smart_approve(command: str, description: str) -> str:
     (openai/codex#13860)。
     """
     try:
-        from agent.auxiliary_client import get_text_auxiliary_client, auxiliary_max_tokens_param
-
-        client, model = get_text_auxiliary_client(task="approval")
-        if not client or not model:
-            logger.debug("Smart approvals: no aux client available, escalating")
-            return "escalate"
+        from agent.auxiliary_client import call_llm
 
         prompt = f"""You are a security reviewer for an AI coding agent. A terminal command was flagged by pattern matching as potentially dangerous.
 
@@ -565,11 +573,11 @@ Rules:
 
 Respond with exactly one word: APPROVE, DENY, or ESCALATE"""
 
-        response = client.chat.completions.create(
-            model=model,
+        response = call_llm(
+            task="approval",
             messages=[{"role": "user", "content": prompt}],
-            **auxiliary_max_tokens_param(16),
             temperature=0,
+            max_tokens=16,
         )
 
         answer = (response.choices[0].message.content or "").strip().upper()
@@ -622,6 +630,19 @@ def check_dangerous_command(command: str, env_type: str,
     is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
 
     if not is_cli and not is_gateway:
+        # Cron sessions: respect cron_mode config
+        if os.getenv("HERMES_CRON_SESSION"):
+            if _get_cron_approval_mode() == "deny":
+                return {
+                    "approved": False,
+                    "message": (
+                        f"BLOCKED: Command flagged as dangerous ({description}) "
+                        "but cron jobs run without a user present to approve it. "
+                        "Find an alternative approach that avoids this command. "
+                        "To allow dangerous commands in cron jobs, set "
+                        "approvals.cron_mode: approve in config.yaml."
+                    ),
+                }
         return {"approved": True, "message": None}
 
     if is_gateway or os.getenv("HERMES_EXEC_ASK"):
@@ -719,6 +740,22 @@ def check_all_command_guards(command: str, env_type: str,
     # 保留现有的非交互行为: 在 CLI/网关/ask 流程之外，
     # 我们不阻塞审批，也跳过外部守卫工作。
     if not is_cli and not is_gateway and not is_ask:
+        # Cron sessions: respect cron_mode config
+        if os.getenv("HERMES_CRON_SESSION"):
+            if _get_cron_approval_mode() == "deny":
+                # Run detection to get a description for the block message
+                is_dangerous, _pk, description = detect_dangerous_command(command)
+                if is_dangerous:
+                    return {
+                        "approved": False,
+                        "message": (
+                            f"BLOCKED: Command flagged as dangerous ({description}) "
+                            "but cron jobs run without a user present to approve it. "
+                            "Find an alternative approach that avoids this command. "
+                            "To allow dangerous commands in cron jobs, set "
+                            "approvals.cron_mode: approve in config.yaml."
+                        ),
+                    }
         return {"approved": True, "message": None}
 
     # --- 阶段 1: 收集两项检查的发现 ---

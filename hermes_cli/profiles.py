@@ -1,22 +1,22 @@
 """
-多个隔离 Hermes 实例的配置文件管理。
+Profile management for multiple isolated Hermes instances.
 
-每个配置文件是一个完全独立的 HERMES_HOME 目录，拥有自己的
-config.yaml、.env、记忆、会话、技能、网关、定时任务和日志。
-配置文件默认位于 ``~/.hermes/profiles/<name>/`` 下。
+Each profile is a fully independent HERMES_HOME directory with its own
+config.yaml, .env, memory, sessions, skills, gateway, cron, and logs.
+Profiles live under ``~/.hermes/profiles/<name>/`` by default.
 
-"default" 配置文件就是 ``~/.hermes`` 本身——向后兼容，
-无需迁移。
+The "default" profile is ``~/.hermes`` itself — backward compatible,
+zero migration needed.
 
-用法::
+Usage::
 
-    hermes profile create coder          # 新配置文件 + 内置技能
-    hermes profile create coder --clone  # 同时复制 config、.env、SOUL.md
-    hermes profile create coder --clone-all  # 完整复制源配置文件
-    coder chat                           # 通过包装器别名使用
-    hermes -p coder chat                 # 或通过标志使用
-    hermes profile use coder             # 设为粘性默认值
-    hermes profile delete coder          # 删除配置文件 + 别名 + 服务
+    hermes profile create coder          # fresh profile + bundled skills
+    hermes profile create coder --clone  # also copy config, .env, SOUL.md
+    hermes profile create coder --clone-all  # full copy of source profile
+    coder chat                           # use via wrapper alias
+    hermes -p coder chat                 # or via flag
+    hermes profile use coder             # set as sticky default
+    hermes profile delete coder          # remove profile + alias + service
 """
 
 import json
@@ -32,7 +32,7 @@ from typing import List, Optional
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
-# 每个新配置文件中引导创建的目录
+# Directories bootstrapped inside every new profile
 _PROFILE_DIRS = [
     "memories",
     "sessions",
@@ -42,69 +42,69 @@ _PROFILE_DIRS = [
     "plans",
     "workspace",
     "cron",
-    # 子进程的每配置文件 HOME：隔离系统工具配置（git、
-    # ssh、gh、npm 等），使凭证不会在配置文件间泄漏。在 Docker 中
-    # 这还确保工具配置落入持久化卷中。
-    # 参见 hermes_constants.get_subprocess_home() 和 issue #4426。
+    # Per-profile HOME for subprocesses: isolates system tool configs (git,
+    # ssh, gh, npm …) so credentials don't bleed between profiles.  In Docker
+    # this also ensures tool configs land inside the persistent volume.
+    # See hermes_constants.get_subprocess_home() and issue #4426.
     "home",
 ]
 
-# --clone 时复制的文件（如果源中存在）
+# Files copied during --clone (if they exist in the source)
 _CLONE_CONFIG_FILES = [
     "config.yaml",
     ".env",
     "SOUL.md",
 ]
 
-# --clone 时复制的子目录文件（相对于配置文件根目录的路径）。
-# 记忆文件是智能体精心策划的身份的一部分——与
-# SOUL.md 对克隆配置文件的连续性同样重要。
+# Subdirectory files copied during --clone (path relative to profile root).
+# Memory files are part of the agent's curated identity — just as important
+# as SOUL.md for continuity when cloning a profile.
 _CLONE_SUBDIR_FILES = [
     "memories/MEMORY.md",
     "memories/USER.md",
 ]
 
-# --clone-all 后剥离的运行时文件（不应携带过去）
+# Runtime files stripped after --clone-all (shouldn't carry over)
 _CLONE_ALL_STRIP = [
     "gateway.pid",
     "gateway_state.json",
     "processes.json",
 ]
 
-# 导出默认（~/.hermes）配置文件时排除的目录/文件。
-# 默认配置文件包含基础设施（仓库检出、工作树、数据库、
-# 缓存、二进制文件），而命名配置文件没有这些。我们排除它们
-# 使导出成为一个便携的、合理大小的实际配置文件数据存档。
+# Directories/files to exclude when exporting the default (~/.hermes) profile.
+# The default profile contains infrastructure (repo checkout, worktrees, DBs,
+# caches, binaries) that named profiles don't have.  We exclude those so the
+# export is a portable, reasonable-size archive of actual profile data.
 _DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
-    # 基础设施
-    "hermes-agent",         # 仓库检出（多 GB）
-    ".worktrees",           # git 工作树
-    "profiles",             # 其他配置文件——永不递归导出
-    "bin",                  # 已安装的二进制文件（tirith 等）
-    "node_modules",         # npm 包
-    # 数据库和运行时状态
+    # Infrastructure
+    "hermes-agent",         # repo checkout (multi-GB)
+    ".worktrees",           # git worktrees
+    "profiles",             # other profiles — never recursive-export
+    "bin",                  # installed binaries (tirith, etc.)
+    "node_modules",         # npm packages
+    # Databases & runtime state
     "state.db", "state.db-shm", "state.db-wal",
     "hermes_state.db",
     "response_store.db", "response_store.db-shm", "response_store.db-wal",
     "gateway.pid", "gateway_state.json", "processes.json",
-    "auth.json",            # API 密钥、OAuth 令牌、凭证池
-    ".env",                 # API 密钥（dotenv）
+    "auth.json",            # API keys, OAuth tokens, credential pools
+    ".env",                 # API keys (dotenv)
     "auth.lock", "active_profile", ".update_check",
     "errors.log",
     ".hermes_history",
-    # 缓存（使用时重新生成）
+    # Caches (regenerated on use)
     "image_cache", "audio_cache", "document_cache",
     "browser_screenshots", "checkpoints",
     "sandboxes",
-    "logs",                 # 网关日志
+    "logs",                 # gateway logs
 })
 
-# 不能用作配置文件别名的名称
+# Names that cannot be used as profile aliases
 _RESERVED_NAMES = frozenset({
     "hermes", "default", "test", "tmp", "root", "sudo",
 })
 
-# 不能用作配置文件名称/别名的 Hermes 子命令
+# Hermes subcommands that cannot be used as profile names/aliases
 _HERMES_SUBCOMMANDS = frozenset({
     "chat", "model", "gateway", "setup", "whatsapp", "login", "logout",
     "status", "cron", "doctor", "dump", "config", "pairing", "skills", "tools",
@@ -114,52 +114,52 @@ _HERMES_SUBCOMMANDS = frozenset({
 
 
 # ---------------------------------------------------------------------------
-# 路径辅助工具
+# Path helpers
 # ---------------------------------------------------------------------------
 
 def _get_profiles_root() -> Path:
-    """返回存储命名配置文件的目录。
+    """Return the directory where named profiles are stored.
 
-    锚定到 hermes 根目录，而非当前 HERMES_HOME
-    （当前 HERMES_HOME 本身可能就是一个配置文件）。这确保
-    ``coder profile list`` 能看到所有配置文件。
+    Anchored to the hermes root, NOT to the current HERMES_HOME
+    (which may itself be a profile).  This ensures ``coder profile list``
+    can see all profiles.
 
-    在 Docker/自定义部署中，当 HERMES_HOME 指向 ``~/.hermes``
-    之外时，配置文件位于 ``HERMES_HOME/profiles/`` 下，
-    以便在挂载卷上持久化。
+    In Docker/custom deployments where HERMES_HOME points outside
+    ``~/.hermes``, profiles live under ``HERMES_HOME/profiles/`` so
+    they persist on the mounted volume.
     """
     return _get_default_hermes_home() / "profiles"
 
 
 def _get_default_hermes_home() -> Path:
-    """返回默认（配置文件之前的）HERMES_HOME 路径。
+    """Return the default (pre-profile) HERMES_HOME path.
 
-    在标准部署中为 ``~/.hermes``。
-    在 Docker/自定义部署中，当 HERMES_HOME 位于 ``~/.hermes``
-    之外（如 ``/opt/data``）时，直接返回 HERMES_HOME。
+    In standard deployments this is ``~/.hermes``.
+    In Docker/custom deployments where HERMES_HOME is outside ``~/.hermes``
+    (e.g. ``/opt/data``), returns HERMES_HOME directly.
     """
     from hermes_constants import get_default_hermes_root
     return get_default_hermes_root()
 
 
 def _get_active_profile_path() -> Path:
-    """返回粘性 active_profile 文件的路径。"""
+    """Return the path to the sticky active_profile file."""
     return _get_default_hermes_home() / "active_profile"
 
 
 def _get_wrapper_dir() -> Path:
-    """返回包装器脚本的目录。"""
+    """Return the directory for wrapper scripts."""
     return Path.home() / ".local" / "bin"
 
 
 # ---------------------------------------------------------------------------
-# 验证
+# Validation
 # ---------------------------------------------------------------------------
 
 def validate_profile_name(name: str) -> None:
-    """当 *name* 不是有效的配置文件标识符时抛出 ``ValueError``。"""
+    """Raise ``ValueError`` if *name* is not a valid profile identifier."""
     if name == "default":
-        return  # ~/.hermes 的特殊别名
+        return  # special alias for ~/.hermes
     if not _PROFILE_ID_RE.match(name):
         raise ValueError(
             f"Invalid profile name {name!r}. Must match "
@@ -168,27 +168,27 @@ def validate_profile_name(name: str) -> None:
 
 
 def get_profile_dir(name: str) -> Path:
-    """将配置文件名称解析为其 HERMES_HOME 目录。"""
+    """Resolve a profile name to its HERMES_HOME directory."""
     if name == "default":
         return _get_default_hermes_home()
     return _get_profiles_root() / name
 
 
 def profile_exists(name: str) -> bool:
-    """检查配置文件目录是否存在。"""
+    """Check whether a profile directory exists."""
     if name == "default":
         return True
     return get_profile_dir(name).is_dir()
 
 
 # ---------------------------------------------------------------------------
-# 别名 / 包装器脚本管理
+# Alias / wrapper script management
 # ---------------------------------------------------------------------------
 
 def check_alias_collision(name: str) -> Optional[str]:
-    """返回人类可读的冲突消息，如果名称安全则返回 None。
+    """Return a human-readable collision message, or None if the name is safe.
 
-    检查：保留名称、hermes 子命令、PATH 中的现有二进制文件。
+    Checks: reserved names, hermes subcommands, existing binaries in PATH.
     """
     if name in _RESERVED_NAMES:
         return f"'{name}' is a reserved name"
@@ -219,15 +219,15 @@ def check_alias_collision(name: str) -> Optional[str]:
 
 
 def _is_wrapper_dir_in_path() -> bool:
-    """检查 ~/.local/bin 是否在 PATH 中。"""
+    """Check if ~/.local/bin is in PATH."""
     wrapper_dir = str(_get_wrapper_dir())
     return wrapper_dir in os.environ.get("PATH", "").split(os.pathsep)
 
 
 def create_wrapper_script(name: str) -> Optional[Path]:
-    """在 ~/.local/bin/<name> 创建 shell 包装器脚本。
+    """Create a shell wrapper script at ~/.local/bin/<name>.
 
-    返回创建的包装器路径，失败时返回 None。
+    Returns the path to the created wrapper, or None if creation failed.
     """
     wrapper_dir = _get_wrapper_dir()
     try:
@@ -247,7 +247,7 @@ def create_wrapper_script(name: str) -> Optional[Path]:
 
 
 def remove_wrapper_script(name: str) -> bool:
-    """移除配置文件的包装器脚本。成功移除返回 True。"""
+    """Remove the wrapper script for a profile. Returns True if removed."""
     wrapper_path = _get_wrapper_dir() / name
     if wrapper_path.exists():
         try:
@@ -267,7 +267,7 @@ def remove_wrapper_script(name: str) -> bool:
 
 @dataclass
 class ProfileInfo:
-    """配置文件的摘要信息。"""
+    """Summary information about a profile."""
     name: str
     path: Path
     is_default: bool
@@ -280,7 +280,7 @@ class ProfileInfo:
 
 
 def _read_config_model(profile_dir: Path) -> tuple:
-    """从配置文件的 config.yaml 读取模型/提供商。返回 (model, provider)。"""
+    """Read model/provider from a profile's config.yaml. Returns (model, provider)."""
     config_path = profile_dir / "config.yaml"
     if not config_path.exists():
         return None, None
@@ -299,25 +299,16 @@ def _read_config_model(profile_dir: Path) -> tuple:
 
 
 def _check_gateway_running(profile_dir: Path) -> bool:
-    """检查给定配置文件目录是否有正在运行的网关。"""
-    pid_file = profile_dir / "gateway.pid"
-    if not pid_file.exists():
-        return False
+    """Check if a gateway is running for a given profile directory."""
     try:
-        raw = pid_file.read_text().strip()
-        if not raw:
-            return False
-        data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
-        pid = int(data["pid"])
-        os.kill(pid, 0)  # existence check
-        return True
-    except (json.JSONDecodeError, KeyError, ValueError, TypeError,
-            ProcessLookupError, PermissionError, OSError):
+        from gateway.status import get_running_pid
+        return get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False) is not None
+    except Exception:
         return False
 
 
 def _count_skills(profile_dir: Path) -> int:
-    """统计配置文件中已安装的技能数量。"""
+    """Count installed skills in a profile."""
     skills_dir = profile_dir / "skills"
     if not skills_dir.is_dir():
         return 0
@@ -329,15 +320,15 @@ def _count_skills(profile_dir: Path) -> int:
 
 
 # ---------------------------------------------------------------------------
-# CRUD 操作
+# CRUD operations
 # ---------------------------------------------------------------------------
 
 def list_profiles() -> List[ProfileInfo]:
-    """返回所有配置文件的信息，包括默认配置文件。"""
+    """Return info for all profiles, including the default."""
     profiles = []
     wrapper_dir = _get_wrapper_dir()
 
-    # 默认配置文件
+    # Default profile
     default_home = _get_default_hermes_home()
     if default_home.is_dir():
         model, provider = _read_config_model(default_home)
@@ -352,7 +343,7 @@ def list_profiles() -> List[ProfileInfo]:
             skill_count=_count_skills(default_home),
         ))
 
-    # 命名配置文件
+    # Named profiles
     profiles_root = _get_profiles_root()
     if profiles_root.is_dir():
         for entry in sorted(profiles_root.iterdir()):
@@ -385,26 +376,26 @@ def create_profile(
     clone_config: bool = False,
     no_alias: bool = False,
 ) -> Path:
-    """创建新的配置文件目录。
+    """Create a new profile directory.
 
-    参数
+    Parameters
     ----------
     name:
-        配置文件标识符（小写字母、数字、连字符、下划线）。
+        Profile identifier (lowercase, alphanumeric, hyphens, underscores).
     clone_from:
-        要克隆的源配置文件。如果为 ``None`` 且 clone_config/clone_all
-        为 True，则默认为当前活跃的配置文件。
+        Source profile to clone from. If ``None`` and clone_config/clone_all
+        is True, defaults to the currently active profile.
     clone_all:
-        如果为 True，对源进行完整的 copytree（所有状态）。
+        If True, do a full copytree of the source (all state).
     clone_config:
-        如果为 True，仅复制配置文件（config.yaml、.env、SOUL.md）。
+        If True, copy only config files (config.yaml, .env, SOUL.md).
     no_alias:
-        如果为 True，跳过包装器脚本创建。
+        If True, skip wrapper script creation.
 
     Returns
     -------
     Path
-        新创建的配置文件目录。
+        The newly created profile directory.
     """
     validate_profile_name(name)
 
@@ -417,7 +408,7 @@ def create_profile(
     if profile_dir.exists():
         raise FileExistsError(f"Profile '{name}' already exists at {profile_dir}")
 
-    # 解析克隆源
+    # Resolve clone source
     source_dir = None
     if clone_from is not None or clone_all or clone_config:
         if clone_from is None:
@@ -459,8 +450,8 @@ def create_profile(
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, dst)
 
-    # 植入默认 SOUL.md，使用户有一个可以立即自定义的文件。
-    # 当配置文件已有时（来自 --clone / --clone-all）跳过。
+    # Seed a default SOUL.md so the user has a file to customize immediately.
+    # Skipped when the profile already has one (from --clone / --clone-all).
     soul_path = profile_dir / "SOUL.md"
     if not soul_path.exists():
         try:
@@ -473,10 +464,10 @@ def create_profile(
 
 
 def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict]:
-    """通过子进程将内置技能植入配置文件。
+    """Seed bundled skills into a profile via subprocess.
 
-    使用子进程是因为 sync_skills() 在模块级别缓存 HERMES_HOME。
-    返回同步结果字典，失败时返回 None。
+    Uses subprocess because sync_skills() caches HERMES_HOME at module level.
+    Returns the sync result dict, or None on failure.
     """
     project_root = Path(__file__).parent.parent.resolve()
     try:
@@ -506,10 +497,10 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict
 
 
 def delete_profile(name: str, yes: bool = False) -> Path:
-    """删除配置文件、其包装器脚本和网关服务。
+    """Delete a profile, its wrapper script, and its gateway service.
 
-    如果网关正在运行则停止。先禁用 systemd/launchd 服务
-    以防止自动重启。
+    Stops the gateway if running. Disables systemd/launchd service first
+    to prevent auto-restart.
 
     Returns the path that was removed.
     """
@@ -525,7 +516,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     if not profile_dir.is_dir():
         raise FileNotFoundError(f"Profile '{name}' does not exist.")
 
-    # 显示将被删除的内容
+    # Show what will be deleted
     model, provider = _read_config_model(profile_dir)
     gw_running = _check_gateway_running(profile_dir)
     skill_count = _count_skills(profile_dir)
@@ -541,7 +532,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         "All config, API keys, memories, sessions, skills, cron jobs",
     ]
 
-    # 检查服务
+    # Check for service
     wrapper_path = _get_wrapper_dir() / name
     has_wrapper = wrapper_path.exists()
     if has_wrapper:
@@ -553,7 +544,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     if gw_running:
         print(f"  ⚠ Gateway is running — it will be stopped.")
 
-    # 确认
+    # Confirmation
     if not yes:
         print()
         try:
@@ -565,26 +556,26 @@ def delete_profile(name: str, yes: bool = False) -> Path:
             print("Cancelled.")
             return profile_dir
 
-    # 1. 禁用服务（防止自动重启）
+    # 1. Disable service (prevents auto-restart)
     _cleanup_gateway_service(name, profile_dir)
 
-    # 2. 停止运行中的网关
+    # 2. Stop running gateway
     if gw_running:
         _stop_gateway_process(profile_dir)
 
-    # 3. 移除包装器脚本
+    # 3. Remove wrapper script
     if has_wrapper:
         if remove_wrapper_script(name):
             print(f"✓ Removed {wrapper_path}")
 
-    # 4. 移除配置文件目录
+    # 4. Remove profile directory
     try:
         shutil.rmtree(profile_dir)
         print(f"✓ Removed {profile_dir}")
     except Exception as e:
         print(f"⚠ Could not remove {profile_dir}: {e}")
 
-    # 5. 如果 active_profile 指向此配置文件则清除
+    # 5. Clear active_profile if it pointed to this profile
     try:
         active = get_active_profile()
         if active == name:
@@ -598,11 +589,11 @@ def delete_profile(name: str, yes: bool = False) -> Path:
 
 
 def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
-    """禁用并移除配置文件的 systemd/launchd 服务。"""
+    """Disable and remove systemd/launchd service for a profile."""
     import platform as _platform
 
-    # 推导此配置文件的服务名称
-    # 临时设置 HERMES_HOME 以便 _profile_suffix 正确解析
+    # Derive service name for this profile
+    # Temporarily set HERMES_HOME so _profile_suffix resolves correctly
     old_home = os.environ.get("HERMES_HOME")
     try:
         os.environ["HERMES_HOME"] = str(profile_dir)
@@ -646,7 +637,7 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
 
 
 def _stop_gateway_process(profile_dir: Path) -> None:
-    """通过 PID 文件停止运行中的网关进程。"""
+    """Stop a running gateway process via its PID file."""
     import signal as _signal
     import time as _time
 
@@ -660,7 +651,6 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         pid = int(data["pid"])
         os.kill(pid, _signal.SIGTERM)
         # Wait up to 10s for graceful shutdown
-        # 等待最多 10 秒以实现优雅关闭
         for _ in range(20):
             _time.sleep(0.5)
             try:
@@ -668,7 +658,7 @@ def _stop_gateway_process(profile_dir: Path) -> None:
             except ProcessLookupError:
                 print(f"✓ Gateway stopped (PID {pid})")
                 return
-        # 强制终止
+        # Force kill
         try:
             os.kill(pid, _signal.SIGKILL)
         except ProcessLookupError:
@@ -681,13 +671,13 @@ def _stop_gateway_process(profile_dir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 活跃配置文件（粘性默认值）
+# Active profile (sticky default)
 # ---------------------------------------------------------------------------
 
 def get_active_profile() -> str:
-    """读取粘性活跃配置文件名称。
+    """Read the sticky active profile name.
 
-    如果 active_profile 文件不存在或为空，返回 ``"default"``。
+    Returns ``"default"`` if no active_profile file exists or it's empty.
     """
     path = _get_active_profile_path()
     try:
@@ -700,9 +690,9 @@ def get_active_profile() -> str:
 
 
 def set_active_profile(name: str) -> None:
-    """设置粘性活跃配置文件。
+    """Set the sticky active profile.
 
-    写入 ``~/.hermes/active_profile``。使用 ``"default"`` 来清除。
+    Writes to ``~/.hermes/active_profile``. Use ``"default"`` to clear.
     """
     validate_profile_name(name)
     if name != "default" and not profile_exists(name):
@@ -714,21 +704,21 @@ def set_active_profile(name: str) -> None:
     path = _get_active_profile_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     if name == "default":
-        # 删除文件以表示使用默认配置
+        # Remove the file to indicate default
         path.unlink(missing_ok=True)
     else:
-        # 原子写入
+        # Atomic write
         tmp = path.with_suffix(".tmp")
         tmp.write_text(name + "\n")
         tmp.replace(path)
 
 
 def get_active_profile_name() -> str:
-    """从 HERMES_HOME 推断当前配置文件名称。
+    """Infer the current profile name from HERMES_HOME.
 
-    如果 HERMES_HOME 未设置或指向 ``~/.hermes``，返回 ``"default"``。
-    如果 HERMES_HOME 指向 ``~/.hermes/profiles/<name>``，返回该配置文件名称。
-    如果 HERMES_HOME 设置为未识别的路径，返回 ``"custom"``。
+    Returns ``"default"`` if HERMES_HOME is not set or points to ``~/.hermes``.
+    Returns the profile name if HERMES_HOME points into ``~/.hermes/profiles/<name>``.
+    Returns ``"custom"`` if HERMES_HOME is set to an unrecognized path.
     """
     from hermes_constants import get_hermes_home
     hermes_home = get_hermes_home()
@@ -751,26 +741,26 @@ def get_active_profile_name() -> str:
 
 
 # ---------------------------------------------------------------------------
-# 导出 / 导入
+# Export / Import
 # ---------------------------------------------------------------------------
 
 def _default_export_ignore(root_dir: Path):
-    """返回 :func:`shutil.copytree` 的 *ignore* 回调函数。
+    """Return an *ignore* callable for :func:`shutil.copytree`.
 
-    在根目录层级排除 ``_DEFAULT_EXPORT_EXCLUDE_ROOT`` 中的所有项。
-    在所有层级排除 ``__pycache__``、socket 文件和临时文件。
+    At the root level it excludes everything in ``_DEFAULT_EXPORT_EXCLUDE_ROOT``.
+    At all levels it excludes ``__pycache__``, sockets, and temp files.
     """
 
     def _ignore(directory: str, contents: list) -> set:
         ignored: set = set()
         for entry in contents:
-        # 通用排除项（任何深度）
+            # Universal exclusions (any depth)
             if entry == "__pycache__" or entry.endswith((".sock", ".tmp")):
                 ignored.add(entry)
-            # npm 锁文件可能出现在根目录
+            # npm lockfiles can appear at root
             elif entry in ("package.json", "package-lock.json"):
                 ignored.add(entry)
-        # 根目录层级排除项
+        # Root-level exclusions
         if Path(directory) == root_dir:
             ignored.update(c for c in contents if c in _DEFAULT_EXPORT_EXCLUDE_ROOT)
         return ignored
@@ -779,9 +769,9 @@ def _default_export_ignore(root_dir: Path):
 
 
 def export_profile(name: str, output_path: str) -> Path:
-    """将配置文件导出为 tar.gz 归档。
+    """Export a profile to a tar.gz archive.
 
-    返回输出文件路径。
+    Returns the output file path.
     """
     import tempfile
 
@@ -791,13 +781,13 @@ def export_profile(name: str, output_path: str) -> Path:
         raise FileNotFoundError(f"Profile '{name}' does not exist.")
 
     output = Path(output_path)
-    # shutil.make_archive 需要不带扩展名的基本名称
+    # shutil.make_archive wants the base name without extension
     base = str(output).removesuffix(".tar.gz").removesuffix(".tgz")
 
     if name == "default":
-        # 默认配置文件就是 ~/.hermes 本身 — 其父目录是 ~/，目录名是
-        # ".hermes" 而不是 "default"。我们在临时目录下建立一个干净的副本，
-        # 使归档包含 ``default/...``。
+        # The default profile IS ~/.hermes itself — its parent is ~/ and its
+        # directory name is ".hermes", not "default".  We stage a clean copy
+        # under a temp dir so the archive contains ``default/...``.
         with tempfile.TemporaryDirectory() as tmpdir:
             staged = Path(tmpdir) / "default"
             shutil.copytree(
@@ -808,7 +798,7 @@ def export_profile(name: str, output_path: str) -> Path:
             result = shutil.make_archive(base, "gztar", tmpdir, "default")
             return Path(result)
 
-    # 命名配置文件 — stage a filtered copy to exclude credentials
+    # Named profiles — stage a filtered copy to exclude credentials
     with tempfile.TemporaryDirectory() as tmpdir:
         staged = Path(tmpdir) / name
         _CREDENTIAL_FILES = {"auth.json", ".env"}
@@ -822,7 +812,7 @@ def export_profile(name: str, output_path: str) -> Path:
 
 
 def _normalize_profile_archive_parts(member_name: str) -> List[str]:
-    """返回配置文件归档成员的安全路径部分。"""
+    """Return safe path parts for a profile archive member."""
     normalized_name = member_name.replace("\\", "/")
     posix_path = PurePosixPath(normalized_name)
     windows_path = PureWindowsPath(member_name)
@@ -842,7 +832,7 @@ def _normalize_profile_archive_parts(member_name: str) -> List[str]:
 
 
 def _safe_extract_profile_archive(archive: Path, destination: Path) -> None:
-    """提取配置文件归档，不允许路径逃逸或链接。"""
+    """Extract a profile archive without allowing path escapes or links."""
     import tarfile
 
     with tarfile.open(archive, "r:gz") as tf:
@@ -874,10 +864,10 @@ def _safe_extract_profile_archive(archive: Path, destination: Path) -> None:
 
 
 def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
-    """从 tar.gz 归档导入配置文件。
+    """Import a profile from a tar.gz archive.
 
-    如果未指定 *name*，从归档的顶层目录推断。
-    返回导入的配置文件目录。
+    If *name* is not given, infers it from the archive's top-level directory.
+    Returns the imported profile directory.
     """
     import tarfile
 
@@ -885,7 +875,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     if not archive.exists():
         raise FileNotFoundError(f"Archive not found: {archive}")
 
-    # 查看归档以找到顶层目录名称
+    # Peek at the archive to find the top-level directory name
     with tarfile.open(archive, "r:gz") as tf:
         top_dirs = {
             parts[0]
@@ -907,9 +897,9 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
             "Specify it explicitly: hermes profile import <archive> --name <name>"
         )
 
-    # 从默认配置文件导出的归档以 "default/" 作为顶层目录。
-    # 导入为 "default" 会指向 ~/.hermes 本身 — 禁止此操作，
-    # 引导用户使用命名配置文件。
+    # Archives exported from the default profile have "default/" as top-level
+    # dir.  Importing as "default" would target ~/.hermes itself — disallow
+    # that and guide the user toward a named profile.
     if inferred_name == "default":
         raise ValueError(
             "Cannot import as 'default' — that is the built-in root profile (~/.hermes). "
@@ -926,7 +916,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 
     _safe_extract_profile_archive(archive, profiles_root)
 
-    # 如果归档提取到不同名称的目录下，进行重命名
+    # If the archive extracted under a different name, rename
     extracted = profiles_root / (top_dirs.pop() if top_dirs else inferred_name)
     if extracted != profile_dir and extracted.exists():
         extracted.rename(profile_dir)
@@ -935,13 +925,13 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# 重命名
+# Rename
 # ---------------------------------------------------------------------------
 
 def rename_profile(old_name: str, new_name: str) -> Path:
-    """重命名配置文件：目录、包装器脚本、服务、活跃配置文件。
+    """Rename a profile: directory, wrapper script, service, active_profile.
 
-    返回新的配置文件目录。
+    Returns the new profile directory.
     """
     validate_profile_name(old_name)
     validate_profile_name(new_name)
@@ -959,16 +949,16 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     if new_dir.exists():
         raise FileExistsError(f"Profile '{new_name}' already exists.")
 
-    # 1. 如果运行中则停止网关
+    # 1. Stop gateway if running
     if _check_gateway_running(old_dir):
         _cleanup_gateway_service(old_name, old_dir)
         _stop_gateway_process(old_dir)
 
-    # 2. 重命名目录
+    # 2. Rename directory
     old_dir.rename(new_dir)
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
 
-    # 3. 更新包装器脚本
+    # 3. Update wrapper script
     remove_wrapper_script(old_name)
     collision = check_alias_collision(new_name)
     if not collision:
@@ -977,7 +967,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     else:
         print(f"⚠ Cannot create alias '{new_name}' — {collision}")
 
-    # 4. 如果活跃配置文件指向旧名称，则更新
+    # 4. Update active_profile if it pointed to old name
     try:
         if get_active_profile() == old_name:
             set_active_profile(new_name)
@@ -989,11 +979,11 @@ def rename_profile(old_name: str, new_name: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Tab 补全
+# Tab completion
 # ---------------------------------------------------------------------------
 
 def generate_bash_completion() -> str:
-    """生成 hermes 配置文件名称的 bash 补全脚本。"""
+    """Generate a bash completion script for hermes profile names."""
     return '''# Hermes Agent profile completion
 # Add to ~/.bashrc: eval "$(hermes completion bash)"
 
@@ -1043,7 +1033,7 @@ complete -F _hermes_completion hermes
 
 
 def generate_zsh_completion() -> str:
-    """生成 hermes 配置文件名称的 zsh 补全脚本。"""
+    """Generate a zsh completion script for hermes profile names."""
     return '''#compdef hermes
 # Hermes Agent profile completion
 # Add to ~/.zshrc: eval "$(hermes completion zsh)"
@@ -1074,14 +1064,14 @@ _hermes "$@"
 
 
 # ---------------------------------------------------------------------------
-# 配置文件环境解析（从 _apply_profile_override 调用）
+# Profile env resolution (called from _apply_profile_override)
 # ---------------------------------------------------------------------------
 
 def resolve_profile_env(profile_name: str) -> str:
-    """将配置文件名称解析为 HERMES_HOME 路径字符串。
+    """Resolve a profile name to a HERMES_HOME path string.
 
-    在 CLI 入口点的早期阶段调用，在导入任何 hermes 模块之前，
-    用于设置 HERMES_HOME 环境变量。
+    Called early in the CLI entry point, before any hermes modules
+    are imported, to set the HERMES_HOME environment variable.
     """
     validate_profile_name(profile_name)
     profile_dir = get_profile_dir(profile_name)

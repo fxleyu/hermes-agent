@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """
-图像生成工具模块
+Image Generation Tools Module
 
-通过 FAL.ai 提供图像生成功能。支持多个 FAL 模型，
-可通过 ``hermes tools`` -> Image Generation 选择；活动模型
-持久化到 ``config.yaml`` 的 ``image_gen.model`` 中。
+Provides image generation via FAL.ai. Multiple FAL models are supported and
+selectable via ``hermes tools`` → Image Generation; the active model is
+persisted to ``image_gen.model`` in ``config.yaml``.
 
-架构:
-- ``FAL_MODELS`` 是支持的模型目录，包含每个模型的元数据
-  （尺寸样式族、默认值、``supports`` 白名单、放大器标志）。
-- ``_build_fal_payload()`` 将代理的统一输入（prompt +
-  aspect_ratio）翻译为模型特定的载荷，并过滤到
-  ``supports`` 白名单，以确保模型不会收到被拒绝的键。
-- 通过 FAL 的 Clarity Upscaler 进行放大，按模型通过 ``upscale``
-  标志控制 — FLUX 2 Pro 开启（向后兼容），所有更快/更新的模型
-  关闭（放大会增加延迟或只带来边际质量提升）。
+Architecture:
+- ``FAL_MODELS`` is a catalog of supported models with per-model metadata
+  (size-style family, defaults, ``supports`` whitelist, upscaler flag).
+- ``_build_fal_payload()`` translates the agent's unified inputs (prompt +
+  aspect_ratio) into the model-specific payload and filters to the
+  ``supports`` whitelist so models never receive rejected keys.
+- Upscaling via FAL's Clarity Upscaler is gated per-model via the ``upscale``
+  flag — on for FLUX 2 Pro (backward-compat), off for all faster/newer models
+  where upscaling would either hurt latency or add marginal quality.
 
-UI 字符串中显示的价格截至初始提交时；我们接受价格漂移，
-在发现时更新。
+Pricing shown in UI strings is as-of the initial commit; we accept drift and
+update when it's noticed.
 """
 
 import json
@@ -33,28 +33,35 @@ import fal_client
 
 from tools.debug_helpers import DebugSession
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway
+from tools.tool_backend_helpers import (
+    fal_key_is_configured,
+    managed_nous_tools_enabled,
+    prefers_gateway,
+)
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# FAL 模型目录
+# FAL model catalog
 # ---------------------------------------------------------------------------
 #
-# 每个条目声明如何将我们的统一输入翻译为模型的原生载荷形状。
-# 尺寸规格分为三个族:
+# Each entry declares how to translate our unified inputs into the model's
+# native payload shape. Size specification falls into three families:
 #
-#   "image_size_preset" — 预设枚举 ("square_hd", "landscape_16_9", ...)
-#                          flux 系列、z-image、qwen、recraft、ideogram 使用。
-#   "aspect_ratio"      — 宽高比枚举 ("16:9", "1:1", ...) nano-banana (Gemini) 使用。
-#   "gpt_literal"       — 文字尺寸字符串 ("1024x1024", 等) gpt-image-1.5 使用。
+#   "image_size_preset" — preset enum ("square_hd", "landscape_16_9", ...)
+#                          used by the flux family, z-image, qwen, recraft,
+#                          ideogram.
+#   "aspect_ratio"      — aspect ratio enum ("16:9", "1:1", ...) used by
+#                          nano-banana (Gemini).
+#   "gpt_literal"       — literal dimension strings ("1024x1024", etc.)
+#                          used by gpt-image-1.5.
 #
-# ``supports`` 是输出载荷中允许的键的白名单 — 白名单之外的
-# 任何键在提交前都会被剔除，以确保模型不会收到被拒绝的参数
-# （每个 FAL 模型以不同方式拒绝未知键）。
+# ``supports`` is a whitelist of keys allowed in the outgoing payload — any
+# key outside this set is stripped before submission so models never receive
+# rejected parameters (each FAL model rejects unknown keys differently).
 #
-# ``upscale`` 控制是否在生成后链式调用 Clarity Upscaler。
+# ``upscale`` controls whether to chain Clarity Upscaler after generation.
 
 FAL_MODELS: Dict[str, Dict[str, Any]] = {
     "fal-ai/flux-2/klein/9b": {
@@ -104,7 +111,7 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
             "num_images", "output_format", "enable_safety_checker",
             "safety_tolerance", "sync_mode", "seed",
         },
-        "upscale": True,   # 向后兼容: 当前默认行为。
+        "upscale": True,   # Backward-compat: current default behavior.
     },
     "fal-ai/z-image/turbo": {
         "display": "Z-Image Turbo",
@@ -122,7 +129,7 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
             "num_images": 1,
             "output_format": "png",
             "enable_safety_checker": False,
-            "enable_prompt_expansion": False,  # 避免每请求额外收费
+            "enable_prompt_expansion": False,  # avoid the extra per-request charge
         },
         "supports": {
             "prompt", "image_size", "num_inference_steps", "num_images",
@@ -146,8 +153,8 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
             "num_images": 1,
             "output_format": "png",
             "safety_tolerance": "5",
-            # "1K" 是最便宜的层级；4K 翻倍每张图片的成本。
-            # 使用 Nous Subscription 的用户应保持 1K 以获得可预测的计费。
+            # "1K" is the cheapest tier; 4K doubles the per-image cost.
+            # Users on Nous Subscription should stay at 1K for predictable billing.
             "resolution": "1K",
         },
         "supports": {
@@ -169,8 +176,8 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
             "portrait": "1024x1536",
         },
         "defaults": {
-            # 质量固定为 medium 以保持所有用户的门户计费可预测
-            # （low 太粗糙，high 贵 4-6 倍）。
+            # Quality is pinned to medium to keep portal billing predictable
+            # across all users (low is too rough, high is 4-6x more expensive).
             "quality": "medium",
             "num_images": 1,
             "output_format": "png",
@@ -215,7 +222,7 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
             "portrait": "portrait_16_9",
         },
         "defaults": {
-            # V4 Pro 去掉了 V3 必需的 `style` 枚举 — 默认值现在处理风格偏好。
+            # V4 Pro dropped V3's required `style` enum — defaults handle taste now.
             "enable_safety_checker": False,
         },
         "supports": {
@@ -250,7 +257,7 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
     },
 }
 
-# 默认模型是最快的合理选项。保持低价且低于 1 秒。
+# Default model is the fastest reasonable option. Kept cheap and sub-1s.
 DEFAULT_MODEL = "fal-ai/flux-2/klein/9b"
 
 DEFAULT_ASPECT_RATIO = "landscape"
@@ -258,7 +265,7 @@ VALID_ASPECT_RATIOS = ("landscape", "square", "portrait")
 
 
 # ---------------------------------------------------------------------------
-# 放大器（Clarity Upscaler — 与之前实现不变）
+# Upscaler (Clarity Upscaler — unchanged from previous implementation)
 # ---------------------------------------------------------------------------
 UPSCALER_MODEL = "fal-ai/clarity-upscaler"
 UPSCALER_FACTOR = 2
@@ -278,11 +285,12 @@ _managed_fal_client_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
-# 托管 FAL 网关（Nous 订阅）
+# Managed FAL gateway (Nous Subscription)
 # ---------------------------------------------------------------------------
 def _resolve_managed_fal_gateway():
-    """当用户偏好网关或缺少直接 FAL 凭证时，返回托管 fal-queue 网关配置。"""
-    if os.getenv("FAL_KEY") and not prefers_gateway("image_gen"):
+    """Return managed fal-queue gateway config when the user prefers the gateway
+    or direct FAL credentials are absent."""
+    if fal_key_is_configured() and not prefers_gateway("image_gen"):
         return None
     return resolve_managed_tool_gateway("fal-queue")
 
@@ -295,7 +303,7 @@ def _normalize_fal_queue_url_format(queue_run_origin: str) -> str:
 
 
 class _ManagedFalSyncClient:
-    """为托管队列主机封装 fal_client.SyncClient 的小型实例包装器。"""
+    """Small per-instance wrapper around fal_client.SyncClient for managed queue hosts."""
 
     def __init__(self, *, key: str, queue_run_origin: str):
         sync_client_class = getattr(fal_client, "SyncClient", None)
@@ -374,7 +382,7 @@ class _ManagedFalSyncClient:
 
 
 def _get_managed_fal_client(managed_gateway):
-    """复用托管 FAL 客户端，避免每次调用泄漏内部 httpx.Client。"""
+    """Reuse the managed FAL client so its internal httpx.Client is not leaked per call."""
     global _managed_fal_client, _managed_fal_client_config
 
     client_config = (
@@ -394,7 +402,7 @@ def _get_managed_fal_client(managed_gateway):
 
 
 def _submit_fal_request(model: str, arguments: Dict[str, Any]):
-    """使用直接凭证或托管队列网关提交 FAL 请求。"""
+    """Submit a FAL request using direct credentials or the managed queue gateway."""
     request_headers = {"x-idempotency-key": str(uuid.uuid4())}
     managed_gateway = _resolve_managed_fal_gateway()
     if managed_gateway is None:
@@ -408,9 +416,10 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
             headers=request_headers,
         )
     except Exception as exc:
-        # 托管网关返回的 4xx 通常意味着门户当前不代理
-        # 此模型（白名单未命中、计费门控等）— 提供更清晰的
-        # 带有可操作补救措施的消息，而不是 httpx 的原始 HTTP 错误。
+        # 4xx from the managed gateway typically means the portal doesn't
+        # currently proxy this model (allowlist miss, billing gate, etc.)
+        # — surface a clearer message with actionable remediation instead
+        # of a raw HTTP error from httpx.
         status = _extract_http_status(exc)
         if status is not None and 400 <= status < 500:
             raise ValueError(
@@ -424,11 +433,11 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
 
 
 def _extract_http_status(exc: BaseException) -> Optional[int]:
-    """从 httpx/fal 异常中返回 HTTP 状态码，否则返回 None。
+    """Return an HTTP status code from httpx/fal exceptions, else None.
 
-    防御性地跨异常形状 — httpx.HTTPStatusError 通过
-    ``.response.status_code`` 暴露，而 fal_client 包装器可能
-    直接通过 ``.status_code`` 暴露。
+    Defensive across exception shapes — httpx.HTTPStatusError exposes
+    ``.response.status_code`` while fal_client wrappers may expose
+    ``.status_code`` directly.
     """
     response = getattr(exc, "response", None)
     if response is not None:
@@ -442,13 +451,13 @@ def _extract_http_status(exc: BaseException) -> Optional[int]:
 
 
 # ---------------------------------------------------------------------------
-# 模型解析 + 载荷构建
+# Model resolution + payload construction
 # ---------------------------------------------------------------------------
 def _resolve_fal_model() -> tuple:
-    """从 config.yaml（主要）或默认值解析活动的 FAL 模型。
+    """Resolve the active FAL model from config.yaml (primary) or default.
 
-    返回 (model_id, metadata_dict)。如果配置的模型未知，
-    回退到 DEFAULT_MODEL（记录为警告）。
+    Returns (model_id, metadata_dict). Falls back to DEFAULT_MODEL if the
+    configured model is unknown (logged as a warning).
     """
     model_id = ""
     try:
@@ -462,7 +471,7 @@ def _resolve_fal_model() -> tuple:
     except Exception as exc:
         logger.debug("Could not load image_gen.model from config: %s", exc)
 
-    # 环境变量逃生通道（未文档化；用于测试/脚本的向后兼容）。
+    # Env var escape hatch (undocumented; backward-compat for tests/scripts).
     if not model_id:
         model_id = os.getenv("FAL_IMAGE_MODEL", "").strip()
 
@@ -486,11 +495,11 @@ def _build_fal_payload(
     seed: Optional[int] = None,
     overrides: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """从统一输入为 `model_id` 构建 FAL 请求载荷。
+    """Build a FAL request payload for `model_id` from unified inputs.
 
-    将 aspect_ratio 翻译为模型的原生尺寸规格（预设枚举、
-    宽高比枚举或 GPT 文字字符串），合并模型默认值，应用
-    调用方覆盖，然后过滤到模型的 ``supports`` 白名单。
+    Translates aspect_ratio into the model's native size spec (preset enum,
+    aspect-ratio enum, or GPT literal string), merges model defaults, applies
+    caller overrides, then filters to the model's ``supports`` whitelist.
     """
     meta = FAL_MODELS[model_id]
     size_style = meta["size_style"]
@@ -523,12 +532,13 @@ def _build_fal_payload(
 
 
 # ---------------------------------------------------------------------------
-# 放大器
+# Upscaler
 # ---------------------------------------------------------------------------
 def _upscale_image(image_url: str, original_prompt: str) -> Optional[Dict[str, Any]]:
-    """使用 FAL.ai 的 Clarity Upscaler 放大图像。
+    """Upscale an image using FAL.ai's Clarity Upscaler.
 
-    返回放大后的图像字典，失败时返回 None（调用方回退到原始图像）。
+    Returns upscaled image dict, or None on failure (caller falls back to
+    the original image).
     """
     try:
         logger.info("Upscaling image with Clarity Upscaler...")
@@ -571,7 +581,7 @@ def _upscale_image(image_url: str, original_prompt: str) -> Optional[Dict[str, A
 
 
 # ---------------------------------------------------------------------------
-# 工具入口点
+# Tool entry point
 # ---------------------------------------------------------------------------
 def image_generate_tool(
     prompt: str,
@@ -582,15 +592,15 @@ def image_generate_tool(
     output_format: Optional[str] = None,
     seed: Optional[int] = None,
 ) -> str:
-    """使用配置的 FAL 模型从文本提示生成图像。
+    """Generate an image from a text prompt using the configured FAL model.
 
-    面向代理的 schema 仅暴露 ``prompt`` 和 ``aspect_ratio``；
-    其余 kwargs 是直接 Python 调用方的覆盖，按模型通过
-    ``supports`` 白名单过滤（不支持的覆盖被静默丢弃，
-    以确保旧版调用方在切换模型时不会中断）。
+    The agent-facing schema exposes only ``prompt`` and ``aspect_ratio``; the
+    remaining kwargs are overrides for direct Python callers and are filtered
+    per-model via the ``supports`` whitelist (unsupported overrides are
+    silently dropped so legacy callers don't break when switching models).
 
-    返回 JSON 字符串: ``{"success": bool, "image": url | None,
-    "error": str, "error_type": str}``。
+    Returns a JSON string with ``{"success": bool, "image": url | None,
+    "error": str, "error_type": str}``.
     """
     model_id, meta = _resolve_fal_model()
 
@@ -617,7 +627,7 @@ def image_generate_tool(
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
 
-        if not (os.getenv("FAL_KEY") or _resolve_managed_fal_gateway()):
+        if not (fal_key_is_configured() or _resolve_managed_fal_gateway()):
             message = "FAL_KEY environment variable not set"
             if managed_nous_tools_enabled():
                 message += " and managed FAL gateway is unavailable"
@@ -727,23 +737,23 @@ def image_generate_tool(
 
 
 def check_fal_api_key() -> bool:
-    """当 FAL.ai API 密钥（直接或托管网关）可用时返回 True。"""
-    return bool(os.getenv("FAL_KEY") or _resolve_managed_fal_gateway())
+    """True if the FAL.ai API key (direct or managed gateway) is available."""
+    return bool(fal_key_is_configured() or _resolve_managed_fal_gateway())
 
 
 def check_image_generation_requirements() -> bool:
-    """当 FAL 凭证和 fal_client SDK 均可用时返回 True。"""
+    """True if FAL credentials and fal_client SDK are both available."""
     try:
         if not check_fal_api_key():
             return False
-        import fal_client  # noqa: F401 — SDK 存在性检查
+        fal_client  # noqa: F401 — SDK presence check
         return True
     except ImportError:
         return False
 
 
 # ---------------------------------------------------------------------------
-# 演示 / CLI 入口
+# Demo / CLI entry point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     print("🎨 Image Generation Tools — FAL.ai multi-model support")
@@ -778,7 +788,7 @@ if __name__ == "__main__":
 
 
 # ---------------------------------------------------------------------------
-# 注册表
+# Registry
 # ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
 
@@ -826,6 +836,6 @@ registry.register(
     handler=_handle_image_generate,
     check_fn=check_image_generation_requirements,
     requires_env=[],
-    is_async=False,   # 同步 fal_client API，避免网关中出现 "Event loop is closed" 错误
+    is_async=False,   # sync fal_client API to avoid "Event loop is closed" in gateway
     emoji="🎨",
 )

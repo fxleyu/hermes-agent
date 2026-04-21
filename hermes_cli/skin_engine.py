@@ -1,78 +1,78 @@
-"""Hermes CLI 皮肤/主题引擎。
+"""Hermes CLI skin/theme engine.
 
-数据驱动的皮肤系统，让用户自定义 CLI 的视觉外观。
-皮肤定义为 ~/.hermes/skins/ 中的 YAML 文件或内置预设。
-添加新皮肤无需修改代码。
+A data-driven skin system that lets users customize the CLI's visual appearance.
+Skins are defined as YAML files in ~/.hermes/skins/ or as built-in presets.
+No code changes are needed to add a new skin.
 
-皮肤 YAML 架构
+SKIN YAML SCHEMA
 ================
 
-所有字段均为可选。缺失的值从 ``default`` 皮肤继承。
+All fields are optional. Missing values inherit from the ``default`` skin.
 
 .. code-block:: yaml
 
-    # 必需：皮肤标识
-    name: mytheme                         # 唯一皮肤名称（小写，可用连字符）
-    description: Short description        # 在 /skin 列表中显示
+    # Required: skin identity
+    name: mytheme                         # Unique skin name (lowercase, hyphens ok)
+    description: Short description        # Shown in /skin listing
 
-    # 颜色：Rich 标记的十六进制值（横幅、UI、响应框）
+    # Colors: hex values for Rich markup (banner, UI, response box)
     colors:
-      banner_border: "#CD7F32"            # 面板边框颜色
-      banner_title: "#FFD700"             # 面板标题文本颜色
-      banner_accent: "#FFBF00"            # 分段标题（可用工具等）
-      banner_dim: "#B8860B"               # 暗淡/弱化文本（分隔符、标签）
-      banner_text: "#FFF8DC"              # 正文文本（工具名称、技能名称）
-      ui_accent: "#FFBF00"               # 通用 UI 强调色
-      ui_label: "#4dd0e1"                # UI 标签
-      ui_ok: "#4caf50"                   # 成功指示器
-      ui_error: "#ef5350"                # 错误指示器
-      ui_warn: "#ffa726"                 # 警告指示器
-      prompt: "#FFF8DC"                  # 提示文本颜色
-      input_rule: "#CD7F32"              # 输入区域水平线
-      response_border: "#FFD700"         # 响应框边框（ANSI）
-      session_label: "#DAA520"           # 会话标签颜色
-      session_border: "#8B8682"          # 会话 ID 暗淡颜色
-      status_bar_bg: "#1a1a2e"          # TUI 状态/用量条背景
-      voice_status_bg: "#1a1a2e"        # TUI 语音状态背景
-      completion_menu_bg: "#1a1a2e"      # 补全菜单背景
-      completion_menu_current_bg: "#333355"  # 活跃补全行背景
-      completion_menu_meta_bg: "#1a1a2e"     # 补全元列背景
-      completion_menu_meta_current_bg: "#333355"  # 活跃补全元背景
+      banner_border: "#CD7F32"            # Panel border color
+      banner_title: "#FFD700"             # Panel title text color
+      banner_accent: "#FFBF00"            # Section headers (Available Tools, etc.)
+      banner_dim: "#B8860B"               # Dim/muted text (separators, labels)
+      banner_text: "#FFF8DC"              # Body text (tool names, skill names)
+      ui_accent: "#FFBF00"               # General UI accent
+      ui_label: "#DAA520"                # UI labels (warm gold; teal clashed w/ default banner gold)
+      ui_ok: "#4caf50"                   # Success indicators
+      ui_error: "#ef5350"                # Error indicators
+      ui_warn: "#ffa726"                 # Warning indicators
+      prompt: "#FFF8DC"                  # Prompt text color
+      input_rule: "#CD7F32"              # Input area horizontal rule
+      response_border: "#FFD700"         # Response box border (ANSI)
+      session_label: "#DAA520"           # Session label color
+      session_border: "#8B8682"          # Session ID dim color
+      status_bar_bg: "#1a1a2e"          # TUI status/usage bar background
+      voice_status_bg: "#1a1a2e"        # TUI voice status background
+      completion_menu_bg: "#1a1a2e"      # Completion menu background
+      completion_menu_current_bg: "#333355"  # Active completion row background
+      completion_menu_meta_bg: "#1a1a2e"     # Completion meta column background
+      completion_menu_meta_current_bg: "#333355"  # Active completion meta background
 
-    # 加载动画：自定义 API 调用期间的动画加载器
+    # Spinner: customize the animated spinner during API calls
     spinner:
-      waiting_faces:                      # 等待 API 时显示的表情
+      waiting_faces:                      # Faces shown while waiting for API
         - "(⚔)"
         - "(⛨)"
-      thinking_faces:                     # 推理期间显示的表情
+      thinking_faces:                     # Faces shown during reasoning
         - "(⌁)"
         - "(<>)"
-      thinking_verbs:                     # 加载消息中的动词
+      thinking_verbs:                     # Verbs for spinner messages
         - "forging"
         - "plotting"
-      wings:                              # 可选的左/右加载装饰
-        - ["⟪⚔", "⚔⟫"]                  # 每个条目是 [left, right] 对
+      wings:                              # Optional left/right spinner decorations
+        - ["⟪⚔", "⚔⟫"]                  # Each entry is [left, right] pair
         - ["⟪▲", "▲⟫"]
 
-    # 品牌：在 CLI 中使用的文本字符串
+    # Branding: text strings used throughout the CLI
     branding:
-      agent_name: "Hermes Agent"          # 横幅标题、状态显示
-      welcome: "Welcome message"          # CLI 启动时显示
-      goodbye: "Goodbye! ⚕"              # 退出时显示
-      response_label: " ⚕ Hermes "       # 响应框标题标签
-      prompt_symbol: "❯ "                # 输入提示符号
-      help_header: "(^_^)? Commands"      # /help 标题文本
+      agent_name: "Hermes Agent"          # Banner title, status display
+      welcome: "Welcome message"          # Shown at CLI startup
+      goodbye: "Goodbye! ⚕"              # Shown on exit
+      response_label: " ⚕ Hermes "       # Response box header label
+      prompt_symbol: "❯ "                # Input prompt symbol
+      help_header: "(^_^)? Commands"      # /help header text
 
-    # 工具前缀：工具输出行的字符（默认：┊）
+    # Tool prefix: character for tool output lines (default: ┊)
     tool_prefix: "┊"
 
-    # 工具表情：覆盖任何工具的默认表情（用于加载器和进度显示）
+    # Tool emojis: override the default emoji for any tool (used in spinners & progress)
     tool_emojis:
-      terminal: "⚔"           # 覆盖 terminal 工具表情
-      web_search: "🔮"        # 覆盖 web_search 工具表情
-      # 此处未列出的工具使用注册表默认值
+      terminal: "⚔"           # Override terminal tool emoji
+      web_search: "🔮"        # Override web_search tool emoji
+      # Any tool not listed here uses its registry default
 
-用法
+USAGE
 =====
 
 .. code-block:: python
@@ -83,24 +83,24 @@
     print(skin.colors["banner_title"])    # "#FFD700"
     print(skin.get_branding("agent_name"))  # "Hermes Agent"
 
-    set_active_skin("ares")               # 切换到内置 ares 皮肤
-    set_active_skin("mytheme")            # 切换到 ~/.hermes/skins/ 中的用户皮肤
+    set_active_skin("ares")               # Switch to built-in ares skin
+    set_active_skin("mytheme")            # Switch to user skin from ~/.hermes/skins/
 
-内置皮肤
+BUILT-IN SKINS
 ==============
 
-- ``default`` — 经典 Hermes 金色/可爱风格（当前外观）
-- ``ares``    — 深红/青铜战神主题，带自定义加载翅膀
-- ``mono``    — 简洁的灰度单色风格
-- ``slate``   — 冷蓝色开发者主题
-- ``daylight`` — 浅色背景主题，深色文本和蓝色强调
-- ``warm-lightmode`` — 暖棕色/金色文本，适合浅色终端背景
+- ``default`` — Classic Hermes gold/kawaii (the current look)
+- ``ares``    — Crimson/bronze war-god theme with custom spinner wings
+- ``mono``    — Clean grayscale monochrome
+- ``slate``   — Cool blue developer-focused theme
+- ``daylight`` — Light background theme with dark text and blue accents
+- ``warm-lightmode`` — Warm brown/gold text for light terminal backgrounds
 
-用户皮肤
+USER SKINS
 ==========
 
-将 YAML 文件放入 ``~/.hermes/skins/<name>.yaml``，遵循上述架构。
-在 CLI 中用 ``/skin <name>`` 激活，或在 config.yaml 中设置 ``display.skin: <name>``。
+Drop a YAML file in ``~/.hermes/skins/<name>.yaml`` following the schema above.
+Activate with ``/skin <name>`` in the CLI or ``display.skin: <name>`` in config.yaml.
 """
 
 import logging
@@ -114,28 +114,28 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# 皮肤数据结构
+# Skin data structure
 # =============================================================================
 
 @dataclass
 class SkinConfig:
-    """完整的皮肤配置。"""
+    """Complete skin configuration."""
     name: str
     description: str = ""
     colors: Dict[str, str] = field(default_factory=dict)
     spinner: Dict[str, Any] = field(default_factory=dict)
     branding: Dict[str, str] = field(default_factory=dict)
     tool_prefix: str = "┊"
-    tool_emojis: Dict[str, str] = field(default_factory=dict)  # 每个工具的表情覆盖
-    banner_logo: str = ""    # Rich 标记 ASCII 艺术 logo（替换 HERMES_AGENT_LOGO）
-    banner_hero: str = ""    # Rich 标记英雄图案（替换 HERMES_CADUCEUS）
+    tool_emojis: Dict[str, str] = field(default_factory=dict)  # per-tool emoji overrides
+    banner_logo: str = ""    # Rich-markup ASCII art logo (replaces HERMES_AGENT_LOGO)
+    banner_hero: str = ""    # Rich-markup hero art (replaces HERMES_CADUCEUS)
 
     def get_color(self, key: str, fallback: str = "") -> str:
-        """获取颜色值，带回退默认值。"""
+        """Get a color value with fallback."""
         return self.colors.get(key, fallback)
 
     def get_spinner_wings(self) -> List[Tuple[str, str]]:
-        """获取加载器翅膀配对列表，无则返回空列表。"""
+        """Get spinner wing pairs, or empty list if none."""
         raw = self.spinner.get("wings", [])
         result = []
         for pair in raw:
@@ -144,12 +144,12 @@ class SkinConfig:
         return result
 
     def get_branding(self, key: str, fallback: str = "") -> str:
-        """获取品牌值，带回退默认值。"""
+        """Get a branding value with fallback."""
         return self.branding.get(key, fallback)
 
 
 # =============================================================================
-# 内置皮肤定义
+# Built-in skin definitions
 # =============================================================================
 
 _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
@@ -163,7 +163,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "banner_dim": "#B8860B",
             "banner_text": "#FFF8DC",
             "ui_accent": "#FFBF00",
-            "ui_label": "#4dd0e1",
+            "ui_label": "#DAA520",
             "ui_ok": "#4caf50",
             "ui_error": "#ef5350",
             "ui_warn": "#ffa726",
@@ -174,7 +174,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_border": "#8B8682",
         },
         "spinner": {
-            # 空 = 使用 display.py 中的硬编码默认值
+            # Empty = use hardcoded defaults in display.py
         },
         "branding": {
             "agent_name": "Hermes Agent",
@@ -583,7 +583,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
 
 
 # =============================================================================
-# 皮肤加载和管理
+# Skin loading and management
 # =============================================================================
 
 _active_skin: Optional[SkinConfig] = None
@@ -591,12 +591,12 @@ _active_skin_name: str = "default"
 
 
 def _skins_dir() -> Path:
-    """用户皮肤目录。"""
+    """User skins directory."""
     return get_hermes_home() / "skins"
 
 
 def _load_skin_from_yaml(path: Path) -> Optional[Dict[str, Any]]:
-    """从 YAML 文件加载皮肤定义。"""
+    """Load a skin definition from a YAML file."""
     try:
         import yaml
         with open(path, "r", encoding="utf-8") as f:
@@ -609,8 +609,8 @@ def _load_skin_from_yaml(path: Path) -> Optional[Dict[str, Any]]:
 
 
 def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
-    """从原始字典（内置或从 YAML 加载）构建 SkinConfig。"""
-    # 以默认皮肤作为缺失键的基础值
+    """Build a SkinConfig from a raw dict (built-in or loaded from YAML)."""
+    # Start with default values as base for missing keys
     default = _BUILTIN_SKINS["default"]
     colors = dict(default.get("colors", {}))
     colors.update(data.get("colors", {}))
@@ -633,9 +633,9 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
 
 
 def list_skins() -> List[Dict[str, str]]:
-    """列出所有可用皮肤（内置 + 用户安装）。
+    """List all available skins (built-in + user-installed).
 
-    返回 {"name": ..., "description": ..., "source": "builtin"|"user"} 的列表。
+    Returns list of {"name": ..., "description": ..., "source": "builtin"|"user"}.
     """
     result = []
     for name, data in _BUILTIN_SKINS.items():
@@ -651,7 +651,7 @@ def list_skins() -> List[Dict[str, str]]:
             data = _load_skin_from_yaml(f)
             if data:
                 skin_name = data.get("name", f.stem)
-                # 如果与内置皮肤同名则跳过
+                # Skip if it shadows a built-in
                 if any(s["name"] == skin_name for s in result):
                     continue
                 result.append({
@@ -664,8 +664,8 @@ def list_skins() -> List[Dict[str, str]]:
 
 
 def load_skin(name: str) -> SkinConfig:
-    """按名称加载皮肤。优先检查用户皮肤，然后内置皮肤。"""
-    # 检查用户皮肤目录
+    """Load a skin by name. Checks user skins first, then built-in."""
+    # Check user skins directory
     skins_path = _skins_dir()
     user_file = skins_path / f"{name}.yaml"
     if user_file.is_file():
@@ -673,17 +673,17 @@ def load_skin(name: str) -> SkinConfig:
         if data:
             return _build_skin_config(data)
 
-    # 检查内置皮肤
+    # Check built-in skins
     if name in _BUILTIN_SKINS:
         return _build_skin_config(_BUILTIN_SKINS[name])
 
-    # 回退到默认皮肤
+    # Fallback to default
     logger.warning("Skin '%s' not found, using default", name)
     return _build_skin_config(_BUILTIN_SKINS["default"])
 
 
 def get_active_skin() -> SkinConfig:
-    """获取当前活跃的皮肤配置（带缓存）。"""
+    """Get the currently active skin config (cached)."""
     global _active_skin
     if _active_skin is None:
         _active_skin = load_skin(_active_skin_name)
@@ -691,7 +691,7 @@ def get_active_skin() -> SkinConfig:
 
 
 def set_active_skin(name: str) -> SkinConfig:
-    """切换活跃皮肤。返回新的 SkinConfig。"""
+    """Switch the active skin. Returns the new SkinConfig."""
     global _active_skin, _active_skin_name
     _active_skin_name = name
     _active_skin = load_skin(name)
@@ -699,14 +699,14 @@ def set_active_skin(name: str) -> SkinConfig:
 
 
 def get_active_skin_name() -> str:
-    """获取当前活跃皮肤的名称。"""
+    """Get the name of the currently active skin."""
     return _active_skin_name
 
 
 def init_skin_from_config(config: dict) -> None:
-    """在启动时从 CLI 配置初始化活跃皮肤。
+    """Initialize the active skin from CLI config at startup.
 
-    在 CLI 初始化期间使用加载的配置字典调用一次。
+    Call this once during CLI init with the loaded config dict.
     """
     display = config.get("display") or {}
     if not isinstance(display, dict):
@@ -719,12 +719,12 @@ def init_skin_from_config(config: dict) -> None:
 
 
 # =============================================================================
-# CLI 模块的便捷辅助函数
+# Convenience helpers for CLI modules
 # =============================================================================
 
 
 def get_active_prompt_symbol(fallback: str = "❯ ") -> str:
-    """从活跃皮肤获取交互式提示符号。"""
+    """Get the interactive prompt symbol from the active skin."""
     try:
         return get_active_skin().get_branding("prompt_symbol", fallback)
     except Exception:
@@ -733,7 +733,7 @@ def get_active_prompt_symbol(fallback: str = "❯ ") -> str:
 
 
 def get_active_help_header(fallback: str = "(^_^)? Available Commands") -> str:
-    """从活跃皮肤获取 /help 标题。"""
+    """Get the /help header from the active skin."""
     try:
         return get_active_skin().get_branding("help_header", fallback)
     except Exception:
@@ -742,7 +742,7 @@ def get_active_help_header(fallback: str = "(^_^)? Available Commands") -> str:
 
 
 def get_active_goodbye(fallback: str = "Goodbye! ⚕") -> str:
-    """从活跃皮肤获取告别语。"""
+    """Get the goodbye line from the active skin."""
     try:
         return get_active_skin().get_branding("goodbye", fallback)
     except Exception:
@@ -751,10 +751,10 @@ def get_active_goodbye(fallback: str = "Goodbye! ⚕") -> str:
 
 
 def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
-    """返回从活跃皮肤派生的 prompt_toolkit 样式覆盖。
+    """Return prompt_toolkit style overrides derived from the active skin.
 
-    这些样式叠加在 CLI 的基础 TUI 样式之上，使 /skin 命令可以
-    立即刷新实时的 prompt_toolkit UI，无需重建应用。
+    These are layered on top of the CLI's base TUI style so /skin can refresh
+    the live prompt_toolkit UI immediately without rebuilding the app.
     """
     try:
         skin = get_active_skin()

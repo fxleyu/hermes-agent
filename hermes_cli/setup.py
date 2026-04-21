@@ -1,14 +1,14 @@
 """
-Hermes Agent 的交互式设置向导。
+Interactive setup wizard for Hermes Agent.
 
-模块化向导，各部分可独立运行：
-  1. 模型与提供商 — 选择你的 AI 提供商和模型
-  2. 终端后端 — 选择智能体在哪里执行命令
-  3. 智能体设置 — 迭代次数、压缩、会话重置
-  4. 消息平台 — 连接 Telegram、Discord 等
-  5. 工具 — 配置 TTS、网页搜索、图像生成等
+Modular wizard with independently-runnable sections:
+  1. Model & Provider — choose your AI provider and model
+  2. Terminal Backend — where your agent runs commands
+  3. Agent Settings — iterations, compression, session reset
+  4. Messaging Platforms — connect Telegram, Discord, etc.
+  5. Tools — configure TTS, web search, image generation, etc.
 
-配置文件存储在 ~/.hermes/ 中，方便访问。
+Config files are stored in ~/.hermes/ for easy access.
 """
 
 import importlib.util
@@ -22,6 +22,7 @@ from typing import Optional, Dict, Any
 
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
+from utils import base_url_hostname
 from hermes_constants import get_optional_skills_dir
 
 logger = logging.getLogger(__name__)
@@ -66,8 +67,8 @@ def _supports_same_provider_pool_setup(provider: str) -> bool:
     return pconfig.auth_type in {"api_key", "oauth_device_code"}
 
 
-# 每个提供商的默认模型列表 — 当无法连接到实时
-# /models 端点时用作回退。
+# Default model lists per provider — used as fallback when the live
+# /models endpoint can't be reached.
 _DEFAULT_PROVIDER_MODELS = {
     "copilot-acp": [
         "copilot-acp",
@@ -89,20 +90,19 @@ _DEFAULT_PROVIDER_MODELS = {
         "grok-code-fast-1",
     ],
     "gemini": [
-        "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview",
-        "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite",
-        "gemma-4-31b-it", "gemma-4-26b-it",
+        "gemini-3.1-pro-preview", "gemini-3-pro-preview",
+        "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview",
     ],
     "zai": ["glm-5.1", "glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
-    "kimi-coding": ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
-    "kimi-coding-cn": ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
+    "kimi-coding": ["kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
+    "kimi-coding-cn": ["kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
     "arcee": ["trinity-large-thinking", "trinity-large-preview", "trinity-mini"],
     "minimax": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
     "minimax-cn": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
     "ai-gateway": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5", "google/gemini-3-flash"],
     "kilocode": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "google/gemini-3-pro-preview", "google/gemini-3-flash-preview"],
     "opencode-zen": ["gpt-5.4", "gpt-5.3-codex", "claude-sonnet-4-6", "gemini-3-flash", "glm-5", "kimi-k2.5", "minimax-m2.7"],
-    "opencode-go": ["glm-5.1", "glm-5", "kimi-k2.5", "mimo-v2-pro", "mimo-v2-omni", "minimax-m2.5", "minimax-m2.7"],
+    "opencode-go": ["kimi-k2.6", "kimi-k2.5", "glm-5.1", "glm-5", "mimo-v2-pro", "mimo-v2-omni", "minimax-m2.5", "minimax-m2.7", "qwen3.6-plus", "qwen3.5-plus"],
     "huggingface": [
         "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3-235B-A22B-Thinking-2507",
         "Qwen/Qwen3-Coder-480B-A35B-Instruct", "deepseek-ai/DeepSeek-R1-0528",
@@ -128,7 +128,7 @@ def _set_reasoning_effort(config: Dict[str, Any], effort: str) -> None:
 
 
 
-# 导入配置辅助函数
+# Import config helpers
 from hermes_cli.config import (
     DEFAULT_CONFIG,
     get_hermes_home,
@@ -140,13 +140,13 @@ from hermes_cli.config import (
     get_env_value,
     ensure_hermes_home,
 )
-# 为了避免 hermes update 期间的过期模块安全问题，display_hermes_home 在调用点懒加载
+# display_hermes_home imported lazily at call sites (stale-module safety during hermes update)
 
 from hermes_cli.colors import Colors, color
 
 
 def print_header(title: str):
-    """打印一个章节标题。"""
+    """Print a section header."""
     print()
     print(color(f"◆ {title}", Colors.CYAN, Colors.BOLD))
 
@@ -160,7 +160,7 @@ from hermes_cli.cli_output import (  # noqa: E402
 
 
 def is_interactive_stdin() -> bool:
-    """当 stdin 看起来是可用的交互式 TTY 时返回 True。"""
+    """Return True when stdin looks like a usable interactive TTY."""
     stdin = getattr(sys, "stdin", None)
     if stdin is None:
         return False
@@ -171,7 +171,7 @@ def is_interactive_stdin() -> bool:
 
 
 def print_noninteractive_setup_guidance(reason: str | None = None) -> None:
-    """为无头/非交互式设置流程打印指导信息。"""
+    """Print guidance for headless/non-interactive setup flows."""
     print()
     print(color("⚕ Hermes Setup — Non-interactive mode", Colors.CYAN, Colors.BOLD))
     print()
@@ -190,7 +190,7 @@ def print_noninteractive_setup_guidance(reason: str | None = None) -> None:
 
 
 def prompt(question: str, default: str = None, password: bool = False) -> str:
-    """带可选默认值的输入提示。"""
+    """Prompt for input with optional default."""
     if default:
         display = f"{question} [{default}]: "
     else:
@@ -211,17 +211,17 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
 
 
 def _curses_prompt_choice(question: str, choices: list, default: int = 0, description: str | None = None) -> int:
-    """使用 curses 的单选菜单。委托给 curses_radiolist。"""
+    """Single-select menu using curses. Delegates to curses_radiolist."""
     from hermes_cli.curses_ui import curses_radiolist
     return curses_radiolist(question, choices, selected=default, cancel_returns=-1, description=description)
 
 
 
 def prompt_choice(question: str, choices: list, default: int = 0, description: str | None = None) -> int:
-    """从列表中提示选择，支持方向键导航。
+    """Prompt for a choice from a list with arrow key navigation.
 
-    Escape 保持当前默认值（跳过该问题）。
-    Ctrl+C 退出向导。
+    Escape keeps the current default (skips the question).
+    Ctrl+C exits the wizard.
     """
     idx = _curses_prompt_choice(question, choices, default, description=description)
     if idx >= 0:
@@ -261,7 +261,7 @@ def prompt_choice(question: str, choices: list, default: int = 0, description: s
 
 
 def prompt_yes_no(question: str, default: bool = True) -> bool:
-    """提示 yes/no。Ctrl+C 退出，空输入返回默认值。"""
+    """Prompt for yes/no. Ctrl+C exits, empty input returns default."""
     default_str = "Y/n" if default else "y/N"
 
     while True:
@@ -286,16 +286,18 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
 
 def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list:
     """
-    显示多选复选列表并返回选中项的索引。
+    Display a multi-select checklist and return the indices of selected items.
 
-    `items` 中的每个项目是显示字符串。`pre_selected` 是默认勾选的索引列表。
-    末尾追加一个 "Continue →" 选项 — 用户用空格切换项目，
-    在 "Continue →" 上按回车确认。
+    Each item in `items` is a display string. `pre_selected` is a list of
+    indices that should be checked by default. A "Continue →" option is
+    appended at the end — the user toggles items with Space and confirms
+    with Enter on "Continue →".
 
-    当 simple_term_menu 不可用时，回退到数字切换界面。
+    Falls back to a numbered toggle interface when simple_term_menu is
+    unavailable.
 
-    返回:
-        选中项的索引列表（不包括 Continue 选项）。
+    Returns:
+        List of selected indices (not including the Continue option).
     """
     if pre_selected is None:
         pre_selected = []
@@ -312,7 +314,7 @@ def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list
 
 
 def _prompt_api_key(var: dict):
-    """为单个环境变量显示格式化的 API 密钥输入界面。"""
+    """Display a nicely formatted API key input screen for a single env var."""
     tools = var.get("tools", [])
     tools_str = ", ".join(tools[:3])
     if len(tools) > 3:
@@ -340,15 +342,15 @@ def _prompt_api_key(var: dict):
 
 
 def _print_setup_summary(config: dict, hermes_home):
-    """打印设置完成摘要。"""
-    # 工具可用性摘要
+    """Print the setup completion summary."""
+    # Tool availability summary
     print()
     print_header("Tool Availability Summary")
 
     tool_status = []
     subscription_features = get_nous_subscription_features(config)
 
-    # 视觉能力 — 使用与实际视觉工具相同的运行时解析器
+    # Vision — use the same runtime resolver as the actual vision tools
     try:
         from agent.auxiliary_client import get_available_vision_backends
 
@@ -361,13 +363,13 @@ def _print_setup_summary(config: dict, hermes_home):
     else:
         tool_status.append(("Vision (image analysis)", False, "run 'hermes setup' to configure"))
 
-    # 混合智能体 — 特别需要 OpenRouter（调用多个模型）
+    # Mixture of Agents — requires OpenRouter specifically (calls multiple models)
     if get_env_value("OPENROUTER_API_KEY"):
         tool_status.append(("Mixture of Agents", True, None))
     else:
         tool_status.append(("Mixture of Agents", False, "OPENROUTER_API_KEY"))
 
-    # 网页工具（Exa、Parallel、Firecrawl 或 Tavily）
+    # Web tools (Exa, Parallel, Firecrawl, or Tavily)
     if subscription_features.web.managed_by_nous:
         tool_status.append(("Web Search & Extract (Nous subscription)", True, None))
     elif subscription_features.web.available:
@@ -378,7 +380,7 @@ def _print_setup_summary(config: dict, hermes_home):
     else:
         tool_status.append(("Web Search & Extract", False, "EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, or TAVILY_API_KEY"))
 
-    # 浏览器工具（本地 Chromium、Camofox、Browserbase、Browser Use 或 Firecrawl）
+    # Browser tools (local Chromium, Camofox, Browserbase, Browser Use, or Firecrawl)
     browser_provider = subscription_features.browser.current_provider
     if subscription_features.browser.managed_by_nous:
         tool_status.append(("Browser Automation (Nous Browser Use)", True, None))
@@ -406,7 +408,7 @@ def _print_setup_summary(config: dict, hermes_home):
             ("Browser Automation", False, missing_browser_hint)
         )
 
-    # FAL（图像生成）
+    # FAL (image generation)
     if subscription_features.image_gen.managed_by_nous:
         tool_status.append(("Image Generation (Nous subscription)", True, None))
     elif subscription_features.image_gen.available:
@@ -414,7 +416,7 @@ def _print_setup_summary(config: dict, hermes_home):
     else:
         tool_status.append(("Image Generation", False, "FAL_KEY"))
 
-    # TTS — 显示已配置的提供商
+    # TTS — show configured provider
     tts_provider = config.get("tts", {}).get("provider", "edge")
     if subscription_features.tts.managed_by_nous:
         tool_status.append(("Text-to-Speech (OpenAI via Nous subscription)", True, None))
@@ -432,7 +434,6 @@ def _print_setup_summary(config: dict, hermes_home):
         tool_status.append(("Text-to-Speech (Google Gemini)", True, None))
     elif tts_provider == "neutts":
         try:
-            import importlib.util
             neutts_ok = importlib.util.find_spec("neutts") is not None
         except Exception:
             neutts_ok = False
@@ -440,6 +441,16 @@ def _print_setup_summary(config: dict, hermes_home):
             tool_status.append(("Text-to-Speech (NeuTTS local)", True, None))
         else:
             tool_status.append(("Text-to-Speech (NeuTTS — not installed)", False, "run 'hermes setup tts'"))
+    elif tts_provider == "kittentts":
+        try:
+            import importlib.util
+            kittentts_ok = importlib.util.find_spec("kittentts") is not None
+        except Exception:
+            kittentts_ok = False
+        if kittentts_ok:
+            tool_status.append(("Text-to-Speech (KittenTTS local)", True, None))
+        else:
+            tool_status.append(("Text-to-Speech (KittenTTS — not installed)", False, "run 'hermes setup tts'"))
     else:
         tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
 
@@ -453,7 +464,7 @@ def _print_setup_summary(config: dict, hermes_home):
     elif managed_nous_tools_enabled() and subscription_features.nous_auth_present:
         tool_status.append(("Modal Execution (optional via Nous subscription)", True, None))
 
-    # Tinker + WandB（强化学习训练）
+    # Tinker + WandB (RL training)
     if get_env_value("TINKER_API_KEY") and get_env_value("WANDB_API_KEY"):
         tool_status.append(("RL Training (Tinker)", True, None))
     elif get_env_value("TINKER_API_KEY"):
@@ -461,26 +472,26 @@ def _print_setup_summary(config: dict, hermes_home):
     else:
         tool_status.append(("RL Training (Tinker)", False, "TINKER_API_KEY"))
 
-    # 智能家居
+    # Home Assistant
     if get_env_value("HASS_TOKEN"):
         tool_status.append(("Smart Home (Home Assistant)", True, None))
 
-    # 技能中心
+    # Skills Hub
     if get_env_value("GITHUB_TOKEN"):
         tool_status.append(("Skills Hub (GitHub)", True, None))
     else:
         tool_status.append(("Skills Hub (GitHub)", False, "GITHUB_TOKEN"))
 
-    # 终端（系统依赖满足则始终可用）
+    # Terminal (always available if system deps met)
     tool_status.append(("Terminal/Commands", True, None))
 
-    # 任务规划（始终可用，内存中）
+    # Task planning (always available, in-memory)
     tool_status.append(("Task Planning (todo)", True, None))
 
-    # 技能（始终可用 -- 内置技能 + 用户创建的技能）
+    # Skills (always available -- bundled skills + user-created skills)
     tool_status.append(("Skills (view, create, edit)", True, None))
 
-    # 打印状态
+    # Print status
     available_count = sum(1 for _, avail, _ in tool_status if avail)
     total_count = len(tool_status)
 
@@ -506,7 +517,7 @@ def _print_setup_summary(config: dict, hermes_home):
         print_warning(f"or edit {_dhh()}/.env directly to add the missing API keys.")
         print()
 
-    # 完成横幅
+    # Done banner
     print()
     print(
         color(
@@ -525,7 +536,7 @@ def _print_setup_summary(config: dict, hermes_home):
     )
     print()
 
-    # 醒目显示文件位置
+    # Show file locations prominently
     from hermes_constants import display_hermes_home as _dhh
     print(color(f"📁 All your files are in {_dhh()}/:", Colors.CYAN, Colors.BOLD))
     print()
@@ -569,13 +580,13 @@ def _print_setup_summary(config: dict, hermes_home):
 
 
 def _prompt_container_resources(config: dict):
-    """提示配置容器资源设置（Docker、Singularity、Modal、Daytona）。"""
+    """Prompt for container resource settings (Docker, Singularity, Modal, Daytona)."""
     terminal = config.setdefault("terminal", {})
 
     print()
     print_info("Container Resource Settings:")
 
-    # 持久化
+    # Persistence
     current_persist = terminal.get("container_persistent", True)
     persist_label = "yes" if current_persist else "no"
     print_info("  Persistent filesystem keeps files between sessions.")
@@ -585,7 +596,7 @@ def _prompt_container_resources(config: dict):
     )
     terminal["container_persistent"] = persist_str.lower() in ("yes", "true", "y", "1")
 
-    # CPU 核数
+    # CPU
     current_cpu = terminal.get("container_cpu", 1)
     cpu_str = prompt("  CPU cores", str(current_cpu))
     try:
@@ -593,7 +604,7 @@ def _prompt_container_resources(config: dict):
     except ValueError:
         pass
 
-    # 内存
+    # Memory
     current_mem = terminal.get("container_memory", 5120)
     mem_str = prompt("  Memory in MB (5120 = 5GB)", str(current_mem))
     try:
@@ -601,7 +612,7 @@ def _prompt_container_resources(config: dict):
     except ValueError:
         pass
 
-    # 磁盘
+    # Disk
     current_disk = terminal.get("container_disk", 51200)
     disk_str = prompt("  Disk in MB (51200 = 50GB)", str(current_disk))
     try:
@@ -610,26 +621,26 @@ def _prompt_container_resources(config: dict):
         pass
 
 
-# 工具分类和提供商配置现在在 tools_config.py 中（在
-# `hermes tools` 和 `hermes setup tools` 之间共享）。
+# Tool categories and provider config are now in tools_config.py (shared
+# between `hermes tools` and `hermes setup tools`).
 
 
 # =============================================================================
-# 第 1 节：模型与提供商配置
+# Section 1: Model & Provider Configuration
 # =============================================================================
 
 
 
 def setup_model_provider(config: dict, *, quick: bool = False):
-    """配置推理提供商和默认模型。
+    """Configure the inference provider and default model.
 
-    委托给 ``cmd_model()``（与 ``hermes model`` 使用的相同流程）
-    进行提供商选择、凭证提示和模型选择。
-    这确保所有提供商设置使用单一代码路径 — 添加到
-    ``hermes model`` 的任何新提供商会自动在此处可用。
+    Delegates to ``cmd_model()`` (the same flow used by ``hermes model``)
+    for provider selection, credential prompting, and model picking.
+    This ensures a single code path for all provider setup — any new
+    provider added to ``hermes model`` is automatically available here.
 
-    当 *quick* 为 True 时，跳过凭证轮换、视觉和 TTS
-    配置 — 用于精简的首次快速设置。
+    When *quick* is True, skips credential rotation, vision, and TTS
+    configuration — used by the streamlined first-time quick setup.
     """
     from hermes_cli.config import load_config, save_config
 
@@ -638,8 +649,8 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     print_info(f"   Guide: {_DOCS_BASE}/integrations/providers")
     print()
 
-    # 委托给共享的 hermes model 流程 — 处理提供商选择器、
-    # 凭证提示、模型选择和配置持久化。
+    # Delegate to the shared hermes model flow — handles provider picker,
+    # credential prompting, model selection, and config persistence.
     from hermes_cli.main import select_provider_and_model
     try:
         select_provider_and_model()
@@ -651,10 +662,10 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         print_warning(f"Provider setup encountered an error: {exc}")
         print_info("You can try again later with: hermes model")
 
-    # 从 cmd_model 保存到磁盘的内容重新同步向导的配置字典。
-    # 这很关键：cmd_model 通过自己的加载/保存周期写入磁盘，
-    # 向导最终的 save_config(config) 不能用过期值覆盖那些
-    # 更改（#4172）。
+    # Re-sync the wizard's config dict from what cmd_model saved to disk.
+    # This is critical: cmd_model writes to disk via its own load/save cycle,
+    # and the wizard's final save_config(config) must not overwrite those
+    # changes with stale values (#4172).
     _refreshed = load_config()
     config["model"] = _refreshed.get("model", config.get("model"))
     if "custom_providers" in _refreshed:
@@ -662,7 +673,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     else:
         config.pop("custom_providers", None)
 
-    # 推导已选提供商用于下游步骤（视觉设置）。
+    # Derive the selected provider for downstream steps (vision setup).
     selected_provider = None
     _m = config.get("model")
     if isinstance(_m, dict):
@@ -670,7 +681,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
 
     nous_subscription_selected = selected_provider == "nous"
 
-    # ── 同提供商回退和轮换设置（仅完整设置）──
+    # ── Same-provider fallback & rotation setup (full setup only) ──
     if not quick and _supports_same_provider_pool_setup(selected_provider):
         try:
             from types import SimpleNamespace
@@ -747,7 +758,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         except Exception as exc:
             logger.debug("Could not configure same-provider fallback in setup: %s", exc)
 
-    # ── 视觉和图像分析设置（仅完整设置）──
+    # ── Vision & Image Analysis Setup (full setup only) ──
     if quick:
         _vision_needs_setup = False
     else:
@@ -802,15 +813,16 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         elif _vision_idx == 1:  # OpenAI-compatible endpoint
             _base_url = prompt("  Base URL (blank for OpenAI)").strip() or "https://api.openai.com/v1"
             _api_key_label = "  API key"
-            if "api.openai.com" in _base_url.lower():
+            _is_native_openai = base_url_hostname(_base_url) == "api.openai.com"
+            if _is_native_openai:
                 _api_key_label = "  OpenAI API key"
             _oai_key = prompt(_api_key_label, password=True).strip()
             if _oai_key:
                 save_env_value("OPENAI_API_KEY", _oai_key)
-            # 将视觉 base URL 保存到配置（不是 .env — 只有密钥放那里）
+                # Save vision base URL to config (not .env — only secrets go there)
                 _vaux = config.setdefault("auxiliary", {}).setdefault("vision", {})
                 _vaux["base_url"] = _base_url
-                if "api.openai.com" in _base_url.lower():
+                if _is_native_openai:
                     _oai_vision_models = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]
                     _vm_choices = _oai_vision_models + ["Use default (gpt-4o-mini)"]
                     _vm_idx = prompt_choice("Select vision model:", _vm_choices, 0)
@@ -832,7 +844,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
             print_info("Skipped — add later with 'hermes setup' or configure AUXILIARY_VISION_* settings")
 
 
-    # 工具网关提示已由上面的 _model_flow_nous() 显示。
+    # Tool Gateway prompt is already shown by _model_flow_nous() above.
     save_config(config)
 
     if not quick and selected_provider != "nous":
@@ -840,22 +852,21 @@ def setup_model_provider(config: dict, *, quick: bool = False):
 
 
 # =============================================================================
-# 第 1b 节：TTS 提供商配置
+# Section 1b: TTS Provider Configuration
 # =============================================================================
 
 
 def _check_espeak_ng() -> bool:
-    """检查是否安装了 espeak-ng。"""
-    import shutil
+    """Check if espeak-ng is installed."""
     return shutil.which("espeak-ng") is not None or shutil.which("espeak") is not None
 
 
 def _install_neutts_deps() -> bool:
-    """经用户确认后安装 NeuTTS 依赖。成功返回 True。"""
+    """Install NeuTTS dependencies with user approval. Returns True on success."""
     import subprocess
     import sys
 
-    # 检查 espeak-ng
+    # Check espeak-ng
     if not _check_espeak_ng():
         print()
         print_warning("NeuTTS requires espeak-ng for phonemization.")
@@ -882,7 +893,7 @@ def _install_neutts_deps() -> bool:
         else:
             print_warning("espeak-ng is required for NeuTTS. Install it manually before using NeuTTS.")
 
-    # 安装 neutts Python 包
+    # Install neutts Python package
     print()
     print_info("Installing neutts Python package...")
     print_info("This will also download the TTS model (~300MB) on first use.")
@@ -900,8 +911,33 @@ def _install_neutts_deps() -> bool:
         return False
 
 
+def _install_kittentts_deps() -> bool:
+    """Install KittenTTS dependencies with user approval. Returns True on success."""
+    import subprocess
+    import sys
+
+    wheel_url = (
+        "https://github.com/KittenML/KittenTTS/releases/download/"
+        "0.8.1/kittentts-0.8.1-py3-none-any.whl"
+    )
+    print()
+    print_info("Installing kittentts Python package (~25-80MB model downloaded on first use)...")
+    print()
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-U", wheel_url, "soundfile", "--quiet"],
+            check=True, timeout=300,
+        )
+        print_success("kittentts installed successfully")
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        print_error(f"Failed to install kittentts: {e}")
+        print_info(f"Try manually: python -m pip install -U '{wheel_url}' soundfile")
+        return False
+
+
 def _setup_tts_provider(config: dict):
-    """交互式 TTS 提供商选择，包含 NeuTTS 的安装流程。"""
+    """Interactive TTS provider selection with install flow for NeuTTS."""
     tts_config = config.get("tts", {})
     current_provider = tts_config.get("provider", "edge")
     subscription_features = get_nous_subscription_features(config)
@@ -915,6 +951,7 @@ def _setup_tts_provider(config: dict):
         "mistral": "Mistral Voxtral TTS",
         "gemini": "Google Gemini TTS",
         "neutts": "NeuTTS",
+        "kittentts": "KittenTTS",
     }
     current_label = provider_labels.get(current_provider, current_provider)
 
@@ -938,9 +975,10 @@ def _setup_tts_provider(config: dict):
             "Mistral Voxtral TTS (multilingual, native Opus, needs API key)",
             "Google Gemini TTS (30 prebuilt voices, prompt-controllable, needs API key)",
             "NeuTTS (local on-device, free, ~300MB model download)",
+            "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts"])
+    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts"])
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -959,9 +997,8 @@ def _setup_tts_provider(config: dict):
             )
 
     if selected == "neutts":
-    # 检查是否已安装
+        # Check if already installed
         try:
-            import importlib.util
             already_installed = importlib.util.find_spec("neutts") is not None
         except Exception:
             already_installed = False
@@ -1060,7 +1097,30 @@ def _setup_tts_provider(config: dict):
                 print_warning("No API key provided. Falling back to Edge TTS.")
                 selected = "edge"
 
-    # 保存选择
+    elif selected == "kittentts":
+        # Check if already installed
+        try:
+            import importlib.util
+            already_installed = importlib.util.find_spec("kittentts") is not None
+        except Exception:
+            already_installed = False
+
+        if already_installed:
+            print_success("KittenTTS is already installed")
+        else:
+            print()
+            print_info("KittenTTS is lightweight (~25-80MB, CPU-only, no API key required).")
+            print_info("Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo")
+            print()
+            if prompt_yes_no("Install KittenTTS now?", True):
+                if not _install_kittentts_deps():
+                    print_warning("KittenTTS installation incomplete. Falling back to Edge TTS.")
+                    selected = "edge"
+            else:
+                print_info("Skipping install. Set tts.provider to 'kittentts' after installing manually.")
+                selected = "edge"
+
+    # Save the selection
     if "tts" not in config:
         config["tts"] = {}
     config["tts"]["provider"] = selected
@@ -1069,20 +1129,18 @@ def _setup_tts_provider(config: dict):
 
 
 def setup_tts(config: dict):
-    """独立 TTS 设置（用于 'hermes setup tts'）。"""
+    """Standalone TTS setup (for 'hermes setup tts')."""
     _setup_tts_provider(config)
 
 
 # =============================================================================
-# 第 2 节：终端后端配置
+# Section 2: Terminal Backend Configuration
 # =============================================================================
 
 
 def setup_terminal_backend(config: dict):
-    """配置终端执行后端。"""
+    """Configure the terminal execution backend."""
     import platform as _platform
-    import shutil
-
     print_header("Terminal Backend")
     print_info("Choose where Hermes runs shell commands and code.")
     print_info("This affects tool execution, file access, and isolation.")
@@ -1092,7 +1150,7 @@ def setup_terminal_backend(config: dict):
     current_backend = config.get("terminal", {}).get("backend", "local")
     is_linux = _platform.system() == "Linux"
 
-    # 构建带描述的后端选项
+    # Build backend choices with descriptions
     terminal_choices = [
         "Local - run directly on this machine (default)",
         "Docker - isolated container with configurable resources",
@@ -1110,7 +1168,7 @@ def setup_terminal_backend(config: dict):
         backend_to_idx["singularity"] = next_idx
         next_idx += 1
 
-    # 添加保留当前选项
+    # Add keep current option
     keep_current_idx = next_idx
     terminal_choices.append(f"Keep current ({current_backend})")
     idx_to_backend[keep_current_idx] = current_backend
@@ -1131,7 +1189,7 @@ def setup_terminal_backend(config: dict):
         print_success("Terminal backend: Local")
         print_info("Commands run directly on this machine.")
 
-        # 消息传递的工作目录
+        # CWD for messaging
         print()
         print_info("Working directory for messaging sessions:")
         print_info("  When using Hermes via Telegram/Discord, this is where")
@@ -1143,7 +1201,7 @@ def setup_terminal_backend(config: dict):
         if cwd:
             config["terminal"]["cwd"] = cwd
 
-        # Sudo 支持
+        # Sudo support
         print()
         existing_sudo = get_env_value("SUDO_PASSWORD")
         if existing_sudo:
@@ -1160,7 +1218,7 @@ def setup_terminal_backend(config: dict):
     elif selected_backend == "docker":
         print_success("Terminal backend: Docker")
 
-        # 检查 Docker 是否可用
+        # Check if Docker is available
         docker_bin = shutil.which("docker")
         if not docker_bin:
             print_warning("Docker not found in PATH!")
@@ -1406,8 +1464,8 @@ def setup_terminal_backend(config: dict):
                 print_warning(f"  SSH connection failed: {result.stderr.strip()}")
                 print_info("  Check your SSH key and host settings.")
 
-    # 同步终端后端到 .env 以便 terminal_tool 直接读取。
-    # config.yaml 是事实来源，但 terminal_tool 读取 TERMINAL_ENV。
+    # Sync terminal backend to .env so terminal_tool picks it up directly.
+    # config.yaml is the source of truth, but terminal_tool reads TERMINAL_ENV.
     save_env_value("TERMINAL_ENV", selected_backend)
     if selected_backend == "modal":
         save_env_value("TERMINAL_MODAL_MODE", config["terminal"].get("modal_mode", "auto"))
@@ -1417,12 +1475,12 @@ def setup_terminal_backend(config: dict):
 
 
 # =============================================================================
-# 第 3 节：智能体设置
+# Section 3: Agent Settings
 # =============================================================================
 
 
 def _apply_default_agent_settings(config: dict):
-    """无需提示，直接应用所有智能体设置的推荐默认值。"""
+    """Apply recommended defaults for all agent settings without prompting."""
     config.setdefault("agent", {})["max_turns"] = 90
     save_env_value("HERMES_MAX_ITERATIONS", "90")
 
@@ -1447,19 +1505,21 @@ def _apply_default_agent_settings(config: dict):
 
 
 def setup_agent_settings(config: dict):
-    """配置智能体行为：迭代次数、进度显示、压缩、会话重置。"""
+    """Configure agent behavior: iterations, progress display, compression, session reset."""
 
     print_header("Agent Settings")
     print_info(f"   Guide: {_DOCS_BASE}/user-guide/configuration")
     print()
 
-    # ── 最大迭代次数 ──
+    # ── Max Iterations ──
     current_max = get_env_value("HERMES_MAX_ITERATIONS") or str(
         config.get("agent", {}).get("max_turns", 90)
     )
     print_info("Maximum tool-calling iterations per conversation.")
     print_info("Higher = more complex tasks, but costs more tokens.")
-    print_info("Default is 90, which works for most tasks. Use 150+ for open exploration.")
+    print_info(
+        f"Press Enter to keep {current_max}. Use 90 for most tasks or 150+ for open exploration."
+    )
 
     max_iter_str = prompt("Max iterations", current_max)
     try:
@@ -1472,7 +1532,7 @@ def setup_agent_settings(config: dict):
     except ValueError:
         print_warning("Invalid number, keeping current value")
 
-    # ── 工具进度显示 ──
+    # ── Tool Progress Display ──
     print_info("")
     print_info("Tool Progress Display")
     print_info("Controls how much tool activity is shown (CLI and messaging).")
@@ -1492,7 +1552,7 @@ def setup_agent_settings(config: dict):
     else:
         print_warning(f"Unknown mode '{mode}', keeping '{current_mode}'")
 
-    # ── 上下文压缩 ──
+    # ── Context Compression ──
     print_header("Context Compression")
     print_info("Automatically summarizes old messages when context gets too long.")
     print_info(
@@ -1514,7 +1574,7 @@ def setup_agent_settings(config: dict):
         f"Context compression threshold set to {config['compression'].get('threshold', 0.50)}"
     )
 
-    # ── 会话重置策略 ──
+    # ── Session Reset Policy ──
     print_header("Session Reset Policy")
     print_info(
         "Messaging sessions (Telegram, Discord, etc.) accumulate context over time."
@@ -1612,18 +1672,18 @@ def setup_agent_settings(config: dict):
 
 
 # =============================================================================
-# 第 4 节：消息平台（网关）
+# Section 4: Messaging Platforms (Gateway)
 # =============================================================================
 
 
 def _setup_telegram():
-    """配置 Telegram 机器人凭证和允许列表。"""
+    """Configure Telegram bot credentials and allowlist."""
     print_header("Telegram")
     existing = get_env_value("TELEGRAM_BOT_TOKEN")
     if existing:
         print_info("Telegram: already configured")
         if not prompt_yes_no("Reconfigure Telegram?", False):
-    # 检查已有配置上缺失的允许列表
+            # Check missing allowlist on existing config
             if not get_env_value("TELEGRAM_ALLOWED_USERS"):
                 print_info("⚠️  Telegram has no user allowlist - anyone can use your bot!")
                 if prompt_yes_no("Add allowed users now?", True):
@@ -1688,7 +1748,7 @@ def _setup_telegram():
 
 
 def _setup_discord():
-    """配置 Discord 机器人凭证和允许列表。"""
+    """Configure Discord bot credentials and allowlist."""
     print_header("Discord")
     existing = get_env_value("DISCORD_BOT_TOKEN")
     if existing:
@@ -1742,7 +1802,7 @@ def _setup_discord():
 
 
 def _clean_discord_user_ids(raw: str) -> list:
-    """从逗号分隔的 ID 字符串中去除常见的 Discord 提及前缀。"""
+    """Strip common Discord mention prefixes from a comma-separated ID string."""
     cleaned = []
     for uid in raw.replace(" ", "").split(","):
         uid = uid.strip()
@@ -1756,7 +1816,7 @@ def _clean_discord_user_ids(raw: str) -> list:
 
 
 def _setup_slack():
-    """配置 Slack 机器人凭证。"""
+    """Configure Slack bot credentials."""
     print_header("Slack")
     existing = get_env_value("SLACK_BOT_TOKEN")
     if existing:
@@ -1809,7 +1869,7 @@ def _setup_slack():
 
 
 def _setup_matrix():
-    """配置 Matrix 凭证。"""
+    """Configure Matrix credentials."""
     print_header("Matrix")
     existing = get_env_value("MATRIX_ACCESS_TOKEN") or get_env_value("MATRIX_PASSWORD")
     if existing:
@@ -1895,7 +1955,7 @@ def _setup_matrix():
 
 
 def _setup_mattermost():
-    """配置 Mattermost 机器人凭证。"""
+    """Configure Mattermost bot credentials."""
     print_header("Mattermost")
     existing = get_env_value("MATTERMOST_TOKEN")
     if existing:
@@ -1938,7 +1998,7 @@ def _setup_mattermost():
 
 
 def _setup_whatsapp():
-    """配置 WhatsApp 桥接。"""
+    """Configure WhatsApp bridge."""
     print_header("WhatsApp")
     existing = get_env_value("WHATSAPP_ENABLED")
     if existing:
@@ -1956,103 +2016,57 @@ def _setup_whatsapp():
 
 
 def _setup_weixin():
-    """通过 iLink Bot API 二维码登录配置微信。"""
+    """Configure Weixin (personal WeChat) via iLink Bot API QR login."""
     from hermes_cli.gateway import _setup_weixin as _gateway_setup_weixin
     _gateway_setup_weixin()
 
 
 def _setup_signal():
-    """通过网关设置配置 Signal。"""
+    """Configure Signal via gateway setup."""
     from hermes_cli.gateway import _setup_signal as _gateway_setup_signal
     _gateway_setup_signal()
 
 
 def _setup_email():
-    """通过网关设置配置 Email。"""
+    """Configure Email via gateway setup."""
     from hermes_cli.gateway import _setup_email as _gateway_setup_email
     _gateway_setup_email()
 
 
 def _setup_sms():
-    """通过网关设置配置 SMS（Twilio）。"""
+    """Configure SMS (Twilio) via gateway setup."""
     from hermes_cli.gateway import _setup_sms as _gateway_setup_sms
     _gateway_setup_sms()
 
 
 def _setup_dingtalk():
-    """通过网关设置配置钉钉。"""
+    """Configure DingTalk via gateway setup."""
     from hermes_cli.gateway import _setup_dingtalk as _gateway_setup_dingtalk
     _gateway_setup_dingtalk()
 
 
 def _setup_feishu():
-    """通过网关设置配置飞书 / Lark。"""
+    """Configure Feishu / Lark via gateway setup."""
     from hermes_cli.gateway import _setup_feishu as _gateway_setup_feishu
     _gateway_setup_feishu()
 
 
 def _setup_wecom():
-    """通过网关设置配置企业微信。"""
+    """Configure WeCom (Enterprise WeChat) via gateway setup."""
     from hermes_cli.gateway import _setup_wecom as _gateway_setup_wecom
     _gateway_setup_wecom()
 
 
 def _setup_wecom_callback():
-    """通过网关设置配置企业微信回调（自建应用）。"""
+    """Configure WeCom Callback (self-built app) via gateway setup."""
     from hermes_cli.gateway import _setup_wecom_callback as _gw_setup
     _gw_setup()
 
 
-def _setup_qqbot():
-    """配置 QQ 机器人网关。"""
-    print_header("QQ Bot")
-    existing = get_env_value("QQ_APP_ID")
-    if existing:
-        print_info("QQ Bot: already configured")
-        if not prompt_yes_no("Reconfigure QQ Bot?", False):
-            return
-
-    print_info("Connects Hermes to QQ via the Official QQ Bot API (v2).")
-    print_info("   Requires a QQ Bot application at q.qq.com")
-    print_info("   Reference: https://bot.q.qq.com/wiki/develop/api-v2/")
-    print()
-
-    app_id = prompt("QQ Bot App ID")
-    if not app_id:
-        print_warning("App ID is required — skipping QQ Bot setup")
-        return
-    save_env_value("QQ_APP_ID", app_id.strip())
-
-    client_secret = prompt("QQ Bot App Secret", password=True)
-    if not client_secret:
-        print_warning("App Secret is required — skipping QQ Bot setup")
-        return
-    save_env_value("QQ_CLIENT_SECRET", client_secret)
-    print_success("QQ Bot credentials saved")
-
-    print()
-    print_info("🔒 Security: Restrict who can DM your bot")
-    print_info("   Use QQ user OpenIDs (found in event payloads)")
-    print()
-    allowed_users = prompt("Allowed user OpenIDs (comma-separated, leave empty for open access)")
-    if allowed_users:
-        save_env_value("QQ_ALLOWED_USERS", allowed_users.replace(" ", ""))
-        print_success("QQ Bot allowlist configured")
-    else:
-        print_info("⚠️  No allowlist set — anyone can DM the bot!")
-
-    print()
-    print_info("📬 Home Channel: OpenID for cron job delivery and notifications.")
-    home_channel = prompt("Home channel OpenID (leave empty to set later)")
-    if home_channel:
-        save_env_value("QQ_HOME_CHANNEL", home_channel)
-
-    print()
-    print_success("QQ Bot configured!")
 
 
 def _setup_bluebubbles():
-    """配置 BlueBubbles iMessage 网关。"""
+    """Configure BlueBubbles iMessage gateway."""
     print_header("BlueBubbles (iMessage)")
     existing = get_env_value("BLUEBUBBLES_SERVER_URL")
     if existing:
@@ -2117,16 +2131,13 @@ def _setup_bluebubbles():
 
 
 def _setup_qqbot():
-    """通过标准平台设置配置 QQ 机器人（官方 API v2）。"""
-    from hermes_cli.gateway import _PLATFORMS
-    qq_platform = next((p for p in _PLATFORMS if p["key"] == "qqbot"), None)
-    if qq_platform:
-        from hermes_cli.gateway import _setup_standard_platform
-        _setup_standard_platform(qq_platform)
+    """Configure QQ Bot (Official API v2) via gateway setup."""
+    from hermes_cli.gateway import _setup_qqbot as _gateway_setup_qqbot
+    _gateway_setup_qqbot()
 
 
 def _setup_webhooks():
-    """配置 webhook 集成。"""
+    """Configure webhook integration."""
     print_header("Webhooks")
     existing = get_env_value("WEBHOOK_ENABLED")
     if existing:
@@ -2171,7 +2182,7 @@ def _setup_webhooks():
     print_info("   Open config in your editor:  hermes config edit")
 
 
-# 网关清单的平台注册表
+# Platform registry for the gateway checklist
 _GATEWAY_PLATFORMS = [
     ("Telegram", "TELEGRAM_BOT_TOKEN", _setup_telegram),
     ("Discord", "DISCORD_BOT_TOKEN", _setup_discord),
@@ -2194,17 +2205,17 @@ _GATEWAY_PLATFORMS = [
 
 
 def setup_gateway(config: dict):
-    """配置消息平台集成。"""
+    """Configure messaging platform integrations."""
     print_header("Messaging Platforms")
     print_info("Connect to messaging platforms to chat with Hermes from anywhere.")
     print_info("Toggle with Space, confirm with Enter.")
     print()
 
-    # 构建清单项目，预选已配置的平台
+    # Build checklist items, pre-selecting already-configured platforms
     items = []
     pre_selected = []
     for i, (name, env_var, _func) in enumerate(_GATEWAY_PLATFORMS):
-        # Matrix 有两个可能的环境变量
+        # Matrix has two possible env vars
         is_configured = bool(get_env_value(env_var))
         if name == "Matrix" and not is_configured:
             is_configured = bool(get_env_value("MATRIX_PASSWORD"))
@@ -2223,7 +2234,7 @@ def setup_gateway(config: dict):
         name, _env_var, setup_func = _GATEWAY_PLATFORMS[idx]
         setup_func()
 
-    # ── 网关服务设置 ──
+    # ── Gateway Service Setup ──
     any_messaging = (
         get_env_value("TELEGRAM_BOT_TOKEN")
         or get_env_value("DISCORD_BOT_TOKEN")
@@ -2248,7 +2259,7 @@ def setup_gateway(config: dict):
         print_info("━" * 50)
         print_success("Messaging platforms configured!")
 
-        # 检查是否有缺失的 home 频道
+        # Check if any home channels are missing
         missing_home = []
         if get_env_value("TELEGRAM_BOT_TOKEN") and not get_env_value(
             "TELEGRAM_HOME_CHANNEL"
@@ -2262,7 +2273,9 @@ def setup_gateway(config: dict):
             missing_home.append("Slack")
         if get_env_value("BLUEBUBBLES_SERVER_URL") and not get_env_value("BLUEBUBBLES_HOME_CHANNEL"):
             missing_home.append("BlueBubbles")
-        if get_env_value("QQ_APP_ID") and not get_env_value("QQ_HOME_CHANNEL"):
+        if get_env_value("QQ_APP_ID") and not (
+            get_env_value("QQBOT_HOME_CHANNEL") or get_env_value("QQ_HOME_CHANNEL")
+        ):
             missing_home.append("QQBot")
 
         if missing_home:
@@ -2276,7 +2289,7 @@ def setup_gateway(config: dict):
                     f"     hermes config set {plat.upper()}_HOME_CHANNEL <channel_id>"
                 )
 
-        # 提供将网关安装为系统服务的选项
+        # Offer to install the gateway as a system service
         import platform as _platform
 
         _is_linux = _platform.system() == "Linux"
@@ -2287,8 +2300,10 @@ def setup_gateway(config: dict):
             _is_service_running,
             supports_systemd_services,
             has_conflicting_systemd_units,
+            has_legacy_hermes_units,
             install_linux_gateway_from_setup,
             print_systemd_scope_conflict_warning,
+            print_legacy_unit_warning,
             systemd_start,
             systemd_restart,
             launchd_install,
@@ -2304,6 +2319,10 @@ def setup_gateway(config: dict):
         print()
         if supports_systemd and has_conflicting_systemd_units():
             print_systemd_scope_conflict_warning()
+            print()
+
+        if supports_systemd and has_legacy_hermes_units():
+            print_legacy_unit_warning()
             print()
 
         if service_running:
@@ -2372,19 +2391,19 @@ def setup_gateway(config: dict):
 
 
 # =============================================================================
-# 第 5 节：工具配置（委托给统一的 tools_config.py）
+# Section 5: Tool Configuration (delegates to unified tools_config.py)
 # =============================================================================
 
 
 def setup_tools(config: dict, first_install: bool = False):
-    """配置工具 — 委托给 tools_config.py 中统一的 tools_command()。
+    """Configure tools — delegates to the unified tools_command() in tools_config.py.
 
-    `hermes setup tools` 和 `hermes tools` 使用相同的流程：
-    平台选择 → 工具集切换 → 提供商/API 密钥配置。
+    Both `hermes setup tools` and `hermes tools` use the same flow:
+    platform selection → toolset toggles → provider/API key configuration.
 
-    参数:
-        first_install: 为 True 时，使用简化的首次安装流程
-            （无平台菜单，提示所有未配置的 API 密钥）。
+    Args:
+        first_install: When True, uses the simplified first-install flow
+            (no platform menu, prompts for all unconfigured API keys).
     """
     from hermes_cli.tools_config import tools_command
 
@@ -2392,32 +2411,87 @@ def setup_tools(config: dict, first_install: bool = False):
 
 
 # =============================================================================
-# 迁移后的章节跳过逻辑
+# Post-Migration Section Skip Logic
 # =============================================================================
 
 
-def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]:
-    """如果设置章节已配置则返回简短摘要，否则返回 None。
+def _model_section_has_credentials(config: dict) -> bool:
+    """Return True when any known inference provider has usable credentials.
 
-    用于 OpenClaw 迁移后检测哪些章节可以跳过。
-    ``get_env_value`` 是从 hermes_cli.config 模块级导入的，
-    以便对 ``setup_mod.get_env_value`` 的测试补丁生效。
+    Sources of truth:
+      * ``PROVIDER_REGISTRY`` in ``hermes_cli.auth`` — lists every supported
+        provider along with its ``api_key_env_vars``.
+      * ``active_provider`` in the auth store — covers OAuth device-code /
+        external-OAuth providers (Nous, Codex, Qwen, Gemini CLI, ...).
+      * The legacy OpenRouter aggregator env vars, which route generic
+        ``OPENAI_API_KEY`` / ``OPENROUTER_API_KEY`` values through OpenRouter.
+    """
+    try:
+        from hermes_cli.auth import get_active_provider
+        if get_active_provider():
+            return True
+    except Exception:
+        pass
+
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+    except Exception:
+        PROVIDER_REGISTRY = {}  # type: ignore[assignment]
+
+    def _has_key(pconfig) -> bool:
+        for env_var in pconfig.api_key_env_vars:
+            # CLAUDE_CODE_OAUTH_TOKEN is set by Claude Code itself, not by
+            # the user — mirrors is_provider_explicitly_configured in auth.py.
+            if env_var == "CLAUDE_CODE_OAUTH_TOKEN":
+                continue
+            if get_env_value(env_var):
+                return True
+        return False
+
+    # Prefer the provider declared in config.yaml, avoids false positives
+    # from stray env vars (GH_TOKEN, etc.) when the user has already picked
+    # a different provider.
+    model_cfg = config.get("model") if isinstance(config, dict) else None
+    if isinstance(model_cfg, dict):
+        provider_id = (model_cfg.get("provider") or "").strip().lower()
+        if provider_id in PROVIDER_REGISTRY:
+            if _has_key(PROVIDER_REGISTRY[provider_id]):
+                return True
+        if provider_id == "openrouter":
+            for env_var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY"):
+                if get_env_value(env_var):
+                    return True
+
+    # OpenRouter aggregator fallback (no provider declared in config).
+    for env_var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY"):
+        if get_env_value(env_var):
+            return True
+
+    for pid, pconfig in PROVIDER_REGISTRY.items():
+        # Skip copilot in auto-detect: GH_TOKEN / GITHUB_TOKEN are
+        # commonly set for git tooling.  Mirrors resolve_provider in auth.py.
+        if pid == "copilot":
+            continue
+        if _has_key(pconfig):
+            return True
+    return False
+
+
+def _gateway_platform_short_label(label: str) -> str:
+    """Strip trailing parenthetical qualifiers from a gateway platform label."""
+    base = label.split("(", 1)[0].strip()
+    return base or label
+
+
+def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]:
+    """Return a short summary if a setup section is already configured, else None.
+
+    Used after OpenClaw migration to detect which sections can be skipped.
+    ``get_env_value`` is the module-level import from hermes_cli.config
+    so that test patches on ``setup_mod.get_env_value`` take effect.
     """
     if section_key == "model":
-        has_key = bool(
-            get_env_value("OPENROUTER_API_KEY")
-            or get_env_value("OPENAI_API_KEY")
-            or get_env_value("ANTHROPIC_API_KEY")
-        )
-        if not has_key:
-            # Check for OAuth providers
-            try:
-                from hermes_cli.auth import get_active_provider
-                if get_active_provider():
-                    has_key = True
-            except Exception:
-                pass
-        if not has_key:
+        if not _model_section_has_credentials(config):
             return None
         model = config.get("model")
         if isinstance(model, str) and model.strip():
@@ -2435,40 +2509,14 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
         return f"max turns: {max_turns}"
 
     elif section_key == "gateway":
-        platforms = []
-        if get_env_value("TELEGRAM_BOT_TOKEN"):
-            platforms.append("Telegram")
-        if get_env_value("DISCORD_BOT_TOKEN"):
-            platforms.append("Discord")
-        if get_env_value("SLACK_BOT_TOKEN"):
-            platforms.append("Slack")
-        if get_env_value("SIGNAL_ACCOUNT"):
-            platforms.append("Signal")
-        if get_env_value("EMAIL_ADDRESS"):
-            platforms.append("Email")
-        if get_env_value("TWILIO_ACCOUNT_SID"):
-            platforms.append("SMS")
-        if get_env_value("MATRIX_ACCESS_TOKEN") or get_env_value("MATRIX_PASSWORD"):
-            platforms.append("Matrix")
-        if get_env_value("MATTERMOST_TOKEN"):
-            platforms.append("Mattermost")
-        if get_env_value("WHATSAPP_PHONE_NUMBER_ID"):
-            platforms.append("WhatsApp")
-        if get_env_value("DINGTALK_CLIENT_ID"):
-            platforms.append("DingTalk")
-        if get_env_value("FEISHU_APP_ID"):
-            platforms.append("Feishu")
-        if get_env_value("WECOM_BOT_ID"):
-            platforms.append("WeCom")
-        if get_env_value("WEIXIN_ACCOUNT_ID"):
-            platforms.append("Weixin")
-        if get_env_value("BLUEBUBBLES_SERVER_URL"):
-            platforms.append("BlueBubbles")
-        if get_env_value("WEBHOOK_ENABLED"):
-            platforms.append("Webhooks")
+        platforms = [
+            _gateway_platform_short_label(label)
+            for label, env_var, _ in _GATEWAY_PLATFORMS
+            if get_env_value(env_var)
+        ]
         if platforms:
             return ", ".join(platforms)
-            return None  # 未配置平台 — 章节必须运行
+        return None  # No platforms configured — section must run
 
     elif section_key == "tools":
         tools = []
@@ -2488,9 +2536,9 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
 def _skip_configured_section(
     config: dict, section_key: str, label: str
 ) -> bool:
-    """显示已配置章节的摘要并提供跳过选项。
+    """Show an already-configured section summary and offer to skip.
 
-    如果用户选择跳过返回 True，如果章节应运行返回 False。
+    Returns True if the user chose to skip, False if the section should run.
     """
     summary = _get_section_config_summary(config, section_key)
     if not summary:
@@ -2501,7 +2549,7 @@ def _skip_configured_section(
 
 
 # =============================================================================
-# OpenClaw 迁移
+# OpenClaw Migration
 # =============================================================================
 
 
@@ -2515,9 +2563,9 @@ _OPENCLAW_SCRIPT = (
 
 
 def _load_openclaw_migration_module():
-    """将 openclaw_to_hermes 迁移脚本作为模块加载。
+    """Load the openclaw_to_hermes migration script as a module.
 
-    返回已加载的模块，如果脚本无法加载则返回 None。
+    Returns the loaded module, or None if the script can't be loaded.
     """
     if not _OPENCLAW_SCRIPT.exists():
         return None
@@ -2529,8 +2577,8 @@ def _load_openclaw_migration_module():
         return None
 
     mod = importlib.util.module_from_spec(spec)
-    # 在 sys.modules 中注册，以便 @dataclass 可以解析模块
-    # （Python 3.11+ 要求动态加载的模块如此）
+    # Register in sys.modules so @dataclass can resolve the module
+    # (Python 3.11+ requires this for dynamically loaded modules)
     import sys as _sys
     _sys.modules[spec.name] = mod
     try:
@@ -2541,10 +2589,10 @@ def _load_openclaw_migration_module():
     return mod
 
 
-# 代表高影响变更需要显式警告的条目类型。
-# 网关令牌/频道可能从旧智能体劫持消息平台。
-# 配置值在 OpenClaw 和 Hermes 之间可能有不同语义。
-# 指令/上下文文件（.md）可能包含不兼容的设置流程。
+# Item kinds that represent high-impact changes warranting explicit warnings.
+# Gateway tokens/channels can hijack messaging platforms from the old agent.
+# Config values may have different semantics between OpenClaw and Hermes.
+# Instruction/context files (.md) can contain incompatible setup procedures.
 _HIGH_IMPACT_KIND_KEYWORDS = {
     "gateway": "⚠ Gateway/messaging — this will configure Hermes to use your OpenClaw messaging channels",
     "telegram": "⚠ Telegram — this will point Hermes at your OpenClaw Telegram bot",
@@ -2559,10 +2607,10 @@ _HIGH_IMPACT_KIND_KEYWORDS = {
 
 
 def _print_migration_preview(report: dict):
-    """打印迁移操作的详细预演预览。
+    """Print a detailed dry-run preview of what migration would do.
 
-    按类别分组条目，并为高影响变更（如网关令牌接管
-    和配置值差异）添加显式警告。
+    Groups items by category and adds explicit warnings for high-impact
+    changes like gateway token takeover and config value differences.
     """
     items = report.get("items", [])
     if not items:
@@ -2610,7 +2658,7 @@ def _print_migration_preview(report: dict):
             print(f"      {kind:<22s}  {reason}")
         print()
 
-    # 打印收集的警告
+    # Print collected warnings
     if warnings_shown:
         print(color("  ── Warnings ──", Colors.YELLOW))
         for warning in sorted(warnings_shown):
@@ -2623,12 +2671,12 @@ def _print_migration_preview(report: dict):
 
 
 def _offer_openclaw_migration(hermes_home: Path) -> bool:
-    """检测 ~/.openclaw 并在首次设置时提供迁移选项。
+    """Detect ~/.openclaw and offer to migrate during first-time setup.
 
-    先运行预演以向用户展示将要导入、覆盖或接管的内容。
-    仅在明确确认后才执行。
+    Runs a dry-run first to show the user exactly what would be imported,
+    overwritten, or taken over. Only executes after explicit confirmation.
 
-    如果迁移成功运行返回 True，否则返回 False。
+    Returns True if migration ran successfully, False otherwise.
     """
     openclaw_dir = Path.home() / ".openclaw"
     if not openclaw_dir.is_dir():
@@ -2649,12 +2697,12 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
         )
         return False
 
-    # 确保 config.yaml 在迁移尝试读取之前存在
+    # Ensure config.yaml exists before migration tries to read it
     config_path = get_config_path()
     if not config_path.exists():
         save_config(load_config())
 
-    # 加载迁移模块
+    # Load the migration module
     try:
         mod = _load_openclaw_migration_module()
         if mod is None:
@@ -2665,7 +2713,7 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
         logger.debug("OpenClaw migration module load error", exc_info=True)
         return False
 
-    # ── 阶段 1：预演预览 ──
+    # ── Phase 1: Dry-run preview ──
     try:
         selected = mod.resolve_selected_options(None, None, preset="full")
         dry_migrator = mod.Migrator(
@@ -2685,7 +2733,7 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
         logger.debug("OpenClaw migration preview error", exc_info=True)
         return False
 
-    # 显示完整预览
+    # Display the full preview
     preview_summary = preview_report.get("summary", {})
     preview_count = preview_summary.get("migrated", 0)
 
@@ -2700,7 +2748,7 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
     print()
     _print_migration_preview(preview_report)
 
-    # ── 阶段 2：确认并执行 ──
+    # ── Phase 2: Confirm and execute ──
     if not prompt_yes_no("Proceed with migration?", default=False):
         print_info(
             "Migration cancelled. You can run it later with: hermes claw migrate"
@@ -2710,8 +2758,8 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
         )
         return False
 
-    # 执行迁移 — overwrite=False 保留现有 Hermes 配置。
-    # 用户已看过预览；冲突默认跳过。
+    # Execute the migration — overwrite=False so existing Hermes configs are
+    # preserved. The user saw the preview; conflicts are skipped by default.
     try:
         migrator = mod.Migrator(
             source_root=openclaw_dir.resolve(),
@@ -2730,7 +2778,7 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
         logger.debug("OpenClaw migration error", exc_info=True)
         return False
 
-    # 打印最终摘要
+    # Print final summary
     summary = report.get("summary", {})
     migrated = summary.get("migrated", 0)
     skipped = summary.get("skipped", 0)
@@ -2756,7 +2804,7 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
 
 
 # =============================================================================
-# 主向导协调器
+# Main Wizard Orchestrator
 # =============================================================================
 
 SETUP_SECTIONS = [
@@ -2768,8 +2816,9 @@ SETUP_SECTIONS = [
     ("agent", "Agent Settings", setup_agent_settings),
 ]
 
-# 回访用户菜单故意省略独立 TTS，因为模型设置已包含 TTS 选择，
-# 工具设置涵盖了其余的提供商配置。保持此列表与可见菜单项相同的顺序。
+# The returning-user menu intentionally omits standalone TTS because model setup
+# already includes TTS selection and tools setup covers the rest of the provider
+# configuration. Keep this list in the same order as the visible menu entries.
 RETURNING_USER_MENU_SECTION_KEYS = [
     "model",
     "terminal",
@@ -2780,16 +2829,16 @@ RETURNING_USER_MENU_SECTION_KEYS = [
 
 
 def run_setup_wizard(args):
-    """运行交互式设置向导。
+    """Run the interactive setup wizard.
 
-    支持完整、快速和特定章节设置：
-      hermes setup           — 完整或快速（自动检测）
-      hermes setup model     — 仅模型/提供商
-      hermes setup tts       — 仅文字转语音
-      hermes setup terminal  — 仅终端后端
-      hermes setup gateway   — 仅消息平台
-      hermes setup tools     — 仅工具配置
-      hermes setup agent     — 仅智能体设置
+    Supports full, quick, and section-specific setup:
+      hermes setup           — full or quick (auto-detected)
+      hermes setup model     — just model/provider
+      hermes setup tts       — just text-to-speech
+      hermes setup terminal  — just terminal backend
+      hermes setup gateway   — just messaging platforms
+      hermes setup tools     — just tool configuration
+      hermes setup agent     — just agent settings
     """
     from hermes_cli.config import is_managed, managed_error
     if is_managed():
@@ -2805,7 +2854,7 @@ def run_setup_wizard(args):
     config = load_config()
     hermes_home = get_hermes_home()
 
-    # 检测非交互式环境（无头 SSH、Docker、CI/CD）
+    # Detect non-interactive environments (headless SSH, Docker, CI/CD)
     non_interactive = getattr(args, 'non_interactive', False)
     if not non_interactive and not is_interactive_stdin():
         non_interactive = True
@@ -2816,7 +2865,7 @@ def run_setup_wizard(args):
         )
         return
 
-    # 检查是否请求了特定章节
+    # Check if a specific section was requested
     section = getattr(args, "section", None)
     if section:
         for key, label, func in SETUP_SECTIONS:
@@ -2845,7 +2894,7 @@ def run_setup_wizard(args):
         print_info(f"Available sections: {', '.join(k for k, _, _ in SETUP_SECTIONS)}")
         return
 
-    # 检查是否是已有安装且已配置提供商
+    # Check if this is an existing installation with a provider configured
     from hermes_cli.auth import get_active_provider
 
     active_provider = get_active_provider()
@@ -2893,7 +2942,7 @@ def run_setup_wizard(args):
     migration_ran = False
 
     if is_existing:
-        # ── 回访用户菜单 ──
+        # ── Returning User Menu ──
         print()
         print_header("Welcome Back!")
         print_success("You already have Hermes configured.")
@@ -2912,19 +2961,19 @@ def run_setup_wizard(args):
         choice = prompt_choice("What would you like to do?", menu_choices, 0)
 
         if choice == 0:
-            # 快速设置
+            # Quick setup
             _run_quick_setup(config, hermes_home)
             return
         elif choice == 1:
-            # 完整设置 — 继续执行所有章节
+            # Full setup — fall through to run all sections
             pass
         elif choice == 7:
             print_info("Exiting. Run 'hermes setup' again when ready.")
             return
         elif 2 <= choice <= 6:
-            # 单独章节 — 按键映射，不按位置。
-            # SETUP_SECTIONS 包含 TTS 但回访用户菜单跳过它，
-            # 所以位置索引（choice - 2）会调度到错误的章节。
+            # Individual section — map by key, not by position.
+            # SETUP_SECTIONS includes TTS but the returning-user menu skips it,
+            # so positional indexing (choice - 2) would dispatch the wrong section.
             section_key = RETURNING_USER_MENU_SECTION_KEYS[choice - 2]
             section = next((s for s in SETUP_SECTIONS if s[0] == section_key), None)
             if section:
@@ -2934,10 +2983,10 @@ def run_setup_wizard(args):
                 _print_setup_summary(config, hermes_home)
             return
     else:
-        # ── 首次设置 ──
+        # ── First-Time Setup ──
         print()
 
-        # 在配置开始前提供 OpenClaw 迁移
+        # Offer OpenClaw migration before configuration begins
         migration_ran = _offer_openclaw_migration(hermes_home)
         if migration_ran:
             config = load_config()
@@ -2951,7 +3000,7 @@ def run_setup_wizard(args):
             _run_first_time_quick_setup(config, hermes_home, is_existing)
             return
 
-    # ── 完整设置 — 运行所有章节 ──
+    # ── Full Setup — run all sections ──
     print_header("Configuration Location")
     print_info(f"Config file:  {get_config_path()}")
     print_info(f"Secrets file: {get_env_path()}")
@@ -2966,27 +3015,27 @@ def run_setup_wizard(args):
         print_info("Each section below will show what was imported — press Enter to keep,")
         print_info("or choose to reconfigure if needed.")
 
-    # 第 1 节：模型与提供商
+    # Section 1: Model & Provider
     if not (migration_ran and _skip_configured_section(config, "model", "Model & Provider")):
         setup_model_provider(config)
 
-    # 第 2 节：终端后端
+    # Section 2: Terminal Backend
     if not (migration_ran and _skip_configured_section(config, "terminal", "Terminal Backend")):
         setup_terminal_backend(config)
 
-    # 第 3 节：智能体设置
+    # Section 3: Agent Settings
     if not (migration_ran and _skip_configured_section(config, "agent", "Agent Settings")):
         setup_agent_settings(config)
 
-    # 第 4 节：消息平台
+    # Section 4: Messaging Platforms
     if not (migration_ran and _skip_configured_section(config, "gateway", "Messaging Platforms")):
         setup_gateway(config)
 
-    # 第 5 节：工具
+    # Section 5: Tools
     if not (migration_ran and _skip_configured_section(config, "tools", "Tools")):
         setup_tools(config, first_install=not is_existing)
 
-    # 保存并显示摘要
+    # Save and show summary
     save_config(config)
     _print_setup_summary(config, hermes_home)
 
@@ -2994,7 +3043,7 @@ def run_setup_wizard(args):
 
 
 def _resolve_hermes_chat_argv() -> Optional[list[str]]:
-    """解析用于在新进程中启动 ``hermes chat`` 的 argv。"""
+    """Resolve argv for launching ``hermes chat`` in a fresh process."""
     hermes_bin = shutil.which("hermes")
     if hermes_bin:
         return [hermes_bin, "chat"]
@@ -3009,7 +3058,7 @@ def _resolve_hermes_chat_argv() -> Optional[list[str]]:
 
 
 def _offer_launch_chat():
-    """设置完成后提示用户直接跳转到聊天。"""
+    """Prompt the user to jump straight into chat after setup."""
     print()
     if not prompt_yes_no("Launch hermes chat now?", True):
         return
@@ -3023,21 +3072,22 @@ def _offer_launch_chat():
 
 
 def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
-    """精简的首次设置：仅提供商 + 模型。
+    """Streamlined first-time setup: provider + model only.
 
-    为 TTS（Edge）、终端（本地）、智能体设置和工具应用合理的默认值 —
-    用户可以稍后通过 ``hermes setup <section>`` 自定义。
+    Applies sensible defaults for TTS (Edge), terminal (local), agent
+    settings, and tools — the user can customize later via
+    ``hermes setup <section>``.
     """
-    # 步骤 1：模型与提供商（必需 — 跳过轮换/视觉/TTS）
+    # Step 1: Model & Provider (essential — skips rotation/vision/TTS)
     setup_model_provider(config, quick=True)
 
-    # 步骤 2：为其他所有内容应用默认值
+    # Step 2: Apply defaults for everything else
     _apply_default_agent_settings(config)
     config.setdefault("terminal", {}).setdefault("backend", "local")
 
     save_config(config)
 
-    # 步骤 3：提供消息网关设置
+    # Step 3: Offer messaging gateway setup
     print()
     gateway_choice = prompt_choice(
         "Connect a messaging platform? (Telegram, Discord, etc.)",
@@ -3066,7 +3116,7 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
 
 
 def _run_quick_setup(config: dict, hermes_home):
-    """快速设置 — 仅配置缺失的项目。"""
+    """Quick setup — only configure items that are missing."""
     from hermes_cli.config import (
         get_missing_env_vars,
         get_missing_config_fields,
@@ -3076,7 +3126,7 @@ def _run_quick_setup(config: dict, hermes_home):
     print()
     print_header("Quick Setup — Missing Items Only")
 
-    # 检查缺失内容
+    # Check what's missing
     missing_required = [
         v for v in get_missing_env_vars(required_only=False) if v.get("is_required")
     ]
@@ -3100,7 +3150,7 @@ def _run_quick_setup(config: dict, hermes_home):
         print_info("or pick a specific section from the menu.")
         return
 
-    # 处理缺失的必需环境变量
+    # Handle missing required env vars
     if missing_required:
         print()
         print_info(f"{len(missing_required)} required setting(s) missing:")
@@ -3126,7 +3176,7 @@ def _run_quick_setup(config: dict, hermes_home):
             else:
                 print_warning(f"  Skipped {var['name']}")
 
-    # 按类别分割缺失的可选变量
+    # Split missing optional vars by category
     missing_tools = [v for v in missing_optional if v.get("category") == "tool"]
     missing_messaging = [
         v
@@ -3134,7 +3184,7 @@ def _run_quick_setup(config: dict, hermes_home):
         if v.get("category") == "messaging" and not v.get("advanced")
     ]
 
-    # ── 工具 API 密钥（清单）──
+    # ── Tool API keys (checklist) ──
     if missing_tools:
         print()
         print_header("Tool API Keys")
@@ -3154,14 +3204,14 @@ def _run_quick_setup(config: dict, hermes_home):
             var = missing_tools[idx]
             _prompt_api_key(var)
 
-    # ── 消息平台（清单然后提示选中的）──
+    # ── Messaging platforms (checklist then prompt for selected) ──
     if missing_messaging:
         print()
         print_header("Messaging Platforms")
         print_info("Connect Hermes to messaging apps to chat from anywhere.")
         print_info("You can configure these later with 'hermes setup gateway'.")
 
-        # 按平台分组（保持顺序）
+        # Group by platform (preserving order)
         platform_order = []
         platforms = {}
         for var in missing_messaging:

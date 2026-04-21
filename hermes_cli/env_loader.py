@@ -1,78 +1,123 @@
-"""用于在各个入口点中统一加载 Hermes .env 文件的辅助函数。"""
+"""Helpers for loading Hermes .env files consistently across entrypoints."""
 
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 
-# 表示凭据值的环境变量名称后缀。这些是我们在加载时会清洗其值的唯一
-# 环境变量——我们不能静默修改用户的任意环境变量，但凭据已知需要纯
-# ASCII（因为它们会成为 HTTP 头的值）。
+# Env var name suffixes that indicate credential values.  These are the
+# only env vars whose values we sanitize on load — we must not silently
+# alter arbitrary user env vars, but credentials are known to require
+# pure ASCII (they become HTTP header values).
 _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
+
+# Names we've already warned about during this process, so repeated
+# load_hermes_dotenv() calls (user env + project env, gateway hot-reload,
+# tests) don't spam the same warning multiple times.
+_WARNED_KEYS: set[str] = set()
+
+
+def _format_offending_chars(value: str, limit: int = 3) -> str:
+    """Return a compact 'U+XXXX ('c'), ...' summary of non-ASCII codepoints."""
+    seen: list[str] = []
+    for ch in value:
+        if ord(ch) > 127:
+            label = f"U+{ord(ch):04X}"
+            if ch.isprintable():
+                label += f" ({ch!r})"
+            if label not in seen:
+                seen.append(label)
+            if len(seen) >= limit:
+                break
+    return ", ".join(seen)
 
 
 def _sanitize_loaded_credentials() -> None:
-    """从 os.environ 中的凭据环境变量中去除非 ASCII 字符。
+    """Strip non-ASCII characters from credential env vars in os.environ.
 
-    在 dotenv 加载后调用，这样代码库的其余部分永远不会看到
-    含有非 ASCII 字符的 API 密钥。仅处理名称以已知凭据后缀
-    （``_API_KEY``、``_TOKEN`` 等）结尾的环境变量。
+    Called after dotenv loads so the rest of the codebase never sees
+    non-ASCII API keys.  Only touches env vars whose names end with
+    known credential suffixes (``_API_KEY``, ``_TOKEN``, etc.).
+
+    Emits a one-line warning to stderr when characters are stripped.
+    Silent stripping would mask copy-paste corruption (Unicode lookalike
+    glyphs from PDFs / rich-text editors, ZWSP from web pages) as opaque
+    provider-side "invalid API key" errors (see #6843).
     """
-    # 遍历所有环境变量，找到凭据类变量并清洗非 ASCII 字符
     for key, value in list(os.environ.items()):
         if not any(key.endswith(suffix) for suffix in _CREDENTIAL_SUFFIXES):
             continue
         try:
-            # 尝试将值编码为 ASCII，如果成功则说明无需处理
             value.encode("ascii")
+            continue
         except UnicodeEncodeError:
-            # 编码失败说明含有非 ASCII 字符，用 ignore 策略去除它们
-            os.environ[key] = value.encode("ascii", errors="ignore").decode("ascii")
+            pass
+        cleaned = value.encode("ascii", errors="ignore").decode("ascii")
+        os.environ[key] = cleaned
+        if key in _WARNED_KEYS:
+            continue
+        _WARNED_KEYS.add(key)
+        stripped = len(value) - len(cleaned)
+        detail = _format_offending_chars(value) or "non-printable"
+        print(
+            f"  Warning: {key} contained {stripped} non-ASCII character"
+            f"{'s' if stripped != 1 else ''} ({detail}) — stripped so the "
+            f"key can be sent as an HTTP header.",
+            file=sys.stderr,
+        )
+        print(
+            "  This usually means the key was copy-pasted from a PDF, "
+            "rich-text editor, or web page that substituted lookalike\n"
+            "  Unicode glyphs for ASCII letters. If authentication fails "
+            "(e.g. \"API key not valid\"), re-copy the key from the\n"
+            "  provider's dashboard and run `hermes setup` (or edit the "
+            ".env file in a plain-text editor).",
+            file=sys.stderr,
+        )
 
 
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
-    """加载 .env 文件，优先使用 utf-8 编码，失败时回退到 latin-1。"""
     try:
         load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
     except UnicodeDecodeError:
-        # utf-8 解码失败时，回退到 latin-1 编码（该编码能处理所有单字节字符）
         load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
-    # 从刚加载的凭据环境变量中去除非 ASCII 字符。
-    # API 密钥必须是纯 ASCII，因为它们作为 HTTP 头值发送（httpx 将头编码为 ASCII）。
-    # 非 ASCII 字符通常来自从 PDF 或富文本编辑器中复制粘贴密钥时，
-    # Unicode 外观相似的字形替换（例如 ʋ U+028B 替代 v）。
+    # Strip non-ASCII characters from credential env vars that were just
+    # loaded.  API keys must be pure ASCII since they're sent as HTTP
+    # header values (httpx encodes headers as ASCII).  Non-ASCII chars
+    # typically come from copy-pasting keys from PDFs or rich-text editors
+    # that substitute Unicode lookalike glyphs (e.g. ʋ U+028B for v).
     _sanitize_loaded_credentials()
 
 
 def _sanitize_env_file_if_needed(path: Path) -> None:
-    """在 python-dotenv 读取之前预先清洗 .env 文件。
+    """Pre-sanitize a .env file before python-dotenv reads it.
 
-    python-dotenv 无法处理损坏的行——即多个 KEY=VALUE 对被拼接在
-    同一行上（缺少换行符）。这会产生错误的值——例如 bot token 被
-    重复 8 次（参见 #8908）。
+    python-dotenv does not handle corrupted lines where multiple
+    KEY=VALUE pairs are concatenated on a single line (missing newline).
+    This produces mangled values — e.g. a bot token duplicated 8×
+    (see #8908).
 
-    我们委托给 ``hermes_cli.config._sanitize_env_lines``，它已经
-    知道所有有效的 Hermes 环境变量名称，能够正确地拆分拼接的行。
+    We delegate to ``hermes_cli.config._sanitize_env_lines`` which
+    already knows all valid Hermes env-var names and can split
+    concatenated lines correctly.
     """
     if not path.exists():
         return
     try:
         from hermes_cli.config import _sanitize_env_lines
     except ImportError:
-        return  # 早期引导阶段——config 模块尚不可用
+        return  # early bootstrap — config module not available yet
 
     read_kw = {"encoding": "utf-8", "errors": "replace"}
     try:
-        # 读取原始文件内容
         with open(path, **read_kw) as f:
             original = f.readlines()
-        # 调用清洗函数处理每一行
         sanitized = _sanitize_env_lines(original)
         if sanitized != original:
-            # 内容有变化，使用临时文件 + 原子替换的方式安全地写回
             import tempfile
             fd, tmp = tempfile.mkstemp(
                 dir=str(path.parent), suffix=".tmp", prefix=".env_"
@@ -81,19 +126,16 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     f.writelines(sanitized)
                     f.flush()
-                    # 确保数据写入磁盘
                     os.fsync(f.fileno())
-                # 原子替换原文件
                 os.replace(tmp, path)
             except BaseException:
-                # 写入失败时清理临时文件
                 try:
                     os.unlink(tmp)
                 except OSError:
                     pass
                 raise
     except Exception:
-        pass  # 尽力而为——不阻塞网关启动
+        pass  # best-effort — don't block gateway startup
 
 
 def load_hermes_dotenv(
@@ -101,30 +143,28 @@ def load_hermes_dotenv(
     hermes_home: str | os.PathLike | None = None,
     project_env: str | os.PathLike | None = None,
 ) -> list[Path]:
-    """加载 Hermes 环境文件，用户配置优先级最高。
+    """Load Hermes environment files with user config taking precedence.
 
-    行为：
-    - ``~/.hermes/.env`` 存在时会覆盖 shell 中已导出的过时值。
-    - 项目 ``.env`` 作为开发回退，仅在用户 env 存在时填充缺失的值。
-    - 如果用户 env 不存在，项目 ``.env`` 也会覆盖 shell 中的过时变量。
+    Behavior:
+    - `~/.hermes/.env` overrides stale shell-exported values when present.
+    - project `.env` acts as a dev fallback and only fills missing values when
+      the user env exists.
+    - if no user env exists, the project `.env` also overrides stale shell vars.
     """
     loaded: list[Path] = []
 
-    # 确定 Hermes 主目录路径
     home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
 
-    # 在 python-dotenv 解析之前修复损坏的 .env 文件（#8908）
+    # Fix corrupted .env files before python-dotenv parses them (#8908).
     if user_env.exists():
         _sanitize_env_file_if_needed(user_env)
 
-    # 加载用户级 .env（override=True 表示覆盖已有的环境变量）
     if user_env.exists():
         _load_dotenv_with_fallback(user_env, override=True)
         loaded.append(user_env)
 
-    # 加载项目级 .env（仅当用户级 .env 不存在时才覆盖已有变量）
     if project_env_path and project_env_path.exists():
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)

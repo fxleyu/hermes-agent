@@ -1,28 +1,29 @@
-"""兼容 OpenAI 接口的门面，底层与 Google Cloud Code Assist 后端通信。
+"""OpenAI-compatible facade that talks to Google's Cloud Code Assist backend.
 
-该适配器使 Hermes 可以像使用标准 OpenAI 风格的聊天补全端点一样使用
-``google-gemini-cli`` 提供商，而实际的 HTTP 请求发送至
-``cloudcode-pa.googleapis.com/v1internal:{generateContent,
-streamGenerateContent}``，并通过 OAuth PKCE 获取 Bearer 访问令牌。
+This adapter lets Hermes use the ``google-gemini-cli`` provider as if it were
+a standard OpenAI-shaped chat completion endpoint, while the underlying HTTP
+traffic goes to ``cloudcode-pa.googleapis.com/v1internal:{generateContent,
+streamGenerateContent}`` with a Bearer access token obtained via OAuth PKCE.
 
-架构
-----
-- ``GeminiCloudCodeClient`` 暴露 ``.chat.completions.create(**kwargs)``
-  方法，模拟 ``run_agent.py`` 使用的 OpenAI SDK 子集。
-- 传入的 OpenAI ``messages[]`` / ``tools[]`` / ``tool_choice`` 被转换为
-  Gemini 原生的 ``contents[]`` / ``tools[].functionDeclarations`` /
-  ``toolConfig`` / ``systemInstruction`` 格式。
-- 请求体按 Code Assist API 的要求包装为
-  ``{project, model, user_prompt_id, request}``。
-- 响应（``candidates[].content.parts[]``）被转换回
-  OpenAI ``choices[0].message`` 格式，包含 ``content`` + ``tool_calls``。
-- 流式传输使用 SSE（``?alt=sse``），产出 OpenAI 格式的增量 chunk。
+Architecture
+------------
+- ``GeminiCloudCodeClient`` exposes ``.chat.completions.create(**kwargs)``
+  mirroring the subset of the OpenAI SDK that ``run_agent.py`` uses.
+- Incoming OpenAI ``messages[]`` / ``tools[]`` / ``tool_choice`` are translated
+  to Gemini's native ``contents[]`` / ``tools[].functionDeclarations`` /
+  ``toolConfig`` / ``systemInstruction`` shape.
+- The request body is wrapped ``{project, model, user_prompt_id, request}``
+  per Code Assist API expectations.
+- Responses (``candidates[].content.parts[]``) are converted back to
+  OpenAI ``choices[0].message`` shape with ``content`` + ``tool_calls``.
+- Streaming uses SSE (``?alt=sse``) and yields OpenAI-shaped delta chunks.
 
-归属
-----
-翻译语义参照 jenslys/opencode-gemini-auth（MIT）和公开的 Gemini API 文档。
-请求信封格式（``{project, model, user_prompt_id, request}``）无公开文档；
-它是从 opencode-gemini-auth 和 clawdbot 实现中逆向工程得来的。
+Attribution
+-----------
+Translation semantics follow jenslys/opencode-gemini-auth (MIT) and the public
+Gemini API docs. Request envelope shape
+(``{project, model, user_prompt_id, request}``) is documented nowhere; it is
+reverse-engineered from the opencode-gemini-auth and clawdbot implementations.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from typing import Any, Dict, Iterator, List, Optional
 import httpx
 
 from agent import google_oauth
+from agent.gemini_schema import sanitize_gemini_tool_parameters
 from agent.google_code_assist import (
     CODE_ASSIST_ENDPOINT,
     FREE_TIER_ID,
@@ -50,21 +52,20 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# 请求转换：OpenAI → Gemini
+# Request translation: OpenAI → Gemini
 # =============================================================================
 
-# OpenAI 角色到 Gemini 角色的映射
 _ROLE_MAP_OPENAI_TO_GEMINI = {
     "user": "user",
     "assistant": "model",
-    "system": "user",   # 通过 systemInstruction 单独处理
-    "tool": "user",     # functionResponse 包装在 user 角色的 turn 中
+    "system": "user",   # handled separately via systemInstruction
+    "tool": "user",     # functionResponse is wrapped in a user-role turn
     "function": "user",
 }
 
 
 def _coerce_content_to_text(content: Any) -> str:
-    """OpenAI 的 content 可能是字符串或部件列表；将其归约为纯文本。"""
+    """OpenAI content may be str or a list of parts; reduce to plain text."""
     if content is None:
         return ""
     if isinstance(content, str):
@@ -77,7 +78,7 @@ def _coerce_content_to_text(content: Any) -> str:
             elif isinstance(p, dict):
                 if p.get("type") == "text" and isinstance(p.get("text"), str):
                     pieces.append(p["text"])
-                # 多模态（image_url 等）——暂时跳过；记录日志
+                # Multimodal (image_url, etc.) — stub for now; log and skip
                 elif p.get("type") in ("image_url", "input_audio"):
                     logger.debug("Dropping multimodal part (not yet supported): %s", p.get("type"))
         return "\n".join(pieces)
@@ -85,7 +86,7 @@ def _coerce_content_to_text(content: Any) -> str:
 
 
 def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
-    """将 OpenAI tool_call 转换为 Gemini functionCall 部件。"""
+    """OpenAI tool_call -> Gemini functionCall part."""
     fn = tool_call.get("function") or {}
     args_raw = fn.get("arguments", "")
     try:
@@ -99,23 +100,25 @@ def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
             "name": fn.get("name") or "",
             "args": args,
         },
-        # 哨兵签名——与 opencode-gemini-auth 的方式一致。
-        # 没有这个标记，Code Assist 会拒绝非自身链路发起的函数调用。
+        # Sentinel signature — matches opencode-gemini-auth's approach.
+        # Without this, Code Assist rejects function calls that originated
+        # outside its own chain.
         "thoughtSignature": "skip_thought_signature_validator",
     }
 
 
 def _translate_tool_result_to_gemini(message: Dict[str, Any]) -> Dict[str, Any]:
-    """将 OpenAI tool 角色消息转换为 Gemini functionResponse 部件。
+    """OpenAI tool-role message -> Gemini functionResponse part.
 
-    函数名不直接出现在 OpenAI tool 消息中；它必须通过发起调用的 assistant
-    消息传递。简化起见，我们在消息上查找 ``name``（OpenAI SDK 会复制到那里）
-    或通过 ``tool_call_id`` 交叉引用。
+    The function name isn't in the OpenAI tool message directly; it must be
+    passed via the assistant message that issued the call. For simplicity we
+    look up ``name`` on the message (OpenAI SDK copies it there) or on the
+    ``tool_call_id`` cross-reference.
     """
     name = str(message.get("name") or message.get("tool_call_id") or "tool")
     content = _coerce_content_to_text(message.get("content"))
-    # Gemini 期望响应以 dict 形式放在 `response` 下。
-    # 纯文本包装为 {"output": "..."}。
+    # Gemini expects the response as a dict under `response`. We wrap plain
+    # text in {"output": "..."}.
     try:
         parsed = json.loads(content) if content.strip().startswith(("{", "[")) else None
     except json.JSONDecodeError:
@@ -132,7 +135,7 @@ def _translate_tool_result_to_gemini(message: Dict[str, Any]) -> Dict[str, Any]:
 def _build_gemini_contents(
     messages: List[Dict[str, Any]],
 ) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
-    """将 OpenAI messages[] 转换为 Gemini contents[] + systemInstruction。"""
+    """Convert OpenAI messages[] to Gemini contents[] + systemInstruction."""
     system_text_parts: List[str] = []
     contents: List[Dict[str, Any]] = []
 
@@ -145,7 +148,7 @@ def _build_gemini_contents(
             system_text_parts.append(_coerce_content_to_text(msg.get("content")))
             continue
 
-        # 工具结果消息——生成包含 functionResponse 的 user 角色 turn
+        # Tool result message — emit a user-role turn with functionResponse
         if role == "tool" or role == "function":
             contents.append({
                 "role": "user",
@@ -160,7 +163,7 @@ def _build_gemini_contents(
         if text:
             parts.append({"text": text})
 
-        # assistant 消息可以携带 tool_calls
+        # Assistant messages can carry tool_calls
         tool_calls = msg.get("tool_calls") or []
         if isinstance(tool_calls, list):
             for tc in tool_calls:
@@ -168,7 +171,7 @@ def _build_gemini_contents(
                     parts.append(_translate_tool_call_to_gemini(tc))
 
         if not parts:
-            # Gemini 拒绝空的 parts；直接跳过该 turn
+            # Gemini rejects empty parts; skip the turn entirely
             continue
 
         contents.append({"role": gemini_role, "parts": parts})
@@ -185,7 +188,7 @@ def _build_gemini_contents(
 
 
 def _translate_tools_to_gemini(tools: Any) -> List[Dict[str, Any]]:
-    """将 OpenAI tools[] 转换为 Gemini tools[].functionDeclarations[]。"""
+    """OpenAI tools[] -> Gemini tools[].functionDeclarations[]."""
     if not isinstance(tools, list) or not tools:
         return []
     declarations: List[Dict[str, Any]] = []
@@ -203,7 +206,7 @@ def _translate_tools_to_gemini(tools: Any) -> List[Dict[str, Any]]:
             decl["description"] = str(fn["description"])
         params = fn.get("parameters")
         if isinstance(params, dict):
-            decl["parameters"] = params
+            decl["parameters"] = sanitize_gemini_tool_parameters(params)
         declarations.append(decl)
     if not declarations:
         return []
@@ -211,7 +214,7 @@ def _translate_tools_to_gemini(tools: Any) -> List[Dict[str, Any]]:
 
 
 def _translate_tool_choice_to_gemini(tool_choice: Any) -> Optional[Dict[str, Any]]:
-    """将 OpenAI tool_choice 转换为 Gemini toolConfig.functionCallingConfig。"""
+    """OpenAI tool_choice -> Gemini toolConfig.functionCallingConfig."""
     if tool_choice is None:
         return None
     if isinstance(tool_choice, str):
@@ -235,7 +238,7 @@ def _translate_tool_choice_to_gemini(tool_choice: Any) -> Optional[Dict[str, Any
 
 
 def _normalize_thinking_config(config: Any) -> Optional[Dict[str, Any]]:
-    """接受 thinkingBudget / thinkingLevel / includeThoughts（及 snake_case 形式）。"""
+    """Accept thinkingBudget / thinkingLevel / includeThoughts (+ snake_case)."""
     if not isinstance(config, dict) or not config:
         return None
     budget = config.get("thinkingBudget", config.get("thinking_budget"))
@@ -262,7 +265,7 @@ def build_gemini_request(
     stop: Any = None,
     thinking_config: Any = None,
 ) -> Dict[str, Any]:
-    """构建内层 Gemini 请求体（放入 ``request`` 包装器内部）。"""
+    """Build the inner Gemini request body (goes inside ``request`` wrapper)."""
     contents, system_instruction = _build_gemini_contents(messages)
 
     body: Dict[str, Any] = {"contents": contents}
@@ -303,7 +306,7 @@ def wrap_code_assist_request(
     inner_request: Dict[str, Any],
     user_prompt_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """将内层 Gemini 请求包装在 Code Assist 信封中。"""
+    """Wrap the inner Gemini request in the Code Assist envelope."""
     return {
         "project": project_id,
         "model": model,
@@ -313,17 +316,17 @@ def wrap_code_assist_request(
 
 
 # =============================================================================
-# 响应转换：Gemini → OpenAI
+# Response translation: Gemini → OpenAI
 # =============================================================================
 
 def _translate_gemini_response(
     resp: Dict[str, Any],
     model: str,
 ) -> SimpleNamespace:
-    """非流式 Gemini 响应 -> OpenAI 格式的 SimpleNamespace。
+    """Non-streaming Gemini response -> OpenAI-shaped SimpleNamespace.
 
-    Code Assist 会将实际的 Gemini 响应包装在 ``response`` 中，
-    因此如果存在则先解包。
+    Code Assist wraps the actual Gemini response inside ``response``, so we
+    unwrap it first if present.
     """
     inner = resp.get("response") if isinstance(resp.get("response"), dict) else resp
 
@@ -342,8 +345,8 @@ def _translate_gemini_response(
     for i, part in enumerate(parts or []):
         if not isinstance(part, dict):
             continue
-        # 思考部件是模型内部推理——作为 reasoning 表面化，
-        # 不混入 content。
+        # Thought parts are model's internal reasoning — surface as reasoning,
+        # don't mix into content.
         if part.get("thought") is True:
             if isinstance(part.get("text"), str):
                 reasoning_pieces.append(part["text"])
@@ -433,11 +436,11 @@ def _map_gemini_finish_reason(reason: str) -> str:
 
 
 # =============================================================================
-# 流式 SSE 迭代器
+# Streaming SSE iterator
 # =============================================================================
 
 class _GeminiStreamChunk(SimpleNamespace):
-    """模拟 OpenAI ChatCompletionChunk，具有 .choices[0].delta 属性。"""
+    """Mimics an OpenAI ChatCompletionChunk with .choices[0].delta."""
     pass
 
 
@@ -478,7 +481,7 @@ def _make_stream_chunk(
 
 
 def _iter_sse_events(response: httpx.Response) -> Iterator[Dict[str, Any]]:
-    """从 httpx 流式响应中解析 Server-Sent Events。"""
+    """Parse Server-Sent Events from an httpx streaming response."""
     buffer = ""
     for chunk in response.iter_text():
         if not chunk:
@@ -502,9 +505,16 @@ def _iter_sse_events(response: httpx.Response) -> Iterator[Dict[str, Any]]:
 def _translate_stream_event(
     event: Dict[str, Any],
     model: str,
-    tool_call_indices: Dict[str, int],
+    tool_call_counter: List[int],
 ) -> List[_GeminiStreamChunk]:
-    """解包 Code Assist 信封并产出 OpenAI 格式的 chunk。"""
+    """Unwrap Code Assist envelope and emit OpenAI-shaped chunk(s).
+
+    ``tool_call_counter`` is a single-element list used as a mutable counter
+    across events in the same stream. Each ``functionCall`` part gets a
+    fresh, unique OpenAI ``index`` — keying by function name would collide
+    whenever the model issues parallel calls to the same tool (e.g. reading
+    three files in one turn).
+    """
     inner = event.get("response") if isinstance(event.get("response"), dict) else event
     candidates = inner.get("candidates") or []
     if not candidates:
@@ -530,7 +540,8 @@ def _translate_stream_event(
         fc = part.get("functionCall")
         if isinstance(fc, dict) and fc.get("name"):
             name = str(fc["name"])
-            idx = tool_call_indices.setdefault(name, len(tool_call_indices))
+            idx = tool_call_counter[0]
+            tool_call_counter[0] += 1
             try:
                 args_str = json.dumps(fc.get("args") or {}, ensure_ascii=False)
             except (TypeError, ValueError):
@@ -547,14 +558,14 @@ def _translate_stream_event(
     finish_reason_raw = str(cand.get("finishReason") or "")
     if finish_reason_raw:
         mapped = _map_gemini_finish_reason(finish_reason_raw)
-        if tool_call_indices:
+        if tool_call_counter[0] > 0:
             mapped = "tool_calls"
         chunks.append(_make_stream_chunk(model=model, finish_reason=mapped))
     return chunks
 
 
 # =============================================================================
-# GeminiCloudCodeClient — 兼容 OpenAI 的门面
+# GeminiCloudCodeClient — OpenAI-compatible facade
 # =============================================================================
 
 MARKER_BASE_URL = "cloudcode-pa://google"
@@ -574,7 +585,7 @@ class _GeminiChatNamespace:
 
 
 class GeminiCloudCodeClient:
-    """基于 Code Assist v1internal 的最小化 OpenAI SDK 兼容门面。"""
+    """Minimal OpenAI-SDK-compatible facade over Code Assist v1internal."""
 
     def __init__(
         self,
@@ -585,9 +596,9 @@ class GeminiCloudCodeClient:
         project_id: str = "",
         **_: Any,
     ):
-        # `api_key` 在这里是占位——真正的认证是通过
-        # agent.google_oauth.get_valid_access_token() 在每次调用时获取的 OAuth 访问令牌。
-        # 我们接受此参数是为了与 openai.OpenAI 接口保持一致。
+        # `api_key` here is a dummy — real auth is the OAuth access token
+        # fetched on every call via agent.google_oauth.get_valid_access_token().
+        # We accept the kwarg for openai.OpenAI interface parity.
         self.api_key = api_key or "google-oauth"
         self.base_url = base_url or MARKER_BASE_URL
         self._default_headers = dict(default_headers or {})
@@ -605,7 +616,7 @@ class GeminiCloudCodeClient:
         except Exception:
             pass
 
-    # 实现 OpenAI SDK 的上下文管理器式关闭检查
+    # Implement the OpenAI SDK's context-manager-ish closure check
     def __enter__(self):
         return self
 
@@ -613,7 +624,7 @@ class GeminiCloudCodeClient:
         self.close()
 
     def _ensure_project_context(self, access_token: str, model: str) -> ProjectContext:
-        """延迟解析并缓存此客户端的项目上下文。"""
+        """Lazily resolve and cache the project context for this client."""
         if self._project_context is not None:
             return self._project_context
 
@@ -621,7 +632,7 @@ class GeminiCloudCodeClient:
         creds = google_oauth.load_credentials()
         stored_project = creds.project_id if creds else ""
 
-        # 优先使用已存储在凭据中的项目 ID
+        # Prefer what's already baked into the creds
         if stored_project:
             self._project_context = ProjectContext(
                 project_id=stored_project,
@@ -637,8 +648,8 @@ class GeminiCloudCodeClient:
             env_project_id=env_project,
             user_agent_model=model,
         )
-        # 将发现的项目 ID 持久化到凭据文件中，
-        # 这样下次会话就不需要重新执行发现流程。
+        # Persist discovered project back to the creds file so the next
+        # session doesn't re-run the discovery.
         if ctx.project_id or ctx.managed_project_id:
             google_oauth.update_project_ids(
                 project_id=ctx.project_id,
@@ -719,7 +730,7 @@ class GeminiCloudCodeClient:
         wrapped: Dict[str, Any],
         headers: Dict[str, str],
     ) -> Iterator[_GeminiStreamChunk]:
-        """生成器，产出 OpenAI 格式的流式 chunk。"""
+        """Generator that yields OpenAI-shaped streaming chunks."""
         url = f"{CODE_ASSIST_ENDPOINT}/v1internal:streamGenerateContent?alt=sse"
         stream_headers = dict(headers)
         stream_headers["Accept"] = "text/event-stream"
@@ -728,12 +739,12 @@ class GeminiCloudCodeClient:
             try:
                 with self._http.stream("POST", url, json=wrapped, headers=stream_headers) as response:
                     if response.status_code != 200:
-                        # 读取完整的错误响应体以获得更好的诊断信息
+                        # Materialize error body for better diagnostics
                         response.read()
                         raise _gemini_http_error(response)
-                    tool_call_indices: Dict[str, int] = {}
+                    tool_call_counter: List[int] = [0]
                     for event in _iter_sse_events(response):
-                        for chunk in _translate_stream_event(event, model, tool_call_indices):
+                        for chunk in _translate_stream_event(event, model, tool_call_counter):
                             yield chunk
             except httpx.HTTPError as exc:
                 raise CodeAssistError(
@@ -745,18 +756,150 @@ class GeminiCloudCodeClient:
 
 
 def _gemini_http_error(response: httpx.Response) -> CodeAssistError:
+    """Translate an httpx response into a CodeAssistError with rich metadata.
+
+    Parses Google's error envelope (``{"error": {"code", "message", "status",
+    "details": [...]}}``) so the agent's error classifier can reason about
+    the failure — ``status_code`` enables the rate_limit / auth classification
+    paths, and ``response`` lets the main loop honor ``Retry-After`` just
+    like it does for OpenAI SDK exceptions.
+
+    Also lifts a few recognizable Google conditions into human-readable
+    messages so the user sees something better than a 500-char JSON dump:
+
+        MODEL_CAPACITY_EXHAUSTED → "Gemini model capacity exhausted for
+            <model>. This is a Google-side throttle..."
+        RESOURCE_EXHAUSTED w/o reason → quota-style message
+        404 → "Model <name> not found at cloudcode-pa..."
+    """
     status = response.status_code
+
+    # Parse the body once, surviving any weird encodings.
+    body_text = ""
+    body_json: Dict[str, Any] = {}
     try:
-        body = response.text[:500]
+        body_text = response.text
     except Exception:
-        body = ""
-    # 让 run_agent 的重试逻辑将认证错误识别为可通过 `api_key` 轮换的错误
+        body_text = ""
+    if body_text:
+        try:
+            parsed = json.loads(body_text)
+            if isinstance(parsed, dict):
+                body_json = parsed
+        except (ValueError, TypeError):
+            body_json = {}
+
+    # Dig into Google's error envelope.  Shape is:
+    #   {"error": {"code": 429, "message": "...", "status": "RESOURCE_EXHAUSTED",
+    #              "details": [{"@type": ".../ErrorInfo", "reason": "MODEL_CAPACITY_EXHAUSTED",
+    #                           "metadata": {...}},
+    #                          {"@type": ".../RetryInfo", "retryDelay": "30s"}]}}
+    err_obj = body_json.get("error") if isinstance(body_json, dict) else None
+    if not isinstance(err_obj, dict):
+        err_obj = {}
+    err_status = str(err_obj.get("status") or "").strip()
+    err_message = str(err_obj.get("message") or "").strip()
+    _raw_details = err_obj.get("details")
+    err_details_list = _raw_details if isinstance(_raw_details, list) else []
+
+    # Extract google.rpc.ErrorInfo reason + metadata.  There may be more
+    # than one ErrorInfo (rare), so we pick the first one with a reason.
+    error_reason = ""
+    error_metadata: Dict[str, Any] = {}
+    retry_delay_seconds: Optional[float] = None
+    for detail in err_details_list:
+        if not isinstance(detail, dict):
+            continue
+        type_url = str(detail.get("@type") or "")
+        if not error_reason and type_url.endswith("/google.rpc.ErrorInfo"):
+            reason = detail.get("reason")
+            if isinstance(reason, str) and reason:
+                error_reason = reason
+            md = detail.get("metadata")
+            if isinstance(md, dict):
+                error_metadata = md
+        elif retry_delay_seconds is None and type_url.endswith("/google.rpc.RetryInfo"):
+            # retryDelay is a google.protobuf.Duration string like "30s" or "1.5s".
+            delay_raw = detail.get("retryDelay")
+            if isinstance(delay_raw, str) and delay_raw.endswith("s"):
+                try:
+                    retry_delay_seconds = float(delay_raw[:-1])
+                except ValueError:
+                    pass
+            elif isinstance(delay_raw, (int, float)):
+                retry_delay_seconds = float(delay_raw)
+
+    # Fall back to the Retry-After header if the body didn't include RetryInfo.
+    if retry_delay_seconds is None:
+        try:
+            header_val = response.headers.get("Retry-After") or response.headers.get("retry-after")
+        except Exception:
+            header_val = None
+        if header_val:
+            try:
+                retry_delay_seconds = float(header_val)
+            except (TypeError, ValueError):
+                retry_delay_seconds = None
+
+    # Classify the error code.  ``code_assist_rate_limited`` stays the default
+    # for 429s; a more specific reason tag helps downstream callers (e.g. tests,
+    # logs) without changing the rate_limit classification path.
     code = f"code_assist_http_{status}"
     if status == 401:
         code = "code_assist_unauthorized"
     elif status == 429:
         code = "code_assist_rate_limited"
+        if error_reason == "MODEL_CAPACITY_EXHAUSTED":
+            code = "code_assist_capacity_exhausted"
+
+    # Build a human-readable message.  Keep the status + a raw-body tail for
+    # debugging, but lead with a friendlier summary when we recognize the
+    # Google signal.
+    model_hint = ""
+    if isinstance(error_metadata, dict):
+        model_hint = str(error_metadata.get("model") or error_metadata.get("modelId") or "").strip()
+
+    if status == 429 and error_reason == "MODEL_CAPACITY_EXHAUSTED":
+        target = model_hint or "this Gemini model"
+        message = (
+            f"Gemini capacity exhausted for {target} (Google-side throttle, "
+            f"not a Hermes issue). Try a different Gemini model or set a "
+            f"fallback_providers entry to a non-Gemini provider."
+        )
+        if retry_delay_seconds is not None:
+            message += f" Google suggests retrying in {retry_delay_seconds:g}s."
+    elif status == 429 and err_status == "RESOURCE_EXHAUSTED":
+        message = (
+            f"Gemini quota exhausted ({err_message or 'RESOURCE_EXHAUSTED'}). "
+            f"Check /gquota for remaining daily requests."
+        )
+        if retry_delay_seconds is not None:
+            message += f" Retry suggested in {retry_delay_seconds:g}s."
+    elif status == 404:
+        # Google returns 404 when a model has been retired or renamed.
+        target = model_hint or (err_message or "model")
+        message = (
+            f"Code Assist 404: {target} is not available at "
+            f"cloudcode-pa.googleapis.com. It may have been renamed or "
+            f"retired. Check hermes_cli/models.py for the current list."
+        )
+    elif err_message:
+        # Generic fallback with the parsed message.
+        message = f"Code Assist HTTP {status} ({err_status or 'error'}): {err_message}"
+    else:
+        # Last-ditch fallback — raw body snippet.
+        message = f"Code Assist returned HTTP {status}: {body_text[:500]}"
+
     return CodeAssistError(
-        f"Code Assist returned HTTP {status}: {body}",
+        message,
         code=code,
+        status_code=status,
+        response=response,
+        retry_after=retry_delay_seconds,
+        details={
+            "status": err_status,
+            "reason": error_reason,
+            "metadata": error_metadata,
+            "message": err_message,
+        },
     )

@@ -1,4 +1,4 @@
-"""持久化多凭据池，用于同一提供商的故障转移。"""
+"""Persistent multi-credential pool for same-provider failover."""
 
 from __future__ import annotations
 
@@ -22,8 +22,6 @@ from hermes_cli.auth import (
     _auth_store_lock,
     _codex_access_token_is_expiring,
     _decode_jwt_claims,
-    _import_codex_cli_tokens,
-    _write_codex_cli_tokens,
     _load_auth_store,
     _load_provider_state,
     _resolve_kimi_base_url,
@@ -38,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 
 def _load_config_safe() -> Optional[dict]:
-    """安全加载 config.yaml，出错时返回 None。"""
+    """Load config.yaml, returning None on any error."""
     try:
         from hermes_cli.config import load_config
 
@@ -47,7 +45,7 @@ def _load_config_safe() -> Optional[dict]:
         return None
 
 
-# --- 状态和类型常量 ---
+# --- Status and type constants ---
 
 STATUS_OK = "ok"
 STATUS_EXHAUSTED = "exhausted"
@@ -68,19 +66,19 @@ SUPPORTED_POOL_STRATEGIES = {
     STRATEGY_LEAST_USED,
 }
 
-# 重试已耗尽凭据前的冷却时间。
-# 429（速率限制）和 402（计费/配额）都在 1 小时后冷却。
-# 提供商提供的 reset_at 时间戳会覆盖这些默认值。
-EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 小时
-EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 小时
+# Cooldown before retrying an exhausted credential.
+# 429 (rate-limited) and 402 (billing/quota) both cool down after 1 hour.
+# Provider-supplied reset_at timestamps override these defaults.
+EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
+EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
 
-# 自定义 OpenAI 兼容端点的池键前缀。
-# 自定义端点共享 provider='custom'，但按其 custom_providers 名称作为键：
-# 'custom:<normalized_name>'。
+# Pool key prefix for custom OpenAI-compatible endpoints.
+# Custom endpoints all share provider='custom' but are keyed by their
+# custom_providers name: 'custom:<normalized_name>'.
 CUSTOM_POOL_PREFIX = "custom:"
 
 
-# 仅通过 JSON 往返传递的字段 — 从不作为属性用于逻辑判断。
+# Fields that are only round-tripped through JSON — never used for logic as attributes.
 _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
@@ -190,17 +188,17 @@ def _is_manual_source(source: str) -> bool:
 
 
 def _exhausted_ttl(error_code: Optional[int]) -> int:
-    """根据导致耗尽的 HTTP 状态码返回冷却秒数。"""
+    """Return cooldown seconds based on the HTTP status that caused exhaustion."""
     if error_code == 429:
         return EXHAUSTED_TTL_429_SECONDS
     return EXHAUSTED_TTL_DEFAULT_SECONDS
 
 
 def _parse_absolute_timestamp(value: Any) -> Optional[float]:
-    """尽力解析提供商的重置时间戳。
+    """Best-effort parse for provider reset timestamps.
 
-    接受 epoch 秒、epoch 毫秒和 ISO-8601 字符串。
-    返回自 epoch 以来的秒数。
+    Accepts epoch seconds, epoch milliseconds, and ISO-8601 strings.
+    Returns seconds since epoch.
     """
     if value is None or value == "":
         return None
@@ -276,19 +274,19 @@ def _exhausted_until(entry: PooledCredential) -> Optional[float]:
 
 
 def _normalize_custom_pool_name(name: str) -> str:
-    """规范化自定义提供商名称，用作池键后缀。"""
+    """Normalize a custom provider name for use as a pool key suffix."""
     return name.strip().lower().replace(" ", "-")
 
 
 def _iter_custom_providers(config: Optional[dict] = None):
-    """为每个有效的 custom_providers 条目生成 (normalized_name, entry_dict)。"""
+    """Yield (normalized_name, entry_dict) for each valid custom_providers entry."""
     if config is None:
         config = _load_config_safe()
     if config is None:
         return
     custom_providers = config.get("custom_providers")
     if not isinstance(custom_providers, list):
-        # 回退到通过兼容层获取的 v12+ providers 字典
+        # Fall back to the v12+ providers dict via the compatibility layer
         try:
             from hermes_cli.config import get_compatible_custom_providers
 
@@ -307,9 +305,9 @@ def _iter_custom_providers(config: Optional[dict] = None):
 
 
 def get_custom_provider_pool_key(base_url: str) -> Optional[str]:
-    """在 config.yaml 中查找 custom_providers 列表，并为匹配的 base_url 返回 'custom:<name>'。
+    """Look up the custom_providers list in config.yaml and return 'custom:<name>' for a matching base_url.
 
-    如果没有找到匹配项，返回 None。
+    Returns None if no match is found.
     """
     if not base_url:
         return None
@@ -322,7 +320,7 @@ def get_custom_provider_pool_key(base_url: str) -> Optional[str]:
 
 
 def list_custom_pool_providers() -> List[str]:
-    """返回 auth.json 中有条目的所有 'custom:*' 池键。"""
+    """Return all 'custom:*' pool keys that have entries in auth.json."""
     pool_data = read_credential_pool(None)
     return sorted(
         key for key in pool_data
@@ -333,7 +331,7 @@ def list_custom_pool_providers() -> List[str]:
 
 
 def _get_custom_provider_config(pool_key: str) -> Optional[Dict[str, Any]]:
-    """返回与 'custom:together.ai' 类似池键匹配的 custom_providers 配置条目。"""
+    """Return the custom_providers config entry matching a pool key like 'custom:together.ai'."""
     if not pool_key.startswith(CUSTOM_POOL_PREFIX):
         return None
     suffix = pool_key[len(CUSTOM_POOL_PREFIX):]
@@ -344,7 +342,7 @@ def _get_custom_provider_config(pool_key: str) -> Optional[Dict[str, Any]]:
 
 
 def get_pool_strategy(provider: str) -> str:
-    """返回提供商的已配置选择策略。"""
+    """Return the configured selection strategy for a provider."""
     config = _load_config_safe()
     if config is None:
         return STRATEGY_FILL_FIRST
@@ -376,7 +374,7 @@ class CredentialPool:
         return bool(self._entries)
 
     def has_available(self) -> bool:
-        """如果至少有一个条目当前不在耗尽冷却中，则返回 True。"""
+        """True if at least one entry is not currently in exhaustion cooldown."""
         return bool(self._available_entries())
 
     def entries(self) -> List[PooledCredential]:
@@ -388,7 +386,7 @@ class CredentialPool:
         return next((entry for entry in self._entries if entry.id == self._current_id), None)
 
     def _replace_entry(self, old: PooledCredential, new: PooledCredential) -> None:
-        """通过 id 就地替换条目，保持排序顺序。"""
+        """Swap an entry in-place by id, preserving sort order."""
         for idx, entry in enumerate(self._entries):
             if entry.id == old.id:
                 self._entries[idx] = new
@@ -421,12 +419,12 @@ class CredentialPool:
         return updated
 
     def _sync_anthropic_entry_from_credentials_file(self, entry: PooledCredential) -> PooledCredential:
-        """当令牌不同时，从 ~/.claude/.credentials.json 同步 claude_code 池条目。
+        """Sync a claude_code pool entry from ~/.claude/.credentials.json if tokens differ.
 
-        OAuth 刷新令牌是一次性的。当外部程序（如 Claude Code CLI 或另一个
-        配置文件的池）刷新了令牌，它会将新的令牌对写入
-        ~/.claude/.credentials.json。池条目的刷新令牌就会变得过期。
-        此方法检测到这种情况并进行同步。
+        OAuth refresh tokens are single-use. When something external (e.g.
+        Claude Code CLI, or another profile's pool) refreshes the token, it
+        writes the new pair to ~/.claude/.credentials.json. The pool entry's
+        refresh token becomes stale. This method detects that and syncs.
         """
         if self.provider != "anthropic" or entry.source != "claude_code":
             return entry
@@ -438,9 +436,9 @@ class CredentialPool:
             file_refresh = creds.get("refreshToken", "")
             file_access = creds.get("accessToken", "")
             file_expires = creds.get("expiresAt", 0)
-            # 如果凭据文件有不同的令牌对，则进行同步
+            # If the credentials file has a different token pair, sync it
             if file_refresh and file_refresh != entry.refresh_token:
-                logger.debug("池条目 %s: 正在从凭据文件同步令牌（刷新令牌已更改）", entry.id)
+                logger.debug("Pool entry %s: syncing tokens from credentials file (refresh token changed)", entry.id)
                 updated = replace(
                     entry,
                     access_token=file_access,
@@ -454,53 +452,20 @@ class CredentialPool:
                 self._persist()
                 return updated
         except Exception as exc:
-            logger.debug("从凭据文件同步失败: %s", exc)
-        return entry
-
-    def _sync_codex_entry_from_cli(self, entry: PooledCredential) -> PooledCredential:
-        """当令牌不同时，从 ~/.codex/auth.json 同步 openai-codex 池条目。
-
-        OpenAI OAuth 刷新令牌是一次性的，每次刷新时会轮换。
-        当 Codex CLI（或另一个 Hermes 配置文件）刷新其令牌时，
-        池条目的 refresh_token 会变得过期。此方法通过与 ~/.codex/auth.json
-        比较来检测这种情况，并同步新的令牌对。
-        """
-        if self.provider != "openai-codex":
-            return entry
-        try:
-            cli_tokens = _import_codex_cli_tokens()
-            if not cli_tokens:
-                return entry
-            cli_refresh = cli_tokens.get("refresh_token", "")
-            cli_access = cli_tokens.get("access_token", "")
-            if cli_refresh and cli_refresh != entry.refresh_token:
-                logger.debug("池条目 %s: 正在从 ~/.codex/auth.json 同步令牌（刷新令牌已更改）", entry.id)
-                updated = replace(
-                    entry,
-                    access_token=cli_access,
-                    refresh_token=cli_refresh,
-                    last_status=None,
-                    last_status_at=None,
-                    last_error_code=None,
-                )
-                self._replace_entry(entry, updated)
-                self._persist()
-                return updated
-        except Exception as exc:
-            logger.debug("从 ~/.codex/auth.json 同步失败: %s", exc)
+            logger.debug("Failed to sync from credentials file: %s", exc)
         return entry
 
     def _sync_device_code_entry_to_auth_store(self, entry: PooledCredential) -> None:
-        """将刷新后的池条目令牌写回 auth.json providers。
+        """Write refreshed pool entry tokens back to auth.json providers.
 
-        在池级别刷新后，池条目拥有新令牌，但 auth.json 的
-        ``providers.<id>`` 仍保持刷新前的状态。
-        在下次 ``load_pool()`` 时，``_seed_from_singletons()`` 读取到那个
-        过期状态，可能会覆盖新的池条目 — 可能重新填充一个已消费的
-        一次性刷新令牌。
+        After a pool-level refresh, the pool entry has fresh tokens but
+        auth.json's ``providers.<id>`` still holds the pre-refresh state.
+        On the next ``load_pool()``, ``_seed_from_singletons()`` reads that
+        stale state and can overwrite the fresh pool entry — potentially
+        re-seeding a consumed single-use refresh token.
 
-        适用于任何单例存储在 auth.json 中的 OAuth 提供商
-        （目前是 Nous 和 OpenAI Codex）。
+        Applies to any OAuth provider whose singleton lives in auth.json
+        (currently Nous and OpenAI Codex).
         """
         if entry.source != "device_code":
             return
@@ -549,7 +514,7 @@ class CredentialPool:
 
                 _save_auth_store(auth_store)
         except Exception as exc:
-            logger.debug("将 %s 池条目同步回认证存储失败: %s", self.provider, exc)
+            logger.debug("Failed to sync %s pool entry back to auth store: %s", self.provider, exc)
 
     def _refresh_entry(self, entry: PooledCredential, *, force: bool) -> Optional[PooledCredential]:
         if entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
@@ -571,9 +536,9 @@ class CredentialPool:
                     refresh_token=refreshed["refresh_token"],
                     expires_at_ms=refreshed["expires_at_ms"],
                 )
-                # 保持 ~/.claude/.credentials.json 同步，以便
-                # 回退路径（resolve_anthropic_token）和其他配置文件
-                # 能看到最新的令牌。
+                # Keep ~/.claude/.credentials.json in sync so that the
+                # fallback path (resolve_anthropic_token) and other profiles
+                # see the latest tokens.
                 if entry.source == "claude_code":
                     try:
                         from agent.anthropic_adapter import _write_claude_code_credentials
@@ -583,15 +548,8 @@ class CredentialPool:
                             refreshed["expires_at_ms"],
                         )
                     except Exception as wexc:
-                        logger.debug("写入刷新令牌到凭据文件失败: %s", wexc)
+                        logger.debug("Failed to write refreshed token to credentials file: %s", wexc)
             elif self.provider == "openai-codex":
-                # 在刷新前主动从 ~/.codex/auth.json 同步。
-                # Codex CLI（或另一个 Hermes 配置文件）可能已经
-                # 消费了我们的 refresh_token。先同步可以避免在 CLI
-                # 拥有更新令牌对时出现 "refresh_token_reused" 错误。
-                synced = self._sync_codex_entry_from_cli(entry)
-                if synced is not entry:
-                    entry = synced
                 refreshed = auth_mod.refresh_codex_oauth_pure(
                     entry.access_token,
                     entry.refresh_token,
@@ -623,7 +581,7 @@ class CredentialPool:
                     force_refresh=force,
                     force_mint=force,
                 )
-                # 应用返回的字段：数据类字段通过 replace 更新，额外字段通过字典更新
+                # Apply returned fields: dataclass fields via replace, extras via dict update
                 field_updates = {}
                 extra_updates = dict(entry.extra)
                 _field_names = {f.name for f in fields(entry)}
@@ -636,13 +594,14 @@ class CredentialPool:
             else:
                 return entry
         except Exception as exc:
-            logger.debug("凭据刷新失败 %s/%s: %s", self.provider, entry.id, exc)
-            # 对于 anthropic claude_code 条目：刷新令牌可能已被另一个进程消费。
-            # 检查 ~/.claude/.credentials.json 是否有更新的令牌对，并重试一次。
+            logger.debug("Credential refresh failed for %s/%s: %s", self.provider, entry.id, exc)
+            # For anthropic claude_code entries: the refresh token may have been
+            # consumed by another process. Check if ~/.claude/.credentials.json
+            # has a newer token pair and retry once.
             if self.provider == "anthropic" and entry.source == "claude_code":
                 synced = self._sync_anthropic_entry_from_credentials_file(entry)
                 if synced.refresh_token != entry.refresh_token:
-                    logger.debug("使用从凭据文件同步的令牌重试刷新")
+                    logger.debug("Retrying refresh with synced token from credentials file")
                     try:
                         from agent.anthropic_adapter import refresh_anthropic_oauth_pure
                         refreshed = refresh_anthropic_oauth_pure(
@@ -668,51 +627,13 @@ class CredentialPool:
                                 refreshed["expires_at_ms"],
                             )
                         except Exception as wexc:
-                            logger.debug("写入刷新令牌到凭据文件失败（重试路径）: %s", wexc)
+                            logger.debug("Failed to write refreshed token to credentials file (retry path): %s", wexc)
                         return updated
                     except Exception as retry_exc:
-                        logger.debug("重试刷新也失败了: %s", retry_exc)
+                        logger.debug("Retry refresh also failed: %s", retry_exc)
                 elif not self._entry_needs_refresh(synced):
-                    # 凭据文件有一个有效（未过期）的令牌 — 直接使用它
-                    logger.debug("凭据文件有有效的令牌，无需刷新直接使用")
-                    return synced
-            # 对于 openai-codex：在我们的主动同步和刷新调用之间，
-            # refresh_token 可能已被 Codex CLI 消费。重新同步并重试一次。
-            if self.provider == "openai-codex":
-                synced = self._sync_codex_entry_from_cli(entry)
-                if synced.refresh_token != entry.refresh_token:
-                    logger.debug("使用从 ~/.codex/auth.json 同步的令牌重试 Codex 刷新")
-                    try:
-                        refreshed = auth_mod.refresh_codex_oauth_pure(
-                            synced.access_token,
-                            synced.refresh_token,
-                        )
-                        updated = replace(
-                            synced,
-                            access_token=refreshed["access_token"],
-                            refresh_token=refreshed["refresh_token"],
-                            last_refresh=refreshed.get("last_refresh"),
-                            last_status=STATUS_OK,
-                            last_status_at=None,
-                            last_error_code=None,
-                        )
-                        self._replace_entry(synced, updated)
-                        self._persist()
-                        self._sync_device_code_entry_to_auth_store(updated)
-                        try:
-                            _write_codex_cli_tokens(
-                                updated.access_token,
-                                updated.refresh_token,
-                                last_refresh=updated.last_refresh,
-                            )
-                        except Exception as wexc:
-                            logger.debug("写入刷新 Codex 令牌到 CLI 文件失败（重试）: %s", wexc)
-                        return updated
-                    except Exception as retry_exc:
-                        logger.debug("Codex 重试刷新也失败了: %s", retry_exc)
-                elif not self._entry_needs_refresh(synced):
-                    logger.debug("Codex CLI 有有效令牌，无需刷新直接使用")
-                    self._sync_device_code_entry_to_auth_store(synced)
+                    # Credentials file had a valid (non-expired) token — use it directly
+                    logger.debug("Credentials file has valid token, using without refresh")
                     return synced
             self._mark_exhausted(entry, None)
             return None
@@ -728,21 +649,10 @@ class CredentialPool:
         )
         self._replace_entry(entry, updated)
         self._persist()
-        # 将刷新后的令牌同步回 auth.json providers，以便
-        # 下次 load_pool() 时 _seed_from_singletons() 看到的是新状态
-        # 而不是重新填充过期/已消费的令牌。
+        # Sync refreshed tokens back to auth.json providers so that
+        # _seed_from_singletons() on the next load_pool() sees fresh state
+        # instead of re-seeding stale/consumed tokens.
         self._sync_device_code_entry_to_auth_store(updated)
-        # 将刷新后的令牌写回 ~/.codex/auth.json，以免 Codex CLI
-        # 和 VS Code 在下次刷新时遇到 "refresh_token_reused" 错误。
-        if self.provider == "openai-codex":
-            try:
-                _write_codex_cli_tokens(
-                    updated.access_token,
-                    updated.refresh_token,
-                    last_refresh=updated.last_refresh,
-                )
-            except Exception as wexc:
-                logger.debug("写入刷新 Codex 令牌到 CLI 文件失败: %s", wexc)
         return updated
 
     def _entry_needs_refresh(self, entry: PooledCredential) -> bool:
@@ -758,8 +668,9 @@ class CredentialPool:
                 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
             )
         if self.provider == "nous":
-            # Nous 刷新/铸造可能需要网络访问，应在实际解析运行时凭据时进行，
-            # 而不仅仅在枚举池以进行列表、迁移或选择时进行。
+            # Nous refresh/mint can require network access and should happen when
+            # runtime credentials are actually resolved, not merely when the pool
+            # is enumerated for listing, migration, or selection.
             return False
         return False
 
@@ -768,32 +679,22 @@ class CredentialPool:
             return self._select_unlocked()
 
     def _available_entries(self, *, clear_expired: bool = False, refresh: bool = False) -> List[PooledCredential]:
-        """返回当前不在耗尽冷却中的条目。
+        """Return entries not currently in exhaustion cooldown.
 
-        当 *clear_expired* 为 True 时，冷却已过期的条目会被重置为
-        STATUS_OK 并持久化。当 *refresh* 为 True 时，需要令牌刷新的
-        条目会被刷新（失败则跳过）。
+        When *clear_expired* is True, entries whose cooldown has elapsed are
+        reset to STATUS_OK and persisted.  When *refresh* is True, entries
+        that need a token refresh are refreshed (skipped on failure).
         """
         now = time.time()
         cleared_any = False
         available: List[PooledCredential] = []
         for entry in self._entries:
-            # 对于 anthropic claude_code 条目，在任何状态/刷新检查之前
-            # 先从凭据文件同步。这会获取被其他进程（Claude Code CLI、
-            # 其他 Hermes 配置文件）刷新的令牌。
+            # For anthropic claude_code entries, sync from the credentials file
+            # before any status/refresh checks. This picks up tokens refreshed
+            # by other processes (Claude Code CLI, other Hermes profiles).
             if (self.provider == "anthropic" and entry.source == "claude_code"
                     and entry.last_status == STATUS_EXHAUSTED):
                 synced = self._sync_anthropic_entry_from_credentials_file(entry)
-                if synced is not entry:
-                    entry = synced
-                    cleared_any = True
-            # 对于 openai-codex 条目，在任何状态/刷新检查之前先从
-            # ~/.codex/auth.json 同步。这会获取被 Codex CLI 或另一个
-            # Hermes 配置文件刷新的令牌。
-            if (self.provider == "openai-codex"
-                    and entry.last_status == STATUS_EXHAUSTED
-                    and entry.refresh_token):
-                synced = self._sync_codex_entry_from_cli(entry)
                 if synced is not entry:
                     entry = synced
                     cleared_any = True
@@ -828,7 +729,7 @@ class CredentialPool:
         available = self._available_entries(clear_expired=True, refresh=True)
         if not available:
             self._current_id = None
-            logger.info("凭据池: 没有可用条目（全部耗尽或为空）")
+            logger.info("credential pool: no available entries (all exhausted or empty)")
             return None
 
         if self._strategy == STRATEGY_RANDOM:
@@ -885,12 +786,12 @@ class CredentialPool:
             return next_entry
 
     def acquire_lease(self, credential_id: Optional[str] = None) -> Optional[str]:
-        """获取凭据的软租约。
+        """Acquire a soft lease on a credential.
 
-        如果提供了特定的 credential_id，则直接租用该条目。
-        否则优先选择租约最少的可用凭据，使用优先级作为稳定的
-        平局决胜条件。当每个凭据都已达到软上限时，
-        仍然返回租约最少的那个而不是阻塞。
+        If a specific credential_id is provided, lease that entry directly.
+        Otherwise prefer the least-leased available credential, using priority as
+        a stable tie-breaker. When every credential is already at the soft cap,
+        still return the least-leased one instead of blocking.
         """
         with self._lock:
             if credential_id:
@@ -916,7 +817,7 @@ class CredentialPool:
             return chosen.id
 
     def release_lease(self, credential_id: str) -> None:
-        """释放之前获取的凭据租约。"""
+        """Release a previously acquired credential lease."""
         with self._lock:
             count = self._active_leases.get(credential_id, 0)
             if count <= 1:
@@ -1082,11 +983,19 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
     active_sources: Set[str] = set()
     auth_store = _load_auth_store()
 
+    # Shared suppression gate — used at every upsert site so
+    # `hermes auth remove <provider> <N>` is stable across all source types.
+    try:
+        from hermes_cli.auth import is_source_suppressed as _is_suppressed
+    except ImportError:
+        def _is_suppressed(_p, _s):  # type: ignore[misc]
+            return False
+
     if provider == "anthropic":
-        # 仅当用户明确将 anthropic 配置为其提供商时，才自动发现
-        # 外部凭据（Claude Code、Hermes PKCE）。
-        # 没有这个门控，辅助客户端回退链会在未经用户同意的情况下
-        # 静默读取 ~/.claude/.credentials.json。参见 PR #4210。
+        # Only auto-discover external credentials (Claude Code, Hermes PKCE)
+        # when the user has explicitly configured anthropic as their provider.
+        # Without this gate, auxiliary client fallback chains silently read
+        # ~/.claude/.credentials.json without user consent.  See PR #4210.
         try:
             from hermes_cli.auth import is_provider_explicitly_configured
             if not is_provider_explicitly_configured("anthropic"):
@@ -1101,13 +1010,8 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             ("claude_code", read_claude_code_credentials()),
         ):
             if creds and creds.get("accessToken"):
-                # 检查用户是否明确移除了此来源
-                try:
-                    from hermes_cli.auth import is_source_suppressed
-                    if is_source_suppressed(provider, source_name):
-                        continue
-                except ImportError:
-                    pass
+                if _is_suppressed(provider, source_name):
+                    continue
                 active_sources.add(source_name)
                 changed |= _upsert_entry(
                     entries,
@@ -1125,8 +1029,16 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
 
     elif provider == "nous":
         state = _load_provider_state(auth_store, "nous")
-        if state:
+        if state and not _is_suppressed(provider, "device_code"):
             active_sources.add("device_code")
+            # Prefer a user-supplied label embedded in the singleton state
+            # (set by persist_nous_credentials(label=...) when the user ran
+            # `hermes auth add nous --label <name>`).  Fall back to the
+            # auto-derived token fingerprint for logins that didn't supply one.
+            custom_label = str(state.get("label") or "").strip()
+            seeded_label = custom_label or label_from_token(
+                state.get("access_token", ""), "device_code"
+            )
             changed |= _upsert_entry(
                 entries,
                 provider,
@@ -1145,85 +1057,83 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                     "agent_key": state.get("agent_key"),
                     "agent_key_expires_at": state.get("agent_key_expires_at"),
                     "tls": state.get("tls") if isinstance(state.get("tls"), dict) else None,
-                    "label": label_from_token(state.get("access_token", ""), "device_code"),
+                    "label": seeded_label,
                 },
             )
 
     elif provider == "copilot":
-        # Copilot 令牌通过 `gh auth token` 或环境变量
-        # （COPILOT_GITHUB_TOKEN / GH_TOKEN）动态解析。它们不在认证存储
-        # 或凭据池中，因此在这里解析。
+        # Copilot tokens are resolved dynamically via `gh auth token` or
+        # env vars (COPILOT_GITHUB_TOKEN / GH_TOKEN).  They don't live in
+        # the auth store or credential pool, so we resolve them here.
         try:
             from hermes_cli.copilot_auth import resolve_copilot_token
             token, source = resolve_copilot_token()
             if token:
                 source_name = "gh_cli" if "gh" in source.lower() else f"env:{source}"
-                active_sources.add(source_name)
-                pconfig = PROVIDER_REGISTRY.get(provider)
-                changed |= _upsert_entry(
-                    entries,
-                    provider,
-                    source_name,
-                    {
-                        "source": source_name,
-                        "auth_type": AUTH_TYPE_API_KEY,
-                        "access_token": token,
-                        "base_url": pconfig.inference_base_url if pconfig else "",
-                        "label": source,
-                    },
-                )
+                if not _is_suppressed(provider, source_name):
+                    active_sources.add(source_name)
+                    pconfig = PROVIDER_REGISTRY.get(provider)
+                    changed |= _upsert_entry(
+                        entries,
+                        provider,
+                        source_name,
+                        {
+                            "source": source_name,
+                            "auth_type": AUTH_TYPE_API_KEY,
+                            "access_token": token,
+                            "base_url": pconfig.inference_base_url if pconfig else "",
+                            "label": source,
+                        },
+                    )
         except Exception as exc:
-            logger.debug("Copilot 令牌填充失败: %s", exc)
+            logger.debug("Copilot token seed failed: %s", exc)
 
     elif provider == "qwen-oauth":
-        # Qwen OAuth 令牌存储在 ~/.qwen/oauth_creds.json 中，由
-        # Qwen CLI (`qwen auth qwen-oauth`) 写入。它们不在 Hermes 认证存储
-        # 或环境变量中，因此在这里解析。
-        # 使用 refresh_if_expiring=False 以避免在池加载/提供商发现期间
-        # 进行网络调用。
+        # Qwen OAuth tokens live in ~/.qwen/oauth_creds.json, written by
+        # the Qwen CLI (`qwen auth qwen-oauth`).  They aren't in the
+        # Hermes auth store or env vars, so resolve them here.
+        # Use refresh_if_expiring=False to avoid network calls during
+        # pool loading / provider discovery.
         try:
             from hermes_cli.auth import resolve_qwen_runtime_credentials
             creds = resolve_qwen_runtime_credentials(refresh_if_expiring=False)
             token = creds.get("api_key", "")
             if token:
                 source_name = creds.get("source", "qwen-cli")
-                active_sources.add(source_name)
-                changed |= _upsert_entry(
-                    entries,
-                    provider,
-                    source_name,
-                    {
-                        "source": source_name,
-                        "auth_type": AUTH_TYPE_OAUTH,
-                        "access_token": token,
-                        "expires_at_ms": creds.get("expires_at_ms"),
-                        "base_url": creds.get("base_url", ""),
-                        "label": creds.get("auth_file", source_name),
-                    },
-                )
+                if not _is_suppressed(provider, source_name):
+                    active_sources.add(source_name)
+                    changed |= _upsert_entry(
+                        entries,
+                        provider,
+                        source_name,
+                        {
+                            "source": source_name,
+                            "auth_type": AUTH_TYPE_OAUTH,
+                            "access_token": token,
+                            "expires_at_ms": creds.get("expires_at_ms"),
+                            "base_url": creds.get("base_url", ""),
+                            "label": creds.get("auth_file", source_name),
+                        },
+                    )
         except Exception as exc:
-            logger.debug("Qwen OAuth 令牌填充失败: %s", exc)
+            logger.debug("Qwen OAuth token seed failed: %s", exc)
 
     elif provider == "openai-codex":
+        # Respect user suppression — `hermes auth remove openai-codex` marks
+        # the device_code source as suppressed so it won't be re-seeded from
+        # the Hermes auth store.  Without this gate the removal is instantly
+        # undone on the next load_pool() call.
+        if _is_suppressed(provider, "device_code"):
+            return changed, active_sources
+
         state = _load_provider_state(auth_store, "openai-codex")
         tokens = state.get("tokens") if isinstance(state, dict) else None
-        # 回退：如果 Hermes 认证存储没有令牌，则从 Codex CLI
-        # (~/.codex/auth.json) 导入。这与 resolve_codex_runtime_credentials()
-        # 一致，使 load_pool() 和 list_authenticated_providers() 能检测到
-        # 仅存在于 Codex CLI 共享文件中的令牌。
-        if not (isinstance(tokens, dict) and tokens.get("access_token")):
-            try:
-                from hermes_cli.auth import _import_codex_cli_tokens, _save_codex_tokens
-                cli_tokens = _import_codex_cli_tokens()
-                if cli_tokens:
-                    logger.info("正在将 Codex CLI 令牌导入 Hermes 认证存储。")
-                    _save_codex_tokens(cli_tokens)
-                    # 导入后重新读取状态
-                    auth_store = _load_auth_store()
-                    state = _load_provider_state(auth_store, "openai-codex")
-                    tokens = state.get("tokens") if isinstance(state, dict) else None
-            except Exception as exc:
-                logger.debug("Codex CLI 令牌导入失败: %s", exc)
+        # Hermes owns its own Codex auth state — we do NOT auto-import from
+        # ~/.codex/auth.json at pool-load time.  OAuth refresh tokens are
+        # single-use, so sharing them with Codex CLI / VS Code causes
+        # refresh_token_reused race failures.  Users who want to adopt
+        # existing Codex CLI credentials get a one-time, explicit prompt
+        # via `hermes auth openai-codex`.
         if isinstance(tokens, dict) and tokens.get("access_token"):
             active_sources.add("device_code")
             changed |= _upsert_entry(
@@ -1247,10 +1157,22 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
 def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
     changed = False
     active_sources: Set[str] = set()
+    # Honour user suppression — `hermes auth remove <provider> <N>` for an
+    # env-seeded credential marks the env:<VAR> source as suppressed so it
+    # won't be re-seeded from the user's shell environment or ~/.hermes/.env.
+    # Without this gate the removal is silently undone on the next
+    # load_pool() call whenever the var is still exported by the shell.
+    try:
+        from hermes_cli.auth import is_source_suppressed as _is_source_suppressed
+    except ImportError:
+        def _is_source_suppressed(_p, _s):  # type: ignore[misc]
+            return False
     if provider == "openrouter":
         token = os.getenv("OPENROUTER_API_KEY", "").strip()
         if token:
             source = "env:OPENROUTER_API_KEY"
+            if _is_source_suppressed(provider, source):
+                return changed, active_sources
             active_sources.add(source)
             changed |= _upsert_entry(
                 entries,
@@ -1287,6 +1209,8 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         if not token:
             continue
         source = f"env:{env_var}"
+        if _is_source_suppressed(provider, source):
+            continue
         active_sources.add(source)
         auth_type = AUTH_TYPE_OAUTH if provider == "anthropic" and not token.startswith("sk-ant-api") else AUTH_TYPE_API_KEY
         base_url = env_url or pconfig.inference_base_url
@@ -1327,11 +1251,18 @@ def _prune_stale_seeded_entries(entries: List[PooledCredential], active_sources:
 
 
 def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
-    """从 custom_providers 配置和模型配置中填充自定义端点池。"""
+    """Seed a custom endpoint pool from custom_providers config and model config."""
     changed = False
     active_sources: Set[str] = set()
 
-    # 从 custom_providers 配置条目的 api_key 字段填充
+    # Shared suppression gate — same pattern as _seed_from_env/_seed_from_singletons.
+    try:
+        from hermes_cli.auth import is_source_suppressed as _is_suppressed
+    except ImportError:
+        def _is_suppressed(_p, _s):  # type: ignore[misc]
+            return False
+
+    # Seed from the custom_providers config entry's api_key field
     cp_config = _get_custom_provider_config(pool_key)
     if cp_config:
         api_key = str(cp_config.get("api_key") or "").strip()
@@ -1339,21 +1270,22 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
         name = str(cp_config.get("name") or "").strip()
         if api_key:
             source = f"config:{name}"
-            active_sources.add(source)
-            changed |= _upsert_entry(
-                entries,
-                pool_key,
-                source,
-                {
-                    "source": source,
-                    "auth_type": AUTH_TYPE_API_KEY,
-                    "access_token": api_key,
-                    "base_url": base_url,
-                    "label": name or source,
-                },
-            )
+            if not _is_suppressed(pool_key, source):
+                active_sources.add(source)
+                changed |= _upsert_entry(
+                    entries,
+                    pool_key,
+                    source,
+                    {
+                        "source": source,
+                        "auth_type": AUTH_TYPE_API_KEY,
+                        "access_token": api_key,
+                        "base_url": base_url,
+                        "label": name or source,
+                    },
+                )
 
-    # 如果 model.provider=='custom' 且 model.base_url 匹配，则从 model.api_key 填充
+    # Seed from model.api_key if model.provider=='custom' and model.base_url matches
     try:
         config = _load_config_safe()
         model_cfg = config.get("model") if config else None
@@ -1367,23 +1299,24 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
                     model_api_key = v.strip()
                     break
             if model_provider == "custom" and model_base_url and model_api_key:
-                # 检查此模型的 base_url 是否与我们的自定义提供商匹配
+                # Check if this model's base_url matches our custom provider
                 matched_key = get_custom_provider_pool_key(model_base_url)
                 if matched_key == pool_key:
                     source = "model_config"
-                    active_sources.add(source)
-                    changed |= _upsert_entry(
-                        entries,
-                        pool_key,
-                        source,
-                        {
-                            "source": source,
-                            "auth_type": AUTH_TYPE_API_KEY,
-                            "access_token": model_api_key,
-                            "base_url": model_base_url,
-                            "label": "model_config",
-                        },
-                    )
+                    if not _is_suppressed(pool_key, source):
+                        active_sources.add(source)
+                        changed |= _upsert_entry(
+                            entries,
+                            pool_key,
+                            source,
+                            {
+                                "source": source,
+                                "auth_type": AUTH_TYPE_API_KEY,
+                                "access_token": model_api_key,
+                                "base_url": model_base_url,
+                                "label": "model_config",
+                            },
+                        )
     except Exception:
         pass
 
@@ -1396,7 +1329,7 @@ def load_pool(provider: str) -> CredentialPool:
     entries = [PooledCredential.from_dict(provider, payload) for payload in raw_entries]
 
     if provider.startswith(CUSTOM_POOL_PREFIX):
-        # 自定义端点池 — 从 custom_providers 配置和模型配置填充
+        # Custom endpoint pool — seed from custom_providers config and model config
         custom_changed, custom_sources = _seed_custom_pool(provider, entries)
         changed = custom_changed
         changed |= _prune_stale_seeded_entries(entries, custom_sources)

@@ -1,11 +1,11 @@
 """
-Hermes Agent — Web UI 服务器。
+Hermes Agent — Web UI server.
 
-提供 FastAPI 后端，服务 Vite/React 前端和 REST API 端点，
-用于管理配置、环境变量和会话。
+Provides a FastAPI backend serving the Vite/React frontend and REST API
+endpoints for managing configuration, environment variables, and sessions.
 
-用法:
-    python -m hermes_cli.main web          # 在 http://127.0.0.1:9119 启动
+Usage:
+    python -m hermes_cli.main web          # Start on http://127.0.0.1:9119
     python -m hermes_cli.main web --port 8080
 """
 
@@ -56,29 +56,29 @@ try:
 except ImportError:
     raise SystemExit(
         "Web UI requires fastapi and uvicorn.\n"
-        "Run 'hermes web' to auto-install, or: pip install hermes-agent[web]"
+        f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
     )
 
-WEB_DIST = Path(__file__).parent / "web_dist"
+WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)
 
 app = FastAPI(title="Hermes Agent", version=__version__)
 
 # ---------------------------------------------------------------------------
-# 用于保护敏感端点（reveal）的会话令牌。
-# 每次服务器启动时重新生成 — 进程退出时失效。
-# 注入到 SPA HTML 中，只有合法的 Web UI 可以使用它。
+# Session token for protecting sensitive endpoints (reveal).
+# Generated fresh on every server start — dies when the process exits.
+# Injected into the SPA HTML so only the legitimate web UI can use it.
 # ---------------------------------------------------------------------------
 _SESSION_TOKEN = secrets.token_urlsafe(32)
 
-# reveal 端点的简易速率限制器
+# Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
 _REVEAL_WINDOW_SECONDS = 30
 
-# CORS：仅限 localhost 来源。Web UI 旨在本地运行；
-# 绑定到 0.0.0.0 并设置 allow_origins=["*"] 会允许任何网站
-# 读取/修改配置和密钥。
+# CORS: restrict to localhost origins only.  The web UI is intended to run
+# locally; binding to 0.0.0.0 with allow_origins=["*"] would let any website
+# read/modify config and secrets.
 
 app.add_middleware(
     CORSMiddleware,
@@ -88,9 +88,9 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------------------------------
-# 不需要会话令牌的端点。/api/ 下的所有其他端点
-# 都由下面的认证中间件把关。保持此列表最小化 —
-# 只有真正非敏感的只读端点才属于这里。
+# Endpoints that do NOT require the session token.  Everything else under
+# /api/ is gated by the auth middleware below.  Keep this list minimal —
+# only truly non-sensitive, read-only endpoints belong here.
 # ---------------------------------------------------------------------------
 _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/status",
@@ -104,9 +104,9 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
 
 
 def _require_token(request: Request) -> None:
-    """验证临时会话令牌。不匹配时抛出 401。
+    """Validate the ephemeral session token.  Raises 401 on mismatch.
 
-    使用 ``hmac.compare_digest`` 防止时序侧信道攻击。
+    Uses ``hmac.compare_digest`` to prevent timing side-channels.
     """
     auth = request.headers.get("authorization", "")
     expected = f"Bearer {_SESSION_TOKEN}"
@@ -116,7 +116,7 @@ def _require_token(request: Request) -> None:
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    """对所有 /api/ 路由（公开列表除外）要求会话令牌。"""
+    """Require the session token on all /api/ routes except the public list."""
     path = request.url.path
     if path.startswith("/api/") and path not in _PUBLIC_API_PATHS and not path.startswith("/api/plugins/"):
         auth = request.headers.get("authorization", "")
@@ -130,10 +130,10 @@ async def auth_middleware(request: Request, call_next):
 
 
 # ---------------------------------------------------------------------------
-# 配置架构 — 从 DEFAULT_CONFIG 自动生成
+# Config schema — auto-generated from DEFAULT_CONFIG
 # ---------------------------------------------------------------------------
 
-# 需要选择选项或自定义类型的字段的手动覆盖
+# Manual overrides for fields that need select options or custom types
 _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "model": {
         "type": "string",
@@ -222,7 +222,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
 }
 
-# 字段较少的分类合并到 "general" 中以避免标签页膨胀。
+# Categories with fewer fields get merged into "general" to avoid tab sprawl.
 _CATEGORY_MERGE: Dict[str, str] = {
     "privacy": "security",
     "context": "agent",
@@ -232,11 +232,11 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "checkpoints": "agent",
     "approvals": "security",
     "human_delay": "display",
-    "smart_model_routing": "agent",
     "dashboard": "display",
+    "code_execution": "agent",
 }
 
-# 标签页的显示顺序 — 未列出的分类按字母顺序排在这些之后。
+# Display order for tabs — unlisted categories sort alphabetically after these.
 _CATEGORY_ORDER = [
     "general", "agent", "terminal", "display", "delegation",
     "memory", "compression", "security", "browser", "voice",
@@ -245,7 +245,7 @@ _CATEGORY_ORDER = [
 
 
 def _infer_type(value: Any) -> str:
-    """从 Python 值推断 UI 字段类型。"""
+    """Infer a UI field type from a Python value."""
     if isinstance(value, bool):
         return "boolean"
     if isinstance(value, int):
@@ -263,17 +263,17 @@ def _build_schema_from_config(
     config: Dict[str, Any],
     prefix: str = "",
 ) -> Dict[str, Dict[str, Any]]:
-    """遍历 DEFAULT_CONFIG 并生成扁平的 点路径 → 字段架构字典。"""
+    """Walk DEFAULT_CONFIG and produce a flat dot-path → field schema dict."""
     schema: Dict[str, Dict[str, Any]] = {}
     for key, value in config.items():
         full_key = f"{prefix}.{key}" if prefix else key
 
-        # 跳过内部/版本键
+        # Skip internal / version keys
         if full_key in ("_config_version",):
             continue
 
-        # 分类是嵌套键的第一个路径组件，或对于顶级标量字段
-        # （model、toolsets、timezone 等）为 "general"。
+        # Category is the first path component for nested keys, or "general"
+        # for top-level scalar fields (model, toolsets, timezone, etc.).
         if prefix:
             category = prefix.split(".")[0]
         elif isinstance(value, dict):
@@ -282,7 +282,7 @@ def _build_schema_from_config(
             category = "general"
 
         if isinstance(value, dict):
-            # 递归进入嵌套字典
+            # Recurse into nested dicts
             schema.update(_build_schema_from_config(value, full_key))
         else:
             entry: Dict[str, Any] = {
@@ -290,10 +290,10 @@ def _build_schema_from_config(
                 "description": full_key.replace(".", " → ").replace("_", " ").title(),
                 "category": category,
             }
-            # 应用手动覆盖
+            # Apply manual overrides
             if full_key in _SCHEMA_OVERRIDES:
                 entry.update(_SCHEMA_OVERRIDES[full_key])
-            # 合并小分类
+            # Merge small categories
             entry["category"] = _CATEGORY_MERGE.get(entry["category"], entry["category"])
             schema[full_key] = entry
     return schema
@@ -301,9 +301,9 @@ def _build_schema_from_config(
 
 CONFIG_SCHEMA = _build_schema_from_config(DEFAULT_CONFIG)
 
-# 注入不在 DEFAULT_CONFIG 中但在 UI 中展示的虚拟字段，
-# 这些字段由规范化/反规范化循环管理。将 model_context_length 插入到
-# "model" 键之后，使其在前端中相邻渲染。
+# Inject virtual fields that don't live in DEFAULT_CONFIG but are surfaced
+# by the normalize/denormalize cycle.  Insert model_context_length right after
+# the "model" key so it renders adjacent in the frontend.
 _mcl_entry = _SCHEMA_OVERRIDES["model_context_length"]
 _ordered_schema: Dict[str, Dict[str, Any]] = {}
 for _k, _v in CONFIG_SCHEMA.items():
@@ -335,23 +335,23 @@ _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
 
 
 def _probe_gateway_health() -> tuple[bool, dict | None]:
-    """通过 HTTP 健康检查端点探测网关（跨容器通信）。
+    """Probe the gateway via its HTTP health endpoint (cross-container).
 
-    优先使用 ``/health/detailed``（返回完整状态），回退到
-    更简单的 ``/health`` 端点。返回 ``(is_alive, body_dict)``。
+    Uses ``/health/detailed`` first (returns full state), falling back to
+    the simpler ``/health`` endpoint.  Returns ``(is_alive, body_dict)``.
 
-    ``GATEWAY_HEALTH_URL`` 接受以下任一格式：
-    - ``http://gateway:8642``                （基础 URL — 推荐）
-    - ``http://gateway:8642/health``         （显式健康路径）
-    - ``http://gateway:8642/health/detailed`` （显式详细路径）
+    Accepts any of these as ``GATEWAY_HEALTH_URL``:
+    - ``http://gateway:8642``                (base URL — recommended)
+    - ``http://gateway:8642/health``         (explicit health path)
+    - ``http://gateway:8642/health/detailed`` (explicit detailed path)
 
-    这是一个 **阻塞** 调用 — 在异步代码中需通过 ``run_in_executor`` 执行。
+    This is a **blocking** call — run via ``run_in_executor`` from async code.
     """
     if not _GATEWAY_HEALTH_URL:
         return False, None
 
-    # 将 URL 规范化为基础 URL，这样无论用户在环境变量中是否包含
-    # /health 或 /health/detailed，我们都能探测到正确的路径。
+    # Normalise to base URL so we always probe the right paths regardless of
+    # whether the user included /health or /health/detailed in the env var.
     base = _GATEWAY_HEALTH_URL.rstrip("/")
     if base.endswith("/health/detailed"):
         base = base[: -len("/health/detailed")]
@@ -374,10 +374,10 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
 async def get_status():
     current_ver, latest_ver = check_config_version()
 
-    # --- 网关存活检测 ---
-    # 先尝试本地 PID 检查（同一主机）。如果失败且配置了远程
-    # GATEWAY_HEALTH_URL，则通过 HTTP 探测网关，以便在网关运行于
-    # 单独容器时仪表盘也能正常工作。
+    # --- Gateway liveness detection ---
+    # Try local PID check first (same-host).  If that fails and a remote
+    # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
+    # dashboard works when the gateway runs in a separate container.
     gateway_pid = get_running_pid()
     gateway_running = gateway_pid is not None
     remote_health_body: dict | None = None
@@ -389,7 +389,7 @@ async def get_status():
         )
         if alive:
             gateway_running = True
-            # 来自远程容器的 PID（仅用于展示 — 在本地无效）
+            # PID from the remote container (display only — not locally valid)
             if remote_health_body:
                 gateway_pid = remote_health_body.get("pid")
 
@@ -408,8 +408,8 @@ async def get_status():
     except Exception:
         configured_gateway_platforms = None
 
-    # 当本地运行时状态文件不存在或已过期（跨容器场景）时，
-    # 优先使用详细健康端点响应（包含完整状态）。
+    # Prefer the detailed health endpoint response (has full state) when the
+    # local runtime status file is absent or stale (cross-container).
     runtime = read_runtime_status()
     if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
         runtime = remote_health_body
@@ -429,13 +429,14 @@ async def get_status():
             gateway_state = gateway_state if gateway_state in ("stopped", "startup_failed") else "stopped"
             gateway_platforms = {}
         elif gateway_running and remote_health_body is not None:
-            # 健康探测确认网关存活，但本地运行时状态文件可能已过期
-            # （跨容器场景）。覆盖 stopped/None 状态，让仪表盘显示正确的徽章。
+            # The health probe confirmed the gateway is alive, but the local
+            # runtime status file may be stale (cross-container).  Override
+            # stopped/None state so the dashboard shows the correct badge.
             if gateway_state in (None, "stopped"):
                 gateway_state = "running"
 
-    # 如果完全没有运行时信息但健康探测确认存活，
-    # 仍然将网关报告为运行状态（无共享卷场景）。
+    # If there was no runtime info at all but the health probe confirmed alive,
+    # ensure we still report the gateway as running (no shared volume scenario).
     if gateway_running and gateway_state is None and remote_health_body is not None:
         gateway_state = "running"
 
@@ -499,16 +500,16 @@ async def get_sessions(limit: int = 20, offset: int = 0):
 
 @app.get("/api/sessions/search")
 async def search_sessions(q: str = "", limit: int = 20):
-    """使用 FTS5 在会话消息内容中进行全文搜索。"""
+    """Full-text search across session message content using FTS5."""
     if not q or not q.strip():
         return {"results": []}
     try:
         from hermes_state import SessionDB
         db = SessionDB()
         try:
-            # 自动添加前缀通配符，使部分词汇也能匹配
-            # 例如 "nimb" → "nimb*" 可匹配 "nimby"
-            # 保留引号短语和已有通配符不变
+            # Auto-add prefix wildcards so partial words match
+            # e.g. "nimb" → "nimb*" matches "nimby"
+            # Preserve quoted phrases and existing wildcards as-is
             import re
             terms = []
             for token in re.findall(r'"[^"]*"|\S+', q.strip()):
@@ -518,7 +519,7 @@ async def search_sessions(q: str = "", limit: int = 20):
                     terms.append(token + "*")
             prefix_query = " ".join(terms)
             matches = db.search_messages(query=prefix_query, limit=limit)
-            # 按 session_id 分组 — 返回唯一会话及其最佳匹配片段
+            # Group by session_id — return unique sessions with their best snippet
             seen: dict = {}
             for m in matches:
                 sid = m["session_id"]
@@ -540,20 +541,20 @@ async def search_sessions(q: str = "", limit: int = 20):
 
 
 def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
-    """为 Web UI 规范化配置。
+    """Normalize config for the web UI.
 
-    Hermes 支持 ``model`` 为纯字符串（``"anthropic/claude-sonnet-4"``）
-    或字典（``{default: ..., provider: ..., base_url: ...}``）。Schema 基于
-    DEFAULT_CONFIG 构建，其中 ``model`` 是字符串，但用户配置通常使用字典形式。
-    规范化为字符串形式以匹配前端的 schema。
+    Hermes supports ``model`` as either a bare string (``"anthropic/claude-sonnet-4"``)
+    or a dict (``{default: ..., provider: ..., base_url: ...}``).  The schema is built
+    from DEFAULT_CONFIG where ``model`` is a string, but user configs often have the
+    dict form.  Normalize to the string form so the frontend schema matches.
 
-    同时将 ``model_context_length`` 提升为顶级字段，以便 Web UI 可以
-    显示和编辑它。值为 0 表示"自动检测"。
+    Also surfaces ``model_context_length`` as a top-level field so the web UI can
+    display and edit it.  A value of 0 means "auto-detect".
     """
-    config = dict(config)  # 浅拷贝
+    config = dict(config)  # shallow copy
     model_val = config.get("model")
     if isinstance(model_val, dict):
-        # 在展平字典之前先提取 context_length
+        # Extract context_length before flattening the dict
         ctx_len = model_val.get("context_length", 0)
         config["model"] = model_val.get("default", model_val.get("name", ""))
         config["model_context_length"] = ctx_len if isinstance(ctx_len, int) else 0
@@ -565,7 +566,7 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
 @app.get("/api/config")
 async def get_config():
     config = _normalize_config_for_web(load_config())
-    # 剔除前端不应看到或回传的内部键
+    # Strip internal keys that the frontend shouldn't see or send back
     return {k: v for k, v in config.items() if not k.startswith("_")}
 
 
@@ -591,17 +592,17 @@ _EMPTY_MODEL_INFO: dict = {
 
 @app.get("/api/model/info")
 def get_model_info():
-    """返回当前配置模型的已解析元数据。
+    """Return resolved model metadata for the currently configured model.
 
-    调用与 agent 相同的上下文长度解析链，以便前端可以在
-    覆盖字段旁显示 "自动检测: 200K"。
-    同时返回可用的模型能力（视觉、推理、工具）。
+    Calls the same context-length resolution chain the agent uses, so the
+    frontend can display "Auto-detected: 200K" alongside the override field.
+    Also returns model capabilities (vision, reasoning, tools) when available.
     """
     try:
         cfg = load_config()
         model_cfg = cfg.get("model", "")
 
-        # 从配置中提取模型名称和提供商
+        # Extract model name and provider from the config
         if isinstance(model_cfg, dict):
             model_name = model_cfg.get("default", model_cfg.get("name", ""))
             provider = model_cfg.get("provider", "")
@@ -616,15 +617,15 @@ def get_model_info():
         if not model_name:
             return dict(_EMPTY_MODEL_INFO, provider=provider)
 
-        # 解析自动检测的上下文长度（传入 config_ctx=None 以获取
-        # 纯自动检测值，然后单独报告覆盖值）
+        # Resolve auto-detected context length (pass config_ctx=None to get
+        # purely auto-detected value, then separately report the override)
         try:
             from agent.model_metadata import get_model_context_length
             auto_ctx = get_model_context_length(
                 model=model_name,
                 base_url=base_url,
                 provider=provider,
-                config_context_length=None,  # 忽略覆盖值 — 我们需要自动检测值
+                config_context_length=None,  # ignore override — we want auto value
             )
         except Exception:
             auto_ctx = 0
@@ -633,10 +634,10 @@ def get_model_info():
         if isinstance(config_ctx, int) and config_ctx > 0:
             config_ctx_int = config_ctx
 
-        # 有效值是 agent 实际使用的值
+        # Effective is what the agent actually uses
         effective_ctx = config_ctx_int if config_ctx_int > 0 else auto_ctx
 
-        # 尝试从 models.dev 获取模型能力信息
+        # Try to get model capabilities from models.dev
         caps = {}
         try:
             from agent.models_dev import get_model_capabilities
@@ -667,22 +668,23 @@ def get_model_info():
 
 
 def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
-    """保存前反转 _normalize_config_for_web 的规范化。
+    """Reverse _normalize_config_for_web before saving.
 
-    通过读取当前磁盘配置来恢复 GET 响应中被剥离的 model 子键
-    （provider、base_url、api_mode 等），重建 ``model`` 为字典。
-    前端只能看到 model 的纯字符串形式；其余部分透明保留。
+    Reconstructs ``model`` as a dict by reading the current on-disk config
+    to recover model subkeys (provider, base_url, api_mode, etc.) that were
+    stripped from the GET response.  The frontend only sees model as a flat
+    string; the rest is preserved transparently.
 
-    同时处理 ``model_context_length`` — 将其写回 model 字典的
-    ``context_length`` 字段。值为 0 或缺失表示"自动检测"（从字典中
-    省略，以便 get_model_context_length() 使用其正常解析逻辑）。
+    Also handles ``model_context_length`` — writes it back into the model dict
+    as ``context_length``.  A value of 0 or absent means "auto-detect" (omitted
+    from the dict so get_model_context_length() uses its normal resolution).
     """
     config = dict(config)
-    # 移除可能泄漏进来的 _model_meta（使用剥离后的 GET 响应
-    # 不应出现此情况，但做防御性处理）
+    # Remove any _model_meta that might have leaked in (shouldn't happen
+    # with the stripped GET response, but be defensive)
     config.pop("_model_meta", None)
 
-    # 在处理 model 之前提取并移除 model_context_length
+    # Extract and remove model_context_length before processing model
     ctx_override = config.pop("model_context_length", 0)
     if not isinstance(ctx_override, int):
         try:
@@ -692,29 +694,29 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
 
     model_val = config.get("model")
     if isinstance(model_val, str) and model_val:
-        # 读取当前磁盘配置以恢复 model 子键
+        # Read the current disk config to recover model subkeys
         try:
             disk_config = load_config()
             disk_model = disk_config.get("model")
             if isinstance(disk_model, dict):
-                # 保留所有子键，用新值更新 default
+                # Preserve all subkeys, update default with the new value
                 disk_model["default"] = model_val
-                # 将 context_length 写入 model 字典（0 = 移除/自动检测）
+                # Write context_length into the model dict (0 = remove/auto)
                 if ctx_override > 0:
                     disk_model["context_length"] = ctx_override
                 else:
                     disk_model.pop("context_length", None)
                 config["model"] = disk_model
             else:
-                # Model 之前是纯字符串 — 如果用户设置了 context_length
-                # 覆盖值，则升级为字典形式
+                # Model was previously a bare string — upgrade to dict if
+                # user is setting a context_length override
                 if ctx_override > 0:
                     config["model"] = {
                         "default": model_val,
                         "context_length": ctx_override,
                     }
         except Exception:
-            pass  # 无法读取磁盘配置 — 直接使用字符串形式
+            pass  # can't read disk config — just use the string form
     return config
 
 
@@ -773,17 +775,17 @@ async def remove_env_var(body: EnvVarDelete):
 
 @app.post("/api/env/reveal")
 async def reveal_env_var(body: EnvVarReveal, request: Request):
-    """返回单个环境变量的真实（未脱敏）值。
+    """Return the real (unredacted) value of a single env var.
 
-    保护措施：
-    - 临时会话令牌（每次服务器启动时生成，注入到 SPA 中）
-    - 速率限制（每 30 秒窗口最多 5 次揭示请求）
-    - 审计日志
+    Protected by:
+    - Ephemeral session token (generated per server start, injected into SPA)
+    - Rate limiting (max 5 reveals per 30s window)
+    - Audit logging
     """
-    # --- 令牌检查 ---
+    # --- Token check ---
     _require_token(request)
 
-    # --- 速率限制 ---
+    # --- Rate limit ---
     now = time.time()
     cutoff = now - _REVEAL_WINDOW_SECONDS
     _reveal_timestamps[:] = [t for t in _reveal_timestamps if t > cutoff]
@@ -791,7 +793,7 @@ async def reveal_env_var(body: EnvVarReveal, request: Request):
         raise HTTPException(status_code=429, detail="Too many reveal requests. Try again shortly.")
     _reveal_timestamps.append(now)
 
-    # --- 揭示 ---
+    # --- Reveal ---
     env_on_disk = load_env()
     value = env_on_disk.get(body.key)
     if value is None:
@@ -802,29 +804,30 @@ async def reveal_env_var(body: EnvVarReveal, request: Request):
 
 
 # ---------------------------------------------------------------------------
-# OAuth 提供商端点 — 状态 + 断开连接（第 1 阶段）
+# OAuth provider endpoints — status + disconnect (Phase 1)
 # ---------------------------------------------------------------------------
 #
-# 第 1 阶段展示 *存在哪些 OAuth 提供商* 以及各自的连接状态，
-# 加上断开连接按钮。实际的登录流程（Anthropic 使用 PKCE，
-# Nous/Codex 使用 device-code）目前仍在 CLI 中运行；
-# 第 2 阶段将添加浏览器内流程。对于未连接的提供商，我们返回
-# 标准的 ``hermes auth add <provider>`` 命令，以便仪表盘
-# 可以提供一键复制功能。
+# Phase 1 surfaces *which OAuth providers exist* and whether each is
+# connected, plus a disconnect button. The actual login flow (PKCE for
+# Anthropic, device-code for Nous/Codex) still runs in the CLI for now;
+# Phase 2 will add in-browser flows. For unconnected providers we return
+# the canonical ``hermes auth add <provider>`` command so the dashboard
+# can surface a one-click copy.
 
 
 def _truncate_token(value: Optional[str], visible: int = 6) -> str:
-    """返回 ``...XXXXXX``（最后 N 个字符），用于在 UI 中安全展示。
+    """Return ``...XXXXXX`` (last N chars) for safe display in the UI.
 
-    我们不会暴露 OAuth 访问令牌的尾部 ``visible`` 个字符以外的内容。
-    存在 JWT 前缀（第一个点之前的部分）时会先将其剥离，
-    这样可见后缀始终是签名区域的一部分，而非无意义的头部块。
+    We never expose more than the trailing ``visible`` characters of an
+    OAuth access token. JWT prefixes (the part before the first dot) are
+    stripped first when present so the visible suffix is always part of
+    the signing region rather than a meaningless header chunk.
     """
     if not value:
         return ""
     s = str(value)
     if "." in s and s.count(".") >= 2:
-        # 看起来像 JWT — 只显示签名部分的尾部片段。
+        # Looks like a JWT — show the trailing piece of the signature only.
         s = s.rsplit(".", 1)[-1]
     if len(s) <= visible:
         return s
@@ -832,13 +835,13 @@ def _truncate_token(value: Optional[str], visible: int = 6) -> str:
 
 
 def _anthropic_oauth_status() -> Dict[str, Any]:
-    """三个 Anthropic 凭据来源的综合状态。
+    """Combined status across the three Anthropic credential sources we read.
 
-    Hermes 在运行时按以下顺序解析 Anthropic 凭据：
-    1. ``~/.hermes/.anthropic_oauth.json`` — Hermes 管理的 PKCE 流程
-    2. ``~/.claude/.credentials.json`` — Claude Code CLI 凭据（自动）
-    3. ``ANTHROPIC_TOKEN`` / ``ANTHROPIC_API_KEY`` 环境变量
-    仪表盘报告实际存在的最高优先级来源。
+    Hermes resolves Anthropic creds in this order at runtime:
+    1. ``~/.hermes/.anthropic_oauth.json`` — Hermes-managed PKCE flow
+    2. ``~/.claude/.credentials.json`` — Claude Code CLI credentials (auto)
+    3. ``ANTHROPIC_TOKEN`` / ``ANTHROPIC_API_KEY`` env vars
+    The dashboard reports the highest-priority source that's actually present.
     """
     try:
         from agent.anthropic_adapter import (
@@ -897,11 +900,11 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
 
 
 def _claude_code_only_status() -> Dict[str, Any]:
-    """将 Claude Code CLI 凭据作为独立的提供商条目展示。
+    """Surface Claude Code CLI credentials as their own provider entry.
 
-    独立于上面的 Anthropic 条目，以便用户可以看到他们的
-    Claude Code 订阅令牌是否正在流入 Hermes，即使
-    他们同时拥有单独的 Hermes 管理的 PKCE 登录。
+    Independent of the Anthropic entry above so users can see whether their
+    Claude Code subscription tokens are actively flowing into Hermes even
+    when they also have a separate Hermes-managed PKCE login.
     """
     try:
         from agent.anthropic_adapter import read_claude_code_credentials
@@ -920,13 +923,13 @@ def _claude_code_only_status() -> Dict[str, Any]:
     return {"logged_in": False, "source": None}
 
 
-# 提供商目录。顺序很重要 — 决定了 UI 列表的渲染顺序。
-# ``cli_command`` 是在第 2 阶段（浏览器内流程）尚未构建时，
-# 仪表盘展示的复制到剪贴板的备用命令。
-# ``flow`` 描述 OAuth 形态，以便未来的模态框可以选择正确的 UI：
-# ``pkce`` = 打开 URL + 粘贴回调代码，``device_code`` =
-# 显示代码 + 验证 URL + 轮询，``external`` = 只读（委托给
-# 第三方 CLI 如 Claude Code 或 Qwen）。
+# Provider catalog. The order matters — it's how we render the UI list.
+# ``cli_command`` is what the dashboard surfaces as the copy-to-clipboard
+# fallback while Phase 2 (in-browser flows) isn't built yet.
+# ``flow`` describes the OAuth shape so the future modal can pick the
+# right UI: ``pkce`` = open URL + paste callback code, ``device_code`` =
+# show code + verification URL + poll, ``external`` = read-only (delegated
+# to a third-party CLI like Claude Code or Qwen).
 _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
     {
         "id": "anthropic",
@@ -950,7 +953,7 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "flow": "device_code",
         "cli_command": "hermes auth add nous",
         "docs_url": "https://portal.nousresearch.com",
-        "status_fn": None,  # 通过 auth.get_nous_auth_status 调度
+        "status_fn": None,  # dispatched via auth.get_nous_auth_status
     },
     {
         "id": "openai-codex",
@@ -958,7 +961,7 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "flow": "device_code",
         "cli_command": "hermes auth add openai-codex",
         "docs_url": "https://platform.openai.com/docs",
-        "status_fn": None,  # 通过 auth.get_codex_auth_status 调度
+        "status_fn": None,  # dispatched via auth.get_codex_auth_status
     },
     {
         "id": "qwen-oauth",
@@ -966,13 +969,13 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "flow": "external",
         "cli_command": "hermes auth add qwen-oauth",
         "docs_url": "https://github.com/QwenLM/qwen-code",
-        "status_fn": None,  # 通过 auth.get_qwen_auth_status 调度
+        "status_fn": None,  # dispatched via auth.get_qwen_auth_status
     },
 )
 
 
 def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
-    """调度到 OAuth 提供商条目对应的状态辅助函数。"""
+    """Dispatch to the right status helper for an OAuth provider entry."""
     if status_fn is not None:
         try:
             return status_fn()
@@ -1018,20 +1021,20 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
 
 @app.get("/api/providers/oauth")
 async def list_oauth_providers():
-    """枚举所有支持 OAuth 的 LLM 提供商及其当前状态。
+    """Enumerate every OAuth-capable LLM provider with current status.
 
-    响应结构（每个提供商）：
-        id              稳定标识符（用于 DELETE 路径）
-        name            人类可读标签
+    Response shape (per provider):
+        id              stable identifier (used in DELETE path)
+        name            human label
         flow            "pkce" | "device_code" | "external"
-        cli_command     用户手动运行的备用 CLI 命令
-        docs_url        外部文档/门户链接，用于"了解更多"链接
+        cli_command     fallback CLI command for users to run manually
+        docs_url        external docs/portal link for the "Learn more" link
         status:
-          logged_in        bool — 当前是否有可用凭据
-          source           短标识（"hermes_pkce"、"claude_code" 等）
-          source_label     人类可读的来源（文件路径、环境变量名）
-          token_preview    令牌的最后 N 个字符，绝不暴露完整令牌
-          expires_at       ISO 时间戳字符串或 null
+          logged_in        bool — currently has usable creds
+          source           short slug ("hermes_pkce", "claude_code", ...)
+          source_label     human-readable origin (file path, env var name)
+          token_preview    last N chars of the token, never the full token
+          expires_at       ISO timestamp string or null
           has_refresh_token bool
     """
     providers = []
@@ -1050,7 +1053,7 @@ async def list_oauth_providers():
 
 @app.delete("/api/providers/oauth/{provider_id}")
 async def disconnect_oauth_provider(provider_id: str, request: Request):
-    """断开 OAuth 提供商连接。令牌保护（与 /env/reveal 一致）。"""
+    """Disconnect an OAuth provider. Token-protected (matches /env/reveal)."""
     _require_token(request)
 
     valid_ids = {p["id"] for p in _OAUTH_PROVIDER_CATALOG}
@@ -1061,10 +1064,10 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
                    f"Available: {', '.join(sorted(valid_ids))}",
         )
 
-    # Anthropic 和 claude-code 清除相同的 Hermes 管理的 PKCE 文件
-    # 并且忘记 Claude Code 导入。我们不直接修改 ~/.claude/* —
-    # 那是 Claude Code CLI 的管辖范围；用户可以重新认证来
-    # 撤销断开连接操作。
+    # Anthropic and claude-code clear the same Hermes-managed PKCE file
+    # AND forget the Claude Code import. We don't touch ~/.claude/* directly
+    # — that's owned by the Claude Code CLI; users can re-auth there if they
+    # want to undo a disconnect.
     if provider_id in ("anthropic", "claude-code"):
         try:
             from agent.anthropic_adapter import _HERMES_OAUTH_FILE
@@ -1072,7 +1075,7 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
                 _HERMES_OAUTH_FILE.unlink()
         except Exception:
             pass
-        # 同时清除凭据池条目（如果存在）。
+        # Also clear the credential pool entry if present.
         try:
             from hermes_cli.auth import clear_provider_auth
             clear_provider_auth("anthropic")
@@ -1092,47 +1095,48 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
 
 
 # ---------------------------------------------------------------------------
-# OAuth 第 2 阶段 — 浏览器内 PKCE 和 device-code 流程
+# OAuth Phase 2 — in-browser PKCE & device-code flows
 # ---------------------------------------------------------------------------
 #
-# 支持两种流程形态：
+# Two flow shapes are supported:
 #
-#   PKCE（Anthropic）：
+#   PKCE (Anthropic):
 #     1. POST /api/providers/oauth/anthropic/start
-#          → 服务器生成 code_verifier + challenge，构建 claude.ai
-#            授权 URL，将 verifier 存储在 _oauth_sessions[session_id]
-#          → 返回 { session_id, flow: "pkce", auth_url }
-#     2. UI 在新标签页中打开 auth_url。用户授权后复制 code。
+#          → server generates code_verifier + challenge, builds claude.ai
+#            authorize URL, stashes verifier in _oauth_sessions[session_id]
+#          → returns { session_id, flow: "pkce", auth_url }
+#     2. UI opens auth_url in a new tab. User authorizes, copies code.
 #     3. POST /api/providers/oauth/anthropic/submit { session_id, code }
-#          → 服务器在 console.anthropic.com 用 (code + verifier) 交换令牌
-#          → 持久化到 ~/.hermes/.anthropic_oauth.json 和凭据池
-#          → 返回 { ok: true, status: "approved" }
+#          → server exchanges (code + verifier) → tokens at console.anthropic.com
+#          → persists to ~/.hermes/.anthropic_oauth.json AND credential pool
+#          → returns { ok: true, status: "approved" }
 #
-#   Device code（Nous、OpenAI Codex）：
+#   Device code (Nous, OpenAI Codex):
 #     1. POST /api/providers/oauth/{nous|openai-codex}/start
-#          → 服务器请求提供商的设备认证端点
-#          → 获取 { user_code, verification_url, device_code, interval, expires_in }
-#          → 启动后台轮询线程，每 `interval` 秒轮询令牌端点
-#            直到批准/过期
-#          → 将轮询状态存储在 _oauth_sessions[session_id]
-#          → 返回 { session_id, flow: "device_code", user_code,
+#          → server hits provider's device-auth endpoint
+#          → gets { user_code, verification_url, device_code, interval, expires_in }
+#          → spawns background poller thread that polls the token endpoint
+#            every `interval` seconds until approved/expired
+#          → stores poll status in _oauth_sessions[session_id]
+#          → returns { session_id, flow: "device_code", user_code,
 #                      verification_url, expires_in, poll_interval }
-#     2. UI 在新标签页中打开 verification_url 并显示 user_code。
-#     3. UI 每 2 秒轮询 GET /api/providers/oauth/{provider}/poll/{session_id}
-#          直到 status != "pending"。
-#     4. 状态为 "approved" 时后台线程已保存凭据；UI 刷新提供商列表。
+#     2. UI opens verification_url in a new tab and shows user_code.
+#     3. UI polls GET /api/providers/oauth/{provider}/poll/{session_id}
+#          every 2s until status != "pending".
+#     4. On "approved" the background thread has already saved creds; UI
+#        refreshes the providers list.
 #
-# 会话仅保存在内存中（单进程 FastAPI），15 分钟后超时。
-# 在每次 /start 调用时运行定期清理来回收过期会话，
-# 防止字典无限增长。
+# Sessions are kept in-memory only (single-process FastAPI) and time out
+# after 15 minutes. A periodic cleanup runs on each /start call to GC
+# expired sessions so the dict doesn't grow without bound.
 
 _OAUTH_SESSION_TTL_SECONDS = 15 * 60
 _oauth_sessions: Dict[str, Dict[str, Any]] = {}
 _oauth_sessions_lock = threading.Lock()
 
-# 从规范来源导入 OAuth 常量，避免重复定义。
-# 使用守护导入，以便在 anthropic_adapter 不可用时 hermes web 仍能启动；
-# 此时第 2 阶段端点将返回 501。
+# Import OAuth constants from canonical source instead of duplicating.
+# Guarded so hermes web still starts if anthropic_adapter is unavailable;
+# Phase 2 endpoints will return 501 in that case.
 try:
     from agent.anthropic_adapter import (
         _OAUTH_CLIENT_ID as _ANTHROPIC_OAUTH_CLIENT_ID,
@@ -1148,7 +1152,7 @@ _ANTHROPIC_OAUTH_AUTHORIZE_URL = "https://claude.ai/oauth/authorize"
 
 
 def _gc_oauth_sessions() -> None:
-    """清除过期会话。在 /start 时机会性调用。"""
+    """Drop expired sessions. Called opportunistically on /start."""
     cutoff = time.time() - _OAUTH_SESSION_TTL_SECONDS
     with _oauth_sessions_lock:
         stale = [sid for sid, sess in _oauth_sessions.items() if sess["created_at"] < cutoff]
@@ -1157,14 +1161,14 @@ def _gc_oauth_sessions() -> None:
 
 
 def _new_oauth_session(provider_id: str, flow: str) -> tuple[str, Dict[str, Any]]:
-    """创建并注册一个新的 OAuth 会话，返回 (session_id, session_dict)。"""
+    """Create + register a new OAuth session, return (session_id, session_dict)."""
     sid = secrets.token_urlsafe(16)
     sess = {
         "session_id": sid,
         "provider": provider_id,
         "flow": flow,
         "created_at": time.time(),
-        "status": "pending",  # pending | approved | denied | expired | error（待处理 | 已批准 | 已拒绝 | 已过期 | 错误）
+        "status": "pending",  # pending | approved | denied | expired | error
         "error_message": None,
     }
     with _oauth_sessions_lock:
@@ -1173,10 +1177,10 @@ def _new_oauth_session(provider_id: str, flow: str) -> tuple[str, Dict[str, Any]
 
 
 def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_at_ms: int) -> None:
-    """将 Anthropic PKCE 凭据持久化到 Hermes 文件和凭据池。
+    """Persist Anthropic PKCE creds to both Hermes file AND credential pool.
 
-    与 auth_commands.add_command 的行为一致，以便仪表盘流程
-    使系统处于与 ``hermes auth add anthropic`` 相同的状态。
+    Mirrors what auth_commands.add_command does so the dashboard flow leaves
+    the system in the same state as ``hermes auth add anthropic``.
     """
     from agent.anthropic_adapter import _HERMES_OAUTH_FILE
     payload = {
@@ -1186,8 +1190,9 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
     }
     _HERMES_OAUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
     _HERMES_OAUTH_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    # 尽力向凭据池插入条目。此处失败不影响文件写入的有效性 —
-    # 池注册仅对轮换策略有意义，不影响运行时凭据解析。
+    # Best-effort credential-pool insert. Failure here doesn't invalidate
+    # the file write — pool registration only matters for the rotation
+    # strategy, not for runtime credential resolution.
     try:
         from agent.credential_pool import (
             PooledCredential,
@@ -1197,7 +1202,7 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
         )
         import uuid
         pool = load_pool("anthropic")
-        # 避免重复条目：删除先前仪表盘签发的 OAuth 条目
+        # Avoid duplicate entries: delete any prior dashboard-issued OAuth entry
         existing = [e for e in pool.entries() if getattr(e, "source", "").startswith(f"{SOURCE_MANUAL}:dashboard_pkce")]
         for e in existing:
             try:
@@ -1221,13 +1226,13 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
 
 
 def _start_anthropic_pkce() -> Dict[str, Any]:
-    """开始 PKCE 流程。返回 UI 应打开的授权 URL。"""
+    """Begin PKCE flow. Returns the auth URL the UI should open."""
     if not _ANTHROPIC_OAUTH_AVAILABLE:
         raise HTTPException(status_code=501, detail="Anthropic OAuth not available (missing adapter)")
     verifier, challenge = _generate_pkce_pair()
     sid, sess = _new_oauth_session("anthropic", "pkce")
     sess["verifier"] = verifier
-    sess["state"] = verifier  # Anthropic 将 verifier 作为 state 往返传递
+    sess["state"] = verifier  # Anthropic round-trips verifier as state
     params = {
         "code": "true",
         "client_id": _ANTHROPIC_OAUTH_CLIENT_ID,
@@ -1248,7 +1253,7 @@ def _start_anthropic_pkce() -> Dict[str, Any]:
 
 
 def _submit_anthropic_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
-    """用授权码交换令牌。成功时进行持久化。"""
+    """Exchange authorization code for tokens. Persists on success."""
     with _oauth_sessions_lock:
         sess = _oauth_sessions.get(session_id)
     if not sess or sess["provider"] != "anthropic" or sess["flow"] != "pkce":
@@ -1256,8 +1261,8 @@ def _submit_anthropic_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
     if sess["status"] != "pending":
         return {"ok": False, "status": sess["status"], "message": sess.get("error_message")}
 
-    # Anthropic 的重定向回调页面将 code 格式化为 `<code>#<state>`。
-    # 如果存在 state 后缀则剥离（我们在服务端已有 verifier）。
+    # Anthropic's redirect callback page formats the code as `<code>#<state>`.
+    # Strip the state suffix if present (we already have the verifier server-side).
     parts = code_input.strip().split("#", 1)
     code = parts[0].strip()
     if not code:
@@ -1310,11 +1315,11 @@ def _submit_anthropic_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
 
 
 async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
-    """启动 device-code 流程（Nous 或 OpenAI Codex）。
+    """Initiate a device-code flow (Nous or OpenAI Codex).
 
-    通过现有 CLI 辅助函数调用提供商的设备认证端点，
-    然后启动后台轮询器。返回面向用户的展示字段，
-    以便 UI 可以渲染验证页面链接 + 用户代码。
+    Calls the provider's device-auth endpoint via the existing CLI helpers,
+    then spawns a background poller. Returns the user-facing display fields
+    so the UI can render the verification page link + user code.
     """
     from hermes_cli import auth as hauth
     if provider_id == "nous":
@@ -1356,17 +1361,18 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
         }
 
     if provider_id == "openai-codex":
-        # Codex 使用固定的 OpenAI 设备认证端点；复用辅助函数。
-        # 使用辅助函数但在线程中执行，因为它内联轮询。
-        # 不重构 auth.py 的话无法单独提取 start 步骤，
-        # 所以我们在 worker 中运行完整辅助函数，并通过 session 字典
-        # 代理 user_code + verification_url。辅助函数输出到 stdout —
-        # 我们不捕获任何内容，只关注状态。
+        # Codex uses fixed OpenAI device-auth endpoints; reuse the helper.
+        sid, _ = _new_oauth_session("openai-codex", "device_code")
+        # Use the helper but in a thread because it polls inline.
+        # We can't extract just the start step without refactoring auth.py,
+        # so we run the full helper in a worker and proxy the user_code +
+        # verification_url back via the session dict. The helper prints
+        # to stdout — we capture nothing here, just status.
         threading.Thread(
             target=_codex_full_login_worker, args=(sid,), daemon=True,
             name=f"oauth-codex-{sid[:6]}",
         ).start()
-        # 短暂阻塞等待 worker 填充 user_code，或出错。
+        # Block briefly until the worker has populated the user_code, OR error.
         deadline = time.time() + 10
         while time.time() < deadline:
             with _oauth_sessions_lock:
@@ -1393,7 +1399,7 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
 
 
 def _nous_poller(session_id: str) -> None:
-    """驱动 Nous device-code 流程完成的后台轮询器。"""
+    """Background poller that drives a Nous device-code flow to completion."""
     from hermes_cli.auth import _poll_for_token, refresh_nous_oauth_from_state
     from datetime import datetime, timezone
     import httpx
@@ -1416,7 +1422,7 @@ def _nous_poller(session_id: str) -> None:
                 expires_in=expires_in,
                 poll_interval=interval,
             )
-        # 与 _nous_device_code_login 相同的后处理（铸造 agent key）
+        # Same post-processing as _nous_device_code_login (mint agent key)
         now = datetime.now(timezone.utc)
         token_ttl = int(token_data.get("expires_in") or 0)
         auth_state = {
@@ -1438,38 +1444,8 @@ def _nous_poller(session_id: str) -> None:
             auth_state, min_key_ttl_seconds=300, timeout_seconds=15.0,
             force_refresh=False, force_mint=True,
         )
-        # 保存到凭据池，与 auth_commands.py 的处理方式一致
-        from agent.credential_pool import (
-            PooledCredential,
-            load_pool,
-            AUTH_TYPE_OAUTH,
-            SOURCE_MANUAL,
-        )
-        pool = load_pool("nous")
-        entry = PooledCredential.from_dict("nous", {
-            **full_state,
-            "label": "dashboard device_code",
-            "auth_type": AUTH_TYPE_OAUTH,
-            "source": f"{SOURCE_MANUAL}:dashboard_device_code",
-            "base_url": full_state.get("inference_base_url"),
-        })
-        pool.add_entry(entry)
-        # 同时持久化到 auth store 以便 get_nous_auth_status() 可以读取
-        # （与 auth.py 中 _login_nous 的 CLI 流程一致）。
-        try:
-            from hermes_cli.auth import (
-                _load_auth_store, _save_provider_state, _save_auth_store,
-                _auth_store_lock,
-            )
-            with _auth_store_lock():
-                auth_store = _load_auth_store()
-                _save_provider_state(auth_store, "nous", full_state)
-                _save_auth_store(auth_store)
-        except Exception as store_exc:
-            _log.warning(
-                "oauth/device: credential pool saved but auth store write failed "
-                "(session=%s): %s", session_id, store_exc,
-            )
+        from hermes_cli.auth import persist_nous_credentials
+        persist_nous_credentials(full_state)
         with _oauth_sessions_lock:
             sess["status"] = "approved"
         _log.info("oauth/device: nous login completed (session=%s)", session_id)
@@ -1481,18 +1457,19 @@ def _nous_poller(session_id: str) -> None:
 
 
 def _codex_full_login_worker(session_id: str) -> None:
-    """运行完整的 OpenAI Codex device-code 流程。
+    """Run the complete OpenAI Codex device-code flow.
 
-    Codex 不使用标准 OAuth device-code 端点；它有自己的
-    ``/api/accounts/deviceauth/usercode``（JSON body，返回
-    ``device_auth_id``）和 ``/api/accounts/deviceauth/token``（JSON body
-    轮询直到返回 200）。成功时响应携带 ``authorization_code`` +
-    ``code_verifier``，在 CODEX_OAUTH_TOKEN_URL 用
-    grant_type=authorization_code 进行交换。
+    Codex doesn't use the standard OAuth device-code endpoints; it has its
+    own ``/api/accounts/deviceauth/usercode`` (JSON body, returns
+    ``device_auth_id``) and ``/api/accounts/deviceauth/token`` (JSON body
+    polled until 200). On success the response carries an
+    ``authorization_code`` + ``code_verifier`` that get exchanged at
+    CODEX_OAUTH_TOKEN_URL with grant_type=authorization_code.
 
-    此流程内联复制（而非调用
-    _codex_device_code_login）因为该辅助函数在单个函数中打印/阻塞/轮询 —
-    我们需要在轮询完成之前就将 user_code 展示给仪表盘。
+    The flow is replicated inline (rather than calling
+    _codex_device_code_login) because that helper prints/blocks/polls in a
+    single function — we need to surface the user_code to the dashboard the
+    moment we receive it, well before polling completes.
     """
     try:
         import httpx
@@ -1503,7 +1480,7 @@ def _codex_full_login_worker(session_id: str) -> None:
         )
         issuer = "https://auth.openai.com"
 
-        # 步骤 1：请求设备码
+        # Step 1: request device code
         with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
             resp = client.post(
                 f"{issuer}/api/accounts/deviceauth/usercode",
@@ -1527,10 +1504,10 @@ def _codex_full_login_worker(session_id: str) -> None:
             sess["verification_url"] = verification_url
             sess["device_auth_id"] = device_auth_id
             sess["interval"] = poll_interval
-            sess["expires_in"] = 15 * 60  # OpenAI 的有效时间限制
+            sess["expires_in"] = 15 * 60  # OpenAI's effective limit
             sess["expires_at"] = time.time() + sess["expires_in"]
 
-        # 步骤 2：轮询直到授权
+        # Step 2: poll until authorized
         deadline = time.time() + sess["expires_in"]
         code_resp = None
         with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
@@ -1545,7 +1522,7 @@ def _codex_full_login_worker(session_id: str) -> None:
                     code_resp = poll.json()
                     break
                 if poll.status_code in (403, 404):
-                    continue  # 用户尚未授权
+                    continue  # user hasn't authorized yet
                 raise RuntimeError(f"deviceauth/token poll returned {poll.status_code}")
 
         if code_resp is None:
@@ -1554,7 +1531,7 @@ def _codex_full_login_worker(session_id: str) -> None:
                 sess["error_message"] = "Device code expired before approval"
             return
 
-        # 步骤 3：用 authorization_code 交换令牌
+        # Step 3: exchange authorization_code for tokens
         authorization_code = code_resp.get("authorization_code", "")
         code_verifier = code_resp.get("code_verifier", "")
         if not authorization_code or not code_verifier:
@@ -1579,7 +1556,7 @@ def _codex_full_login_worker(session_id: str) -> None:
         if not access_token:
             raise RuntimeError("token exchange did not return access_token")
 
-        # 通过凭据池持久化 — 与 auth_commands.add_command 的结构一致
+        # Persist via credential pool — same shape as auth_commands.add_command
         from agent.credential_pool import (
             PooledCredential,
             load_pool,
@@ -1618,7 +1595,7 @@ def _codex_full_login_worker(session_id: str) -> None:
 
 @app.post("/api/providers/oauth/{provider_id}/start")
 async def start_oauth_login(provider_id: str, request: Request):
-    """启动 OAuth 登录流程。令牌保护。"""
+    """Initiate an OAuth login flow. Token-protected."""
     _require_token(request)
     _gc_oauth_sessions()
     valid = {p["id"] for p in _OAUTH_PROVIDER_CATALOG}
@@ -1650,7 +1627,7 @@ class OAuthSubmitBody(BaseModel):
 
 @app.post("/api/providers/oauth/{provider_id}/submit")
 async def submit_oauth_code(provider_id: str, body: OAuthSubmitBody, request: Request):
-    """提交 PKCE 流程的授权码。令牌保护。"""
+    """Submit the auth code for PKCE flows. Token-protected."""
     _require_token(request)
     if provider_id == "anthropic":
         return await asyncio.get_event_loop().run_in_executor(
@@ -1661,7 +1638,7 @@ async def submit_oauth_code(provider_id: str, body: OAuthSubmitBody, request: Re
 
 @app.get("/api/providers/oauth/{provider_id}/poll/{session_id}")
 async def poll_oauth_session(provider_id: str, session_id: str):
-    """轮询 device-code 会话的状态（无需认证 — 只读状态）。"""
+    """Poll a device-code session's status (no auth — read-only state)."""
     with _oauth_sessions_lock:
         sess = _oauth_sessions.get(session_id)
     if not sess:
@@ -1678,7 +1655,7 @@ async def poll_oauth_session(provider_id: str, session_id: str):
 
 @app.delete("/api/providers/oauth/sessions/{session_id}")
 async def cancel_oauth_session(session_id: str, request: Request):
-    """取消待处理的 OAuth 会话。令牌保护。"""
+    """Cancel a pending OAuth session. Token-protected."""
     _require_token(request)
     with _oauth_sessions_lock:
         sess = _oauth_sessions.pop(session_id, None)
@@ -1688,7 +1665,7 @@ async def cancel_oauth_session(session_id: str, request: Request):
 
 
 # ---------------------------------------------------------------------------
-# 会话详情端点
+# Session detail endpoints
 # ---------------------------------------------------------------------------
 
 
@@ -1733,7 +1710,7 @@ async def delete_session_endpoint(session_id: str):
 
 
 # ---------------------------------------------------------------------------
-# 日志查看器端点
+# Log viewer endpoint
 # ---------------------------------------------------------------------------
 
 
@@ -1759,9 +1736,9 @@ async def get_logs(
     except ImportError:
         COMPONENT_PREFIXES = {}
 
-    # 将 "ALL" / "all" / 空值规范化为无过滤器。_matches_filters 将
-    # 空元组视为"必须匹配前缀"（startswith(()) 始终为 False），
-    # 所以传递 () 而非 None 会静默丢弃每一行。
+    # Normalize "ALL" / "all" / empty → no filter. _matches_filters treats an
+    # empty tuple as "must match a prefix" (startswith(()) is always False),
+    # so passing () instead of None silently drops every line.
     min_level = level if level and level.upper() != "ALL" else None
     if component and component.lower() != "all":
         comp_prefixes = COMPONENT_PREFIXES.get(component)
@@ -1781,9 +1758,9 @@ async def get_logs(
         min_level=min_level,
         component_prefixes=comp_prefixes,
     )
-    # 按搜索词进行后过滤（不区分大小写的子串匹配）。
-    # _read_tail 不支持自由文本搜索，所以我们在此过滤，
-    # 然后截取到请求的行数。
+    # Post-filter by search term (case-insensitive substring match).
+    # _read_tail doesn't support free-text search, so we filter here and
+    # trim to the requested line count afterward.
     if search:
         needle = search.lower()
         result = [l for l in result if needle in l.lower()][-min(lines, 500):]
@@ -1791,7 +1768,7 @@ async def get_logs(
 
 
 # ---------------------------------------------------------------------------
-# 定时任务管理端点
+# Cron job management endpoints
 # ---------------------------------------------------------------------------
 
 
@@ -1878,7 +1855,7 @@ async def delete_cron_job(job_id: str):
 
 
 # ---------------------------------------------------------------------------
-# 技能和工具端点
+# Skills & Tools endpoints
 # ---------------------------------------------------------------------------
 
 
@@ -1945,7 +1922,7 @@ async def get_toolsets():
 
 
 # ---------------------------------------------------------------------------
-# 原始 YAML 配置端点
+# Raw YAML config endpoint
 # ---------------------------------------------------------------------------
 
 
@@ -1974,13 +1951,15 @@ async def update_config_raw(body: RawConfigUpdate):
 
 
 # ---------------------------------------------------------------------------
-# 令牌/成本分析端点
+# Token / cost analytics endpoint
 # ---------------------------------------------------------------------------
 
 
 @app.get("/api/analytics/usage")
 async def get_usage_analytics(days: int = 30):
     from hermes_state import SessionDB
+    from agent.insights import InsightsEngine
+
     db = SessionDB()
     try:
         cutoff = time.time() - (days * 86400)
@@ -2020,18 +1999,34 @@ async def get_usage_analytics(days: int = 30):
             FROM sessions WHERE started_at > ?
         """, (cutoff,))
         totals = dict(cur3.fetchone())
+        insights_report = InsightsEngine(db).generate(days=days)
+        skills = insights_report.get("skills", {
+            "summary": {
+                "total_skill_loads": 0,
+                "total_skill_edits": 0,
+                "total_skill_actions": 0,
+                "distinct_skills_used": 0,
+            },
+            "top_skills": [],
+        })
 
-        return {"daily": daily, "by_model": by_model, "totals": totals, "period_days": days}
+        return {
+            "daily": daily,
+            "by_model": by_model,
+            "totals": totals,
+            "period_days": days,
+            "skills": skills,
+        }
     finally:
         db.close()
 
 
 def mount_spa(application: FastAPI):
-    """挂载已构建的 SPA。对客户端路由回退到 index.html。
+    """Mount the built SPA. Falls back to index.html for client-side routing.
 
-    会话令牌通过 ``<script>`` 标签注入到 index.html 中，以便
-    SPA 可以对受保护的 API 端点进行认证，而无需单独的
-    （未认证的）令牌分发端点。
+    The session token is injected into index.html via a ``<script>`` tag so
+    the SPA can authenticate against protected API endpoints without a
+    separate (unauthenticated) token-dispensing endpoint.
     """
     if not WEB_DIST.exists():
         @application.get("/{full_path:path}")
@@ -2045,7 +2040,7 @@ def mount_spa(application: FastAPI):
     _index_path = WEB_DIST / "index.html"
 
     def _serve_index():
-        """返回注入了会话令牌的 index.html。"""
+        """Return index.html with the session token injected."""
         html = _index_path.read_text()
         token_script = (
             f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";</script>'
@@ -2061,7 +2056,7 @@ def mount_spa(application: FastAPI):
     @application.get("/{full_path:path}")
     async def serve_spa(full_path: str):
         file_path = WEB_DIST / full_path
-        # 通过 url 编码序列（%2e%2e/）阻止路径遍历攻击
+        # Prevent path traversal via url-encoded sequences (%2e%2e/)
         if (
             full_path
             and file_path.resolve().is_relative_to(WEB_DIST.resolve())
@@ -2073,11 +2068,11 @@ def mount_spa(application: FastAPI):
 
 
 # ---------------------------------------------------------------------------
-# 仪表盘主题端点
+# Dashboard theme endpoints
 # ---------------------------------------------------------------------------
 
-# 内置仪表盘主题 — 仅标签 + 描述。实际的颜色
-# 定义在前端中（web/src/themes/presets.ts）。
+# Built-in dashboard themes — label + description only.  The actual color
+# definitions live in the frontend (web/src/themes/presets.ts).
 _BUILTIN_DASHBOARD_THEMES = [
     {"name": "default",   "label": "Hermes Teal",  "description": "Classic dark teal — the canonical Hermes look"},
     {"name": "midnight",  "label": "Midnight",      "description": "Deep blue-violet with cool accents"},
@@ -2089,7 +2084,7 @@ _BUILTIN_DASHBOARD_THEMES = [
 
 
 def _discover_user_themes() -> list:
-    """扫描 ~/.hermes/dashboard-themes/*.yaml 查找用户自建主题。"""
+    """Scan ~/.hermes/dashboard-themes/*.yaml for user-created themes."""
     themes_dir = get_hermes_home() / "dashboard-themes"
     if not themes_dir.is_dir():
         return []
@@ -2110,11 +2105,11 @@ def _discover_user_themes() -> list:
 
 @app.get("/api/dashboard/themes")
 async def get_dashboard_themes():
-    """返回可用主题和当前激活的主题。"""
+    """Return available themes and the currently active one."""
     config = load_config()
     active = config.get("dashboard", {}).get("theme", "default")
     user_themes = _discover_user_themes()
-    # 合并内置 + 用户主题，用户主题按名称覆盖内置主题。
+    # Merge built-in + user, user themes override built-in by name.
     seen = set()
     themes = []
     for t in _BUILTIN_DASHBOARD_THEMES:
@@ -2133,7 +2128,7 @@ class ThemeSetBody(BaseModel):
 
 @app.put("/api/dashboard/theme")
 async def set_dashboard_theme(body: ThemeSetBody):
-    """设置活动仪表盘主题（持久化到 config.yaml）。"""
+    """Set the active dashboard theme (persists to config.yaml)."""
     config = load_config()
     if "dashboard" not in config:
         config["dashboard"] = {}
@@ -2143,16 +2138,16 @@ async def set_dashboard_theme(body: ThemeSetBody):
 
 
 # ---------------------------------------------------------------------------
-# 仪表盘插件系统
+# Dashboard plugin system
 # ---------------------------------------------------------------------------
 
 def _discover_dashboard_plugins() -> list:
-    """扫描 plugins/*/dashboard/manifest.json 查找仪表盘扩展。
+    """Scan plugins/*/dashboard/manifest.json for dashboard extensions.
 
-    检查三个插件来源（与 hermes_cli.plugins 一致）：
-    1. 用户插件：    ~/.hermes/plugins/<name>/dashboard/manifest.json
-    2. 捆绑插件：    <repo>/plugins/<name>/dashboard/manifest.json（memory/ 等）
-    3. 项目插件：    ./.hermes/plugins/（仅在 HERMES_ENABLE_PROJECT_PLUGINS 启用时）
+    Checks three plugin sources (same as hermes_cli.plugins):
+    1. User plugins:    ~/.hermes/plugins/<name>/dashboard/manifest.json
+    2. Bundled plugins: <repo>/plugins/<name>/dashboard/manifest.json  (memory/, etc.)
+    3. Project plugins: ./.hermes/plugins/  (only if HERMES_ENABLE_PROJECT_PLUGINS)
     """
     plugins = []
     seen_names: set = set()
@@ -2200,7 +2195,7 @@ def _discover_dashboard_plugins() -> list:
     return plugins
 
 
-# 在每个进程中缓存已发现的插件（通过显式重新扫描刷新）。
+# Cache discovered plugins per-process (refresh on explicit re-scan).
 _dashboard_plugins_cache: Optional[list] = None
 
 
@@ -2213,9 +2208,9 @@ def _get_dashboard_plugins(force_rescan: bool = False) -> list:
 
 @app.get("/api/dashboard/plugins")
 async def get_dashboard_plugins():
-    """返回已发现的仪表盘插件。"""
+    """Return discovered dashboard plugins."""
     plugins = _get_dashboard_plugins()
-    # 发送给前端之前剔除内部字段。
+    # Strip internal fields before sending to frontend.
     return [
         {k: v for k, v in p.items() if not k.startswith("_")}
         for p in plugins
@@ -2224,17 +2219,17 @@ async def get_dashboard_plugins():
 
 @app.get("/api/dashboard/plugins/rescan")
 async def rescan_dashboard_plugins():
-    """强制重新扫描仪表盘插件。"""
+    """Force re-scan of dashboard plugins."""
     plugins = _get_dashboard_plugins(force_rescan=True)
     return {"ok": True, "count": len(plugins)}
 
 
 @app.get("/dashboard-plugins/{plugin_name}/{file_path:path}")
 async def serve_plugin_asset(plugin_name: str, file_path: str):
-    """提供仪表盘插件目录中的静态资源。
+    """Serve static assets from a dashboard plugin directory.
 
-    仅从插件的 ``dashboard/`` 子目录提供文件。
-    通过检查 ``resolve().is_relative_to()`` 阻止路径遍历。
+    Only serves files from the plugin's ``dashboard/`` subdirectory.
+    Path traversal is blocked by checking ``resolve().is_relative_to()``.
     """
     plugins = _get_dashboard_plugins()
     plugin = next((p for p in plugins if p["name"] == plugin_name), None)
@@ -2249,7 +2244,7 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
-    # 推测内容类型
+    # Guess content type
     suffix = target.suffix.lower()
     content_types = {
         ".js": "application/javascript",
@@ -2268,11 +2263,11 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
 
 
 def _mount_plugin_api_routes():
-    """导入并挂载声明了后端 API 路由的插件。
+    """Import and mount backend API routes from plugins that declare them.
 
-    每个插件的 ``api`` 字段指向一个 Python 文件，该文件必须暴露
-    一个 ``router``（FastAPI APIRouter）。路由挂载在
-    ``/api/plugins/<name>/`` 下。
+    Each plugin's ``api`` field points to a Python file that must expose
+    a ``router`` (FastAPI APIRouter).  Routes are mounted under
+    ``/api/plugins/<name>/``.
     """
     for plugin in _get_dashboard_plugins():
         api_file_name = plugin.get("_api_file")
@@ -2300,7 +2295,7 @@ def _mount_plugin_api_routes():
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)
 
 
-# 在 SPA catch-all 之前挂载插件 API 路由。
+# Mount plugin API routes before the SPA catch-all.
 _mount_plugin_api_routes()
 
 mount_spa(app)
@@ -2312,7 +2307,7 @@ def start_server(
     open_browser: bool = True,
     allow_public: bool = False,
 ):
-    """启动 Web UI 服务器。"""
+    """Start the web UI server."""
     import uvicorn
 
     _LOCALHOST = ("127.0.0.1", "localhost", "::1")
@@ -2329,12 +2324,10 @@ def start_server(
         )
 
     if open_browser:
-        import threading
         import webbrowser
 
         def _open():
-            import time as _t
-            _t.sleep(1.0)
+            time.sleep(1.0)
             webbrowser.open(f"http://{host}:{port}")
 
         threading.Thread(target=_open, daemon=True).start()

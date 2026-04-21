@@ -1,13 +1,14 @@
-"""技能和内置提示风格模式的共享斜杠命令辅助工具。
+"""Shared slash command helpers for skills and built-in prompt-style modes.
 
-由 CLI（cli.py）和 gateway（gateway/run.py）共享，
-使两个界面都能通过 /skill-name 命令调用技能，
-以及 /plan 等纯提示风格的内置命令。
+Shared between CLI (cli.py) and gateway (gateway/run.py) so both surfaces
+can invoke skills via /skill-name commands and prompt-only built-ins like
+/plan.
 """
 
 import json
 import logging
 import re
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -18,9 +19,113 @@ logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 _PLAN_SLUG_RE = re.compile(r"[^a-z0-9]+")
-# 用于将技能名称清理为干净的连字符分隔 slug 的模式。
+# Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+
+# Matches ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} tokens in SKILL.md.
+# Tokens that don't resolve (e.g. ${HERMES_SESSION_ID} with no session) are
+# left as-is so the user can debug them.
+_SKILL_TEMPLATE_RE = re.compile(r"\$\{(HERMES_SKILL_DIR|HERMES_SESSION_ID)\}")
+
+# Matches inline shell snippets like:  !`date +%Y-%m-%d`
+# Non-greedy, single-line only — no newlines inside the backticks.
+_INLINE_SHELL_RE = re.compile(r"!`([^`\n]+)`")
+
+# Cap inline-shell output so a runaway command can't blow out the context.
+_INLINE_SHELL_MAX_OUTPUT = 4000
+
+
+def _load_skills_config() -> dict:
+    """Load the ``skills`` section of config.yaml (best-effort)."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        skills_cfg = cfg.get("skills")
+        if isinstance(skills_cfg, dict):
+            return skills_cfg
+    except Exception:
+        logger.debug("Could not read skills config", exc_info=True)
+    return {}
+
+
+def _substitute_template_vars(
+    content: str,
+    skill_dir: Path | None,
+    session_id: str | None,
+) -> str:
+    """Replace ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in skill content.
+
+    Only substitutes tokens for which a concrete value is available —
+    unresolved tokens are left in place so the author can spot them.
+    """
+    if not content:
+        return content
+
+    skill_dir_str = str(skill_dir) if skill_dir else None
+
+    def _replace(match: re.Match) -> str:
+        token = match.group(1)
+        if token == "HERMES_SKILL_DIR" and skill_dir_str:
+            return skill_dir_str
+        if token == "HERMES_SESSION_ID" and session_id:
+            return str(session_id)
+        return match.group(0)
+
+    return _SKILL_TEMPLATE_RE.sub(_replace, content)
+
+
+def _run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
+    """Execute a single inline-shell snippet and return its stdout (trimmed).
+
+    Failures return a short ``[inline-shell error: ...]`` marker instead of
+    raising, so one bad snippet can't wreck the whole skill message.
+    """
+    try:
+        completed = subprocess.run(
+            ["bash", "-c", command],
+            cwd=str(cwd) if cwd else None,
+            capture_output=True,
+            text=True,
+            timeout=max(1, int(timeout)),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return f"[inline-shell timeout after {timeout}s: {command}]"
+    except FileNotFoundError:
+        return f"[inline-shell error: bash not found]"
+    except Exception as exc:
+        return f"[inline-shell error: {exc}]"
+
+    output = (completed.stdout or "").rstrip("\n")
+    if not output and completed.stderr:
+        output = completed.stderr.rstrip("\n")
+    if len(output) > _INLINE_SHELL_MAX_OUTPUT:
+        output = output[:_INLINE_SHELL_MAX_OUTPUT] + "…[truncated]"
+    return output
+
+
+def _expand_inline_shell(
+    content: str,
+    skill_dir: Path | None,
+    timeout: int,
+) -> str:
+    """Replace every !`cmd` snippet in ``content`` with its stdout.
+
+    Runs each snippet with the skill directory as CWD so relative paths in
+    the snippet work the way the author expects.
+    """
+    if "!`" not in content:
+        return content
+
+    def _replace(match: re.Match) -> str:
+        cmd = match.group(1).strip()
+        if not cmd:
+            return ""
+        return _run_inline_shell(cmd, skill_dir, timeout)
+
+    return _INLINE_SHELL_RE.sub(_replace, content)
 
 
 def build_plan_path(
@@ -28,11 +133,12 @@ def build_plan_path(
     *,
     now: datetime | None = None,
 ) -> Path:
-    """返回 /plan 调用的默认工作区相对 markdown 路径。
+    """Return the default workspace-relative markdown path for a /plan invocation.
 
-    故意使用相对路径：文件工具具有任务/后端感知能力，会将其解析为
-    本地、docker、ssh、modal、daytona 及类似终端后端的活跃工作目录。
-    这样计划文件会保存在活跃工作区中，而非 Hermes 主机的全局主目录。
+    Relative paths are intentional: file tools are task/backend-aware and resolve
+    them against the active working directory for local, docker, ssh, modal,
+    daytona, and similar terminal backends. That keeps the plan with the active
+    workspace instead of the Hermes host's global home directory.
     """
     slug_source = (user_instruction or "").strip().splitlines()[0] if user_instruction else ""
     slug = _PLAN_SLUG_RE.sub("-", slug_source.lower()).strip("-")
@@ -44,7 +150,7 @@ def build_plan_path(
 
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
-    """按名称/路径加载技能，返回 (loaded_payload, skill_dir, display_name)。"""
+    """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
     raw_identifier = (skill_identifier or "").strip()
     if not raw_identifier:
         return None
@@ -71,10 +177,10 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
     skill_name = str(loaded_skill.get("name") or normalized)
     skill_path = str(loaded_skill.get("path") or "")
     skill_dir = None
-    # 优先使用 skill_view() 返回的绝对 skill_dir——这对
-    # 本地和外部技能都是正确的。仅在 skill_dir 缺失时
-    # 才回退到旧的 SKILLS_DIR 相对路径重建方式
-    # （例如遗留的 skill_view 响应）。
+    # Prefer the absolute skill_dir returned by skill_view() — this is
+    # correct for both local and external skills.  Fall back to the old
+    # SKILLS_DIR-relative reconstruction only when skill_dir is absent
+    # (e.g. legacy skill_view responses).
     abs_skill_dir = loaded_skill.get("skill_dir")
     if abs_skill_dir:
         skill_dir = Path(abs_skill_dir)
@@ -88,11 +194,12 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
 
 
 def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None:
-    """解析并注入技能声明的配置值到消息部件中。
+    """Resolve and inject skill-declared config values into the message parts.
 
-    如果加载的技能 frontmatter 声明了 ``metadata.hermes.config`` 条目，
-    其当前值（来自 config.yaml 或默认值）会作为 ``[Skill config: ...]`` 块
-    附加到消息中，这样 agent 就能知道配置值而无需自行读取 config.yaml。
+    If the loaded skill's frontmatter declares ``metadata.hermes.config``
+    entries, their current values (from config.yaml or defaults) are appended
+    as a ``[Skill config: ...]`` block so the agent knows the configured values
+    without needing to read config.yaml itself.
     """
     try:
         from agent.skill_utils import (
@@ -101,7 +208,7 @@ def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None
             resolve_skill_config_values,
         )
 
-        # loaded_skill 字典包含原始内容（含 frontmatter）
+        # The loaded_skill dict contains the raw content which includes frontmatter
         raw_content = str(loaded_skill.get("raw_content") or loaded_skill.get("content") or "")
         if not raw_content:
             return
@@ -122,7 +229,7 @@ def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None
         lines.append("]")
         parts.extend(lines)
     except Exception:
-        pass  # 非关键——技能在没有配置注入的情况下仍可加载
+        pass  # Non-critical — skill still loads without config injection
 
 
 def _build_skill_message(
@@ -131,15 +238,37 @@ def _build_skill_message(
     activation_note: str,
     user_instruction: str = "",
     runtime_note: str = "",
+    session_id: str | None = None,
 ) -> str:
-    """将已加载的技能格式化为 user/system 消息负载。"""
+    """Format a loaded skill into a user/system message payload."""
     from tools.skills_tool import SKILLS_DIR
 
     content = str(loaded_skill.get("content") or "")
 
+    # ── Template substitution and inline-shell expansion ──
+    # Done before anything else so downstream blocks (setup notes,
+    # supporting-file hints) see the expanded content.
+    skills_cfg = _load_skills_config()
+    if skills_cfg.get("template_vars", True):
+        content = _substitute_template_vars(content, skill_dir, session_id)
+    if skills_cfg.get("inline_shell", False):
+        timeout = int(skills_cfg.get("inline_shell_timeout", 10) or 10)
+        content = _expand_inline_shell(content, skill_dir, timeout)
+
     parts = [activation_note, "", content.strip()]
 
-    # ── 注入已解析的技能配置值 ──
+    # ── Inject the absolute skill directory so the agent can reference
+    #    bundled scripts without an extra skill_view() round-trip. ──
+    if skill_dir:
+        parts.append("")
+        parts.append(f"[Skill directory: {skill_dir}]")
+        parts.append(
+            "Resolve any relative paths in this skill (e.g. `scripts/foo.js`, "
+            "`templates/config.yaml`) against that directory, then run them "
+            "with the terminal tool using the absolute path."
+        )
+
+    # ── Inject resolved skill config values ──
     _inject_skill_config(loaded_skill, parts)
 
     if loaded_skill.get("setup_skipped"):
@@ -183,14 +312,16 @@ def _build_skill_message(
         try:
             skill_view_target = str(skill_dir.relative_to(SKILLS_DIR))
         except ValueError:
-            # 技能来自外部目录——改用技能名称
+            # Skill is from an external dir — use the skill name instead
             skill_view_target = skill_dir.name
         parts.append("")
-        parts.append("[This skill has supporting files you can load with the skill_view tool:]")
+        parts.append("[This skill has supporting files:]")
         for sf in supporting:
-            parts.append(f"- {sf}")
+            parts.append(f"- {sf}  ->  {skill_dir / sf}")
         parts.append(
-            f'\nTo view any of these, use: skill_view(name="{skill_view_target}", file_path="<path>")'
+            f'\nLoad any of these with skill_view(name="{skill_view_target}", '
+            f'file_path="<path>"), or run scripts directly by absolute path '
+            f"(e.g. `node {skill_dir}/scripts/foo.js`)."
         )
 
     if user_instruction:
@@ -205,10 +336,10 @@ def _build_skill_message(
 
 
 def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
-    """扫描 ~/.hermes/skills/ 并返回 /command -> 技能信息的映射。
+    """Scan ~/.hermes/skills/ and return a mapping of /command -> skill info.
 
     Returns:
-        将 "/skill-name" 映射到 {name, description, skill_md_path, skill_dir} 的字典。
+        Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
     """
     global _skill_commands
     _skill_commands = {}
@@ -218,7 +349,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
 
-        # 先扫描本地目录，然后扫描外部目录
+        # Scan local dir first, then external dirs
         dirs_to_scan = []
         if SKILLS_DIR.exists():
             dirs_to_scan.append(SKILLS_DIR)
@@ -231,13 +362,13 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                 try:
                     content = skill_md.read_text(encoding='utf-8')
                     frontmatter, body = _parse_frontmatter(content)
-                    # 跳过与当前操作系统平台不兼容的技能
+                    # Skip skills incompatible with the current OS platform
                     if not skill_matches_platform(frontmatter):
                         continue
                     name = frontmatter.get('name', skill_md.parent.name)
                     if name in seen_names:
                         continue
-                    # 尊重用户的已禁用技能配置
+                    # Respect user's disabled skills config
                     if name in disabled:
                         continue
                     description = frontmatter.get('description', '')
@@ -248,8 +379,9 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                                 description = line[:80]
                                 break
                     seen_names.add(name)
-                    # 标准化为连字符分隔的 slug，去掉非字母数字字符
-                    # （如 +、/）以避免下游无效的 Telegram 命令名。
+                    # Normalize to hyphen-separated slug, stripping
+                    # non-alnum chars (e.g. +, /) to avoid invalid
+                    # Telegram command names downstream.
                     cmd_name = name.lower().replace(' ', '-').replace('_', '-')
                     cmd_name = _SKILL_INVALID_CHARS.sub('', cmd_name)
                     cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
@@ -269,23 +401,24 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
 
 
 def get_skill_commands() -> Dict[str, Dict[str, Any]]:
-    """返回当前的技能命令映射（如果为空则先扫描）。"""
+    """Return the current skill commands mapping (scan first if empty)."""
     if not _skill_commands:
         scan_skill_commands()
     return _skill_commands
 
 
 def resolve_skill_command_key(command: str) -> Optional[str]:
-    """将用户输入的 /command 解析为其规范的 skill_cmds 键。
+    """Resolve a user-typed /command to its canonical skill_cmds key.
 
-    技能始终以连字符存储——``scan_skill_commands`` 在构建键时将
-    空格和下划线标准化为连字符。连字符和下划线在用户输入中
-    可互换使用：这与 ``_check_unavailable_skill`` 一致，
-    并适应 Telegram 机器人命令名称（不允许连字符，因此
-    ``/claude-code`` 注册为 ``/claude_code`` 并以下划线形式返回）。
+    Skills are always stored with hyphens — ``scan_skill_commands`` normalizes
+    spaces and underscores to hyphens when building the key. Hyphens and
+    underscores are treated interchangeably in user input: this matches
+    ``_check_unavailable_skill`` and accommodates Telegram bot-command names
+    (which disallow hyphens, so ``/claude-code`` is registered as
+    ``/claude_code`` and comes back in the underscored form).
 
-    返回 ``get_skill_commands()`` 中匹配的 ``/slug`` 键，
-    无匹配时返回 ``None``。
+    Returns the matching ``/slug`` key from ``get_skill_commands()`` or
+    ``None`` if no match.
     """
     if not command:
         return None
@@ -299,14 +432,14 @@ def build_skill_invocation_message(
     task_id: str | None = None,
     runtime_note: str = "",
 ) -> Optional[str]:
-    """为技能斜杠命令调用构建用户消息内容。
+    """Build the user message content for a skill slash command invocation.
 
     Args:
-        cmd_key: 包含前导斜杠的命令键（如 "/gif-search"）。
-        user_instruction: 用户在命令后输入的可选文本。
+        cmd_key: The command key including leading slash (e.g., "/gif-search").
+        user_instruction: Optional text the user typed after the command.
 
     Returns:
-        格式化的消息字符串，如果技能未找到则返回 None。
+        The formatted message string, or None if the skill wasn't found.
     """
     commands = get_skill_commands()
     skill_info = commands.get(cmd_key)
@@ -328,6 +461,7 @@ def build_skill_invocation_message(
         activation_note,
         user_instruction=user_instruction,
         runtime_note=runtime_note,
+        session_id=task_id,
     )
 
 
@@ -335,9 +469,9 @@ def build_preloaded_skills_prompt(
     skill_identifiers: list[str],
     task_id: str | None = None,
 ) -> tuple[str, list[str], list[str]]:
-    """加载一个或多个技能用于会话级 CLI 预加载。
+    """Load one or more skills for session-wide CLI preloading.
 
-    返回 (prompt_text, loaded_skill_names, missing_identifiers)。
+    Returns (prompt_text, loaded_skill_names, missing_identifiers).
     """
     prompt_parts: list[str] = []
     loaded_names: list[str] = []
@@ -366,6 +500,7 @@ def build_preloaded_skills_prompt(
                 loaded_skill,
                 skill_dir,
                 activation_note,
+                session_id=task_id,
             )
         )
         loaded_names.append(skill_name)

@@ -1,21 +1,21 @@
-"""CLI 和 gateway /model 命令共享的模型切换逻辑。
+"""Shared model-switching logic for CLI and gateway /model commands.
 
-CLI (cli.py) 和 gateway (gateway/run.py) 的 /model 处理程序
-共享相同的核心流水线：
+Both the CLI (cli.py) and gateway (gateway/run.py) /model handlers
+share the same core pipeline:
 
-  解析标志 -> 别名解析 -> 提供商解析 ->
-  凭证解析 -> 规范化模型名称 ->
-  元数据查找 -> 构建结果
+  parse flags -> alias resolution -> provider resolution ->
+  credential resolution -> normalize model name ->
+  metadata lookup -> build result
 
-本模块整合了以下基础层：
+This module ties together the foundation layers:
 
-- ``agent.models_dev``            -- models.dev 目录, ModelInfo, ProviderInfo
-- ``hermes_cli.providers``        -- 规范提供商身份 + 覆盖层
-- ``hermes_cli.model_normalize``  -- 按提供商格式化名称
+- ``agent.models_dev``            -- models.dev catalog, ModelInfo, ProviderInfo
+- ``hermes_cli.providers``        -- canonical provider identity + overlays
+- ``hermes_cli.model_normalize``  -- per-provider name formatting
 
-提供商切换专门使用 ``--provider`` 标志。
-不使用冒号格式的 ``provider:model`` 语法 — 冒号保留给
-OpenRouter 变体后缀 (``:free``, ``:extended``, ``:fast``)。
+Provider switching uses the ``--provider`` flag exclusively.
+No colon-based ``provider:model`` syntax — colons are reserved for
+OpenRouter variant suffixes (``:free``, ``:extended``, ``:fast``).
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# 非代理模型警告
+# Non-agentic model warning
 # ---------------------------------------------------------------------------
 
 _HERMES_MODEL_WARNING = (
@@ -57,14 +57,14 @@ _HERMES_MODEL_WARNING = (
     "(Claude, GPT, Gemini, DeepSeek, etc.)."
 )
 
-# 仅匹配真正的 Nous Research Hermes 3 / Hermes 4 聊天系列。
-# 之前的子串检查（`"hermes" in name.lower()`）会对无关的本地
-# Modelfile（如 ``hermes-brain:qwen3-14b-ctx16k``）产生误报，
-# 这些模型只是在标签中碰巧包含 "hermes"，但具有完整的工具调用能力。
+# Match only the real Nous Research Hermes 3 / Hermes 4 chat families.
+# The previous substring check (`"hermes" in name.lower()`) false-positived on
+# unrelated local Modelfiles like ``hermes-brain:qwen3-14b-ctx16k`` that just
+# happen to carry "hermes" in their tag but are fully tool-capable.
 #
-# 正则表达式必须匹配的正例：
+# Positive examples the regex must match:
 #   NousResearch/Hermes-3-Llama-3.1-70B, hermes-4-405b, openrouter/hermes3:70b
-# 正则表达式不应匹配的反例：
+# Negative examples it must NOT match:
 #   hermes-brain:qwen3-14b-ctx16k, qwen3:14b, claude-opus-4-6
 _NOUS_HERMES_NON_AGENTIC_RE = re.compile(
     r"(?:^|[/:])hermes[-_ ]?[34](?:[-_.:]|$)",
@@ -73,11 +73,11 @@ _NOUS_HERMES_NON_AGENTIC_RE = re.compile(
 
 
 def is_nous_hermes_non_agentic(model_name: str) -> bool:
-    """当 *model_name* 是真正的 Nous Hermes 3/4 聊天模型时返回 True。
+    """Return True if *model_name* is a real Nous Hermes 3/4 chat model.
 
-    用于决定是否在启动时显示非代理警告。
-    :mod:`cli.py` 和此处的调用者应使用此单一辅助函数，
-    以避免两个位置的逻辑不一致。
+    Used to decide whether to surface the non-agentic warning at startup.
+    Callers in :mod:`cli.py` and here should go through this single helper
+    so the two sites don't drift.
     """
     if not model_name:
         return False
@@ -85,19 +85,19 @@ def is_nous_hermes_non_agentic(model_name: str) -> bool:
 
 
 def _check_hermes_model_warning(model_name: str) -> str:
-    """当 *model_name* 是 Nous Hermes 3/4 聊天模型时返回警告字符串。"""
+    """Return a warning string if *model_name* is a Nous Hermes 3/4 chat model."""
     if is_nous_hermes_non_agentic(model_name):
         return _HERMES_MODEL_WARNING
     return ""
 
 
 # ---------------------------------------------------------------------------
-# 模型别名 -- 短名称 -> (供应商, 系列)，不包含版本号。
-# 根据实时 models.dev 目录动态解析。
+# Model aliases -- short names -> (vendor, family) with NO version numbers.
+# Resolved dynamically against the live models.dev catalog.
 # ---------------------------------------------------------------------------
 
 class ModelIdentity(NamedTuple):
-    """用于目录解析的供应商标识和系列前缀。"""
+    """Vendor slug and family prefix used for catalog resolution."""
     vendor: str
     family: str
 
@@ -155,31 +155,31 @@ MODEL_ALIASES: dict[str, ModelIdentity] = {
 
 
 # ---------------------------------------------------------------------------
-# 直接别名 — 精确的 model+provider+base_url，用于不在
-# models.dev 目录中的端点（如 Ollama Cloud, 本地服务器）。
-# 在目录解析之前检查。格式：
-#   别名 -> (model_id, provider, base_url)
-# 也可以从 config.yaml ``model_aliases:`` 部分加载。
+# Direct aliases — exact model+provider+base_url for endpoints that aren't
+# in the models.dev catalog (e.g. Ollama Cloud, local servers).
+# Checked BEFORE catalog resolution.  Format:
+#   alias -> (model_id, provider, base_url)
+# These can also be loaded from config.yaml ``model_aliases:`` section.
 # ---------------------------------------------------------------------------
 
 class DirectAlias(NamedTuple):
-    """跳过目录解析的精确模型映射。"""
+    """Exact model mapping that bypasses catalog resolution."""
     model: str
     provider: str
     base_url: str
 
 
-# 内置直接别名（可通过 config.yaml model_aliases: 扩展）
+# Built-in direct aliases (can be extended via config.yaml model_aliases:)
 _BUILTIN_DIRECT_ALIASES: dict[str, DirectAlias] = {}
 
-# 合并后的字典（内置 + 用户配置）；由 _load_direct_aliases() 填充
+# Merged dict (builtins + user config); populated by _load_direct_aliases()
 DIRECT_ALIASES: dict[str, DirectAlias] = {}
 
 
 def _load_direct_aliases() -> dict[str, DirectAlias]:
-    """从 config.yaml ``model_aliases:`` 部分加载直接别名。
+    """Load direct aliases from config.yaml ``model_aliases:`` section.
 
-    配置格式::
+    Config format::
 
         model_aliases:
           qwen:
@@ -213,19 +213,19 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
 
 
 def _ensure_direct_aliases() -> None:
-    """首次使用时懒加载直接别名。"""
+    """Lazy-load direct aliases on first use."""
     global DIRECT_ALIASES
     if not DIRECT_ALIASES:
         DIRECT_ALIASES = _load_direct_aliases()
 
 
 # ---------------------------------------------------------------------------
-# 结果数据类
+# Result dataclasses
 # ---------------------------------------------------------------------------
 
 @dataclass
 class ModelSwitchResult:
-    """模型切换尝试的结果。"""
+    """Result of a model switch attempt."""
 
     success: bool
     new_model: str = ""
@@ -245,7 +245,7 @@ class ModelSwitchResult:
 
 @dataclass
 class CustomAutoResult:
-    """切换到裸 'custom' 提供商并自动检测的结果。"""
+    """Result of switching to bare 'custom' provider with auto-detect."""
 
     success: bool
     model: str = ""
@@ -255,15 +255,15 @@ class CustomAutoResult:
 
 
 # ---------------------------------------------------------------------------
-# 标志解析
+# Flag parsing
 # ---------------------------------------------------------------------------
 
 def parse_model_flags(raw_args: str) -> tuple[str, str, bool]:
-    """从 /model 命令参数中解析 --provider 和 --global 标志。
+    """Parse --provider and --global flags from /model command args.
 
-    返回 (model_input, explicit_provider, is_global)。
+    Returns (model_input, explicit_provider, is_global).
 
-    示例::
+    Examples::
 
         "sonnet"                         -> ("sonnet", "", False)
         "sonnet --global"                -> ("sonnet", "", True)
@@ -274,17 +274,17 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool]:
     is_global = False
     explicit_provider = ""
 
-    # 规范化 Unicode 破折号（Telegram/iOS 会自动将 -- 转换为 em/en 破折号）
-    # 标志关键词前的单个 Unicode 破折号变为 "--"
+    # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
+    # A single Unicode dash before a flag keyword becomes "--"
     import re as _re
     raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global)', r'--\1', raw_args)
 
-    # 提取 --global
+    # Extract --global
     if "--global" in raw_args:
         is_global = True
         raw_args = raw_args.replace("--global", "").strip()
 
-    # 提取 --provider <name>
+    # Extract --provider <name>
     parts = raw_args.split()
     i = 0
     filtered: list[str] = []
@@ -301,33 +301,36 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool]:
 
 
 # ---------------------------------------------------------------------------
-# 别名解析
+# Alias resolution
 # ---------------------------------------------------------------------------
 
 def resolve_alias(
     raw_input: str,
     current_provider: str,
 ) -> Optional[tuple[str, str, str]]:
-    """根据当前提供商的目录解析短别名。
+    """Resolve a short alias against the current provider's catalog.
 
-    在 :data:`MODEL_ALIASES` 中查找 *raw_input*，然后在当前提供商的
-    models.dev 目录中搜索 ID 以 ``vendor/family``（或对于非聚合器
-    提供商仅以 ``family``）开头的第一个模型。
+    Looks up *raw_input* in :data:`MODEL_ALIASES`, then searches the
+    current provider's models.dev catalog for the first model whose ID
+    starts with ``vendor/family`` (or just ``family`` for non-aggregator
+    providers).
 
-    返回:
-        如果在当前提供商找到匹配，返回 ``(provider, resolved_model_id, alias_name)``，
-        如果别名不存在或没有可用的匹配模型，返回 ``None``。
+    Returns:
+        ``(provider, resolved_model_id, alias_name)`` if a match is
+        found on the current provider, or ``None`` if the alias doesn't
+        exist or no matching model is available.
     """
     key = raw_input.strip().lower()
 
-    # 首先检查直接别名（精确的 model+provider+base_url 映射）
+    # Check direct aliases first (exact model+provider+base_url mappings)
     _ensure_direct_aliases()
     direct = DIRECT_ALIASES.get(key)
     if direct is not None:
         return (direct.provider, direct.model, key)
 
-    # 反向查找：按模型 ID 匹配，使完整名称（如 "kimi-k2.5",
-    # "glm-4.7"）通过直接别名路由，而不是回退到目录/OpenRouter。
+    # Reverse lookup: match by model ID so full names (e.g. "kimi-k2.5",
+    # "glm-4.7") route through direct aliases instead of falling through
+    # to the catalog/OpenRouter.
     for alias_name, da in DIRECT_ALIASES.items():
         if da.model.lower() == key:
             return (da.provider, da.model, alias_name)
@@ -338,23 +341,23 @@ def resolve_alias(
 
     vendor, family = identity
 
-    # 在提供商的 models.dev 目录中搜索
+    # Search the provider's catalog from models.dev
     catalog = list_provider_models(current_provider)
     if not catalog:
         return None
 
-    # 对于聚合器，模型格式为 vendor/model-name
+    # For aggregators, models are vendor/model-name format
     aggregator = is_aggregator(current_provider)
 
     for model_id in catalog:
         mid_lower = model_id.lower()
         if aggregator:
-            # 匹配 vendor/family 前缀 -- 例如 "anthropic/claude-sonnet"
+            # Match vendor/family prefix -- e.g. "anthropic/claude-sonnet"
             prefix = f"{vendor}/{family}".lower()
             if mid_lower.startswith(prefix):
                 return (current_provider, model_id, key)
         else:
-            # 非聚合器：裸名称 -- 例如 "claude-sonnet-4-6"
+            # Non-aggregator: bare names -- e.g. "claude-sonnet-4-6"
             family_lower = family.lower()
             if mid_lower.startswith(family_lower):
                 return (current_provider, model_id, key)
@@ -367,10 +370,10 @@ def get_authenticated_provider_slugs(
     user_providers: dict = None,
     custom_providers: list | None = None,
 ) -> list[str]:
-    """返回拥有凭证的提供商标识列表。
+    """Return slugs of providers that have credentials.
 
-    使用 ``list_authenticated_providers()``，该函数由 models.dev
-    内存缓存（1 小时 TTL）支持 — 无额外网络开销。
+    Uses ``list_authenticated_providers()`` which is backed by the models.dev
+    in-memory cache (1 hr TTL) — no extra network cost.
     """
     try:
         providers = list_authenticated_providers(
@@ -388,10 +391,10 @@ def _resolve_alias_fallback(
     raw_input: str,
     authenticated_providers: list[str] = (),
 ) -> Optional[tuple[str, str, str]]:
-    """尝试在用户已认证的提供商上解析别名。
+    """Try to resolve an alias on the user's authenticated providers.
 
-    仅当未提供已认证提供商时回退到 ``("openrouter", "nous")``
-    （向后兼容非交互式调用者）。
+    Falls back to ``("openrouter", "nous")`` only when no authenticated
+    providers are supplied (backwards compat for non-interactive callers).
     """
     providers = authenticated_providers or ("openrouter", "nous")
     for provider in providers:
@@ -402,7 +405,7 @@ def _resolve_alias_fallback(
 
 
 # ---------------------------------------------------------------------------
-# 核心模型切换流水线
+# Core model-switching pipeline
 # ---------------------------------------------------------------------------
 
 def switch_model(
@@ -416,42 +419,42 @@ def switch_model(
     user_providers: dict = None,
     custom_providers: list | None = None,
 ) -> ModelSwitchResult:
-    """CLI 和 gateway 共享的核心模型切换流水线。
+    """Core model-switching pipeline shared between CLI and gateway.
 
-    解析链：
+    Resolution chain:
 
-      如果指定了 --provider：
-        a. 通过 resolve_provider_full() 解析提供商
-        b. 解析凭证
-        c. 如果指定了模型，在目标提供商上解析别名或按原样使用
-        d. 如果没有指定模型，从端点自动检测
+      If --provider given:
+        a. Resolve provider via resolve_provider_full()
+        b. Resolve credentials
+        c. If model given, resolve alias on target provider or use as-is
+        d. If no model, auto-detect from endpoint
 
-      如果没有指定 --provider：
-        a. 在当前提供商上尝试别名解析
-        b. 如果别名存在但不在当前提供商上 -> 回退
-        c. 在聚合器上，尝试 vendor/model 格式转换
-        d. 聚合器目录搜索
-        e. detect_provider_for_model() 作为最后手段
-        f. 解析凭证
-        g. 为目标提供商规范化模型名称
+      If no --provider:
+        a. Try alias resolution on current provider
+        b. If alias exists but not on current provider -> fallback
+        c. On aggregator, try vendor/model slug conversion
+        d. Aggregator catalog search
+        e. detect_provider_for_model() as last resort
+        f. Resolve credentials
+        g. Normalize model name for target provider
 
-      最后：
-        h. 从 models.dev 获取完整模型元数据
-        i. 构建结果
+      Finally:
+        h. Get full model metadata from models.dev
+        i. Build result
 
-    参数:
-        raw_input: 模型名称（标志解析后）。
-        current_provider: 当前活跃的提供商。
-        current_model: 当前活跃的模型名称。
-        current_base_url: 当前活跃的基础 URL。
-        current_api_key: 当前活跃的 API 密钥。
-        is_global: 是否持久化切换。
-        explicit_provider: 来自 --provider 标志（空 = 未显式指定提供商）。
-        user_providers: config.yaml 中的 ``providers:`` 字典（用于用户端点）。
-        custom_providers: config.yaml 中的 ``custom_providers:`` 列表。
+    Args:
+        raw_input: The model name (after flag parsing).
+        current_provider: The currently active provider.
+        current_model: The currently active model name.
+        current_base_url: The currently active base URL.
+        current_api_key: The currently active API key.
+        is_global: Whether to persist the switch.
+        explicit_provider: From --provider flag (empty = no explicit provider).
+        user_providers: The ``providers:`` dict from config.yaml (for user endpoints).
+        custom_providers: The ``custom_providers:`` list from config.yaml.
 
-    返回:
-        包含调用者所需全部信息的 ModelSwitchResult。
+    Returns:
+        ModelSwitchResult with all information the caller needs.
     """
     from hermes_cli.models import (
         copilot_model_api_mode,
@@ -466,10 +469,10 @@ def switch_model(
     target_provider = current_provider
 
     # =================================================================
-    # 路径 A：显式指定了 --provider
+    # PATH A: Explicit --provider given
     # =================================================================
     if explicit_provider:
-        # 解析提供商
+        # Resolve the provider
         pdef = resolve_provider_full(
             explicit_provider,
             user_providers,
@@ -481,7 +484,7 @@ def switch_model(
                 f"Check 'hermes model' for available providers, or define it "
                 f"in config.yaml under 'providers:'."
             )
-            # 检查常见的配置问题，这些问题会导致提供商解析失败
+            # Check for common config issues that cause provider resolution failures
             try:
                 from hermes_cli.config import validate_config_structure
                 _cfg_issues = validate_config_structure()
@@ -499,7 +502,7 @@ def switch_model(
 
         target_provider = pdef.id
 
-        # 如果没有指定模型，尝试从端点自动检测
+        # If no model specified, try auto-detect from endpoint
         if not new_model:
             if pdef.base_url:
                 from hermes_cli.runtime_provider import _auto_detect_local_model
@@ -529,16 +532,16 @@ def switch_model(
                     ),
                 )
 
-        # 在目标提供商上解析别名
+        # Resolve alias on the TARGET provider
         alias_result = resolve_alias(new_model, target_provider)
         if alias_result is not None:
             _, new_model, resolved_alias = alias_result
 
     # =================================================================
-    # 路径 B：没有显式指定提供商 — 从模型输入推断
+    # PATH B: No explicit provider — resolve from model input
     # =================================================================
     else:
-        # --- 步骤 a：在当前提供商上尝试别名解析 ---
+        # --- Step a: Try alias resolution on current provider ---
         alias_result = resolve_alias(raw_input, current_provider)
 
         if alias_result is not None:
@@ -548,7 +551,7 @@ def switch_model(
                 resolved_alias, new_model, target_provider,
             )
         else:
-            # --- 步骤 b：别名存在但不在当前提供商上 -> 回退 ---
+            # --- Step b: Alias exists but not on current provider -> fallback ---
             key = raw_input.strip().lower()
             if key in MODEL_ALIASES:
                 authed = get_authenticated_provider_slugs(
@@ -575,22 +578,23 @@ def switch_model(
                         ),
                     )
             else:
-                # --- 步骤 c：在聚合器上，将 vendor:model 转换为 vendor/model ---
-                # 仅在没有斜杠时转换 — 斜杠表示名称已是 vendor/model 格式，
-                # 冒号是变体标签（:free, :extended, :fast），必须保留。
+                # --- Step c: On aggregator, convert vendor:model to vendor/model ---
+                # Only convert when there's no slash — a slash means the name
+                # is already in vendor/model format and the colon is a variant
+                # tag (:free, :extended, :fast) that must be preserved.
                 colon_pos = raw_input.find(":")
                 if colon_pos > 0 and "/" not in raw_input and is_aggregator(current_provider):
                     left = raw_input[:colon_pos].strip().lower()
                     right = raw_input[colon_pos + 1:].strip()
                     if left and right:
-                        # 冒号在聚合器标识中变为斜杠
+                        # Colons become slashes for aggregator slugs
                         new_model = f"{left}/{right}"
                         logger.debug(
                             "Converted vendor:model '%s' to aggregator slug '%s'",
                             raw_input, new_model,
                         )
 
-        # --- 步骤 d：聚合器目录搜索 ---
+        # --- Step d: Aggregator catalog search ---
         if is_aggregator(target_provider) and not resolved_alias:
             catalog = list_provider_models(target_provider)
             if catalog:
@@ -607,7 +611,7 @@ def switch_model(
                                 new_model = mid
                                 break
 
-        # --- 步骤 e：detect_provider_for_model() 作为最后手段 ---
+        # --- Step e: detect_provider_for_model() as last resort ---
         _base = current_base_url or ""
         is_custom = current_provider in ("custom", "local") or (
             "localhost" in _base or "127.0.0.1" in _base
@@ -623,7 +627,7 @@ def switch_model(
                 target_provider, new_model = detected
 
     # =================================================================
-    # 公共路径：解析凭证、规范化名称、获取元数据
+    # COMMON PATH: Resolve credentials, normalize, get metadata
     # =================================================================
 
     provider_changed = target_provider != current_provider
@@ -637,7 +641,7 @@ def switch_model(
         if custom_pdef is not None:
             provider_label = custom_pdef.name
 
-    # --- 解析凭证 ---
+    # --- Resolve credentials ---
     api_key = current_api_key
     base_url = current_base_url
     api_mode = ""
@@ -668,7 +672,7 @@ def switch_model(
         except Exception:
             pass
 
-    # --- 直接别名覆盖：如果别名设置了 base_url 则使用精确值 ---
+    # --- Direct alias override: use exact base_url from the alias if set ---
     if resolved_alias:
         _ensure_direct_aliases()
         _da = DIRECT_ALIASES.get(resolved_alias)
@@ -677,10 +681,10 @@ def switch_model(
             if not api_key:
                 api_key = "no-key-required"
 
-    # --- 为目标提供商规范化模型名称 ---
+    # --- Normalize model name for target provider ---
     new_model = normalize_model_for_provider(new_model, target_provider)
 
-    # --- 验证 ---
+    # --- Validate ---
     try:
         validation = validate_requested_model(
             new_model,
@@ -688,12 +692,12 @@ def switch_model(
             api_key=api_key,
             base_url=base_url,
         )
-    except Exception:
+    except Exception as e:
         validation = {
-            "accepted": True,
-            "persist": True,
+            "accepted": False,
+            "persist": False,
             "recognized": False,
-            "message": None,
+            "message": f"Could not validate `{new_model}`: {e}",
         }
 
     if not validation.get("accepted"):
@@ -707,30 +711,30 @@ def switch_model(
             error_message=msg,
         )
 
-    # 如果验证找到了更接近的匹配，应用自动修正
+    # Apply auto-correction if validation found a closer match
     if validation.get("corrected_model"):
         new_model = validation["corrected_model"]
 
-    # --- Copilot api_mode 覆盖 ---
+    # --- Copilot api_mode override ---
     if target_provider in {"copilot", "github-copilot"}:
         api_mode = copilot_model_api_mode(new_model, api_key=api_key)
 
-    # --- OpenCode api_mode 覆盖 ---
+    # --- OpenCode api_mode override ---
     if target_provider in {"opencode-zen", "opencode-go", "opencode"}:
         api_mode = opencode_model_api_mode(target_provider, new_model)
 
-    # --- 如果尚未设置则确定 api_mode ---
+    # --- Determine api_mode if not already set ---
     if not api_mode:
         api_mode = determine_api_mode(target_provider, base_url)
 
-    # OpenCode 基础 URL 以 /v1 结尾用于 OpenAI 兼容模型，但
-    # Anthropic SDK 会在 base_url 前添加自己的 /v1/messages。去掉
-    # 末尾的 /v1，这样 SDK 才能构建正确的路径（例如
-    # https://opencode.ai/zen/go/v1/messages 而不是 .../v1/v1/messages）。
-    # 与 hermes_cli.runtime_provider.resolve_runtime_provider 中的相同逻辑一致；
-    # 如果不这样做，/model 切换到 anthropic_messages 路由的 OpenCode
-    # 模型（例如在 opencode-go 上 `/model minimax-m2.7`，在 opencode-zen
-    # 上 `/model claude-sonnet-4-6`）会命中双重 /v1 并返回 OpenCode 网站的 404 页面。
+    # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
+    # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the
+    # trailing /v1 so the SDK constructs the correct path (e.g.
+    # https://opencode.ai/zen/go/v1/messages instead of .../v1/v1/messages).
+    # Mirrors the same logic in hermes_cli.runtime_provider.resolve_runtime_provider;
+    # without it, /model switches into an anthropic_messages-routed OpenCode
+    # model (e.g. `/model minimax-m2.7` on opencode-go, `/model claude-sonnet-4-6`
+    # on opencode-zen) hit a double /v1 and returned OpenCode's website 404 page.
     if (
         api_mode == "anthropic_messages"
         and target_provider in {"opencode-zen", "opencode-go"}
@@ -739,13 +743,13 @@ def switch_model(
     ):
         base_url = re.sub(r"/v1/?$", "", base_url)
 
-    # --- 获取能力信息（旧版） ---
+    # --- Get capabilities (legacy) ---
     capabilities = get_model_capabilities(target_provider, new_model)
 
-    # --- 从 models.dev 获取完整模型信息 ---
+    # --- Get full model info from models.dev ---
     model_info = get_model_info(target_provider, new_model)
 
-    # --- 收集警告 ---
+    # --- Collect warnings ---
     warnings: list[str] = []
     if validation.get("message"):
         warnings.append(validation["message"])
@@ -753,7 +757,7 @@ def switch_model(
     if hermes_warn:
         warnings.append(hermes_warn)
 
-    # --- 构建结果 ---
+    # --- Build result ---
     return ModelSwitchResult(
         success=True,
         new_model=new_model,
@@ -772,7 +776,7 @@ def switch_model(
 
 
 # ---------------------------------------------------------------------------
-# 已认证提供商列表（用于 /model 无参数时的显示）
+# Authenticated providers listing (for /model no-args display)
 # ---------------------------------------------------------------------------
 
 def list_authenticated_providers(
@@ -781,22 +785,22 @@ def list_authenticated_providers(
     custom_providers: list | None = None,
     max_models: int = 8,
 ) -> List[dict]:
-    """检测哪些提供商有凭证，并列出其精选模型。
+    """Detect which providers have credentials and list their curated models.
 
-    使用 hermes_cli/models.py 中的精选模型列表（OPENROUTER_MODELS,
-    _PROVIDER_MODELS）— 不是完整的 models.dev 目录。这些是精心挑选的
-    适合作为代理后端的代理模型。
+    Uses the curated model lists from hermes_cli/models.py (OPENROUTER_MODELS,
+    _PROVIDER_MODELS) — NOT the full models.dev catalog.  These are hand-picked
+    agentic models that work well as agent backends.
 
-    返回一个字典列表，每个字典包含：
-      - slug: str — 要使用的 --provider 值
-      - name: str — 显示名称
+    Returns a list of dicts, each with:
+      - slug: str — the --provider value to use
+      - name: str — display name
       - is_current: bool
       - is_user_defined: bool
-      - models: list[str] — 精选模型 ID（最多 max_models 个）
-      - total_models: int — 精选总数
+      - models: list[str] — curated model IDs (up to max_models)
+      - total_models: int — total curated count
       - source: str — "built-in", "models.dev", "user-config"
 
-    仅包含设置了 API 密钥或为用户自定义端点的提供商。
+    Only includes providers that have API keys set or are user-defined endpoints.
     """
     import os
     from agent.models_dev import (
@@ -808,36 +812,36 @@ def list_authenticated_providers(
     from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS
 
     results: List[dict] = []
-    seen_slugs: set = set()  # 小写规范化以捕获大小写变体 (#9545)
-    seen_mdev_ids: set = set()  # 防止别名的重复条目（如 kimi-coding + kimi-coding-cn）
+    seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
+    seen_mdev_ids: set = set()  # prevent duplicate entries for aliases (e.g. kimi-coding + kimi-coding-cn)
 
     data = fetch_models_dev()
 
-    # 构建以 hermes 提供商 ID 为键的精选模型列表
+    # Build curated model lists keyed by hermes provider ID
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
     curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
-    # "nous" 如果没有单独定义则共享 OpenRouter 的精选列表
+    # "nous" shares OpenRouter's curated list if not separately defined
     if "nous" not in curated:
         curated["nous"] = curated["openrouter"]
-    # Ollama Cloud 使用动态发现（没有静态精选列表）
+    # Ollama Cloud uses dynamic discovery (no static curated list)
     if "ollama-cloud" not in curated:
         from hermes_cli.models import fetch_ollama_cloud_models
         curated["ollama-cloud"] = fetch_ollama_cloud_models()
 
-    # --- 1. 检查 Hermes 映射的提供商 ---
+    # --- 1. Check Hermes-mapped providers ---
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
-        # 跳过映射到同一 models.dev 提供商的别名（如
-        # kimi-coding 和 kimi-coding-cn 都映射到 kimi-for-coding）。
-        # 第一个有有效凭证的获胜 (#10526)。
+        # Skip aliases that map to the same models.dev provider (e.g.
+        # kimi-coding and kimi-coding-cn both → kimi-for-coding).
+        # The first one with valid credentials wins (#10526).
         if mdev_id in seen_mdev_ids:
             continue
         pdata = data.get(mdev_id)
         if not isinstance(pdata, dict):
             continue
 
-        # 优先使用 auth.py 的 PROVIDER_REGISTRY 获取环境变量名称 — 这是我们的
-        # 权威来源。models.dev 可能有错误的映射（如
-        # minimax-cn → MINIMAX_API_KEY 而不是 MINIMAX_CN_API_KEY）。
+        # Prefer auth.py PROVIDER_REGISTRY for env var names — it's our
+        # source of truth.  models.dev can have wrong mappings (e.g.
+        # minimax-cn → MINIMAX_API_KEY instead of MINIMAX_CN_API_KEY).
         pconfig = PROVIDER_REGISTRY.get(hermes_id)
         if pconfig and pconfig.api_key_env_vars:
             env_vars = list(pconfig.api_key_env_vars)
@@ -846,12 +850,12 @@ def list_authenticated_providers(
             if not isinstance(env_vars, list):
                 continue
 
-        # 检查是否有任何环境变量被设置
+        # Check if any env var is set
         has_creds = any(os.environ.get(ev) for ev in env_vars)
         if not has_creds:
             continue
 
-        # 使用精选列表，如果没有精选列表则回退到 models.dev
+        # Use curated list, falling back to models.dev if no curated list
         model_ids = curated.get(hermes_id, [])
         total = len(model_ids)
         top = model_ids[:max_models]
@@ -872,29 +876,29 @@ def list_authenticated_providers(
         seen_slugs.add(slug.lower())
         seen_mdev_ids.add(mdev_id)
 
-    # --- 2. 检查仅 Hermes 的提供商（nous, openai-codex, copilot, opencode-go）---
+    # --- 2. Check Hermes-only providers (nous, openai-codex, copilot, opencode-go) ---
     from hermes_cli.providers import HERMES_OVERLAYS
     from hermes_cli.auth import PROVIDER_REGISTRY as _auth_registry
 
-    # 构建反向映射：models.dev ID → Hermes 提供商 ID。
-    # HERMES_OVERLAYS 键可能是 models.dev ID（如 "github-copilot"）
-    # 而 _PROVIDER_MODELS 和 config.yaml 使用 Hermes ID（"copilot"）。
+    # Build reverse mapping: models.dev ID → Hermes provider ID.
+    # HERMES_OVERLAYS keys may be models.dev IDs (e.g. "github-copilot")
+    # while _PROVIDER_MODELS and config.yaml use Hermes IDs ("copilot").
     _mdev_to_hermes = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
 
     for pid, overlay in HERMES_OVERLAYS.items():
         if pid.lower() in seen_slugs:
             continue
 
-        # 解析 Hermes slug — 如 "github-copilot" → "copilot"
+        # Resolve Hermes slug — e.g. "github-copilot" → "copilot"
         hermes_slug = _mdev_to_hermes.get(pid, pid)
         if hermes_slug.lower() in seen_slugs:
             continue
 
-        # 检查凭证是否存在
+        # Check if credentials exist
         has_creds = False
         if overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
-        # 也检查 PROVIDER_REGISTRY 中 api_key 认证类型的 api_key_env_vars
+        # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type
         if not has_creds and overlay.auth_type == "api_key":
             for _key in (pid, hermes_slug):
                 pcfg = _auth_registry.get(_key)
@@ -902,10 +906,10 @@ def list_authenticated_providers(
                     if any(os.environ.get(ev) for ev in pcfg.api_key_env_vars):
                         has_creds = True
                         break
-        # 检查认证存储和凭证池中非环境变量的凭证。
-        # 这适用于 OAuth 提供商以及同时支持 OAuth 的 api_key 提供商
-        # （如 anthropic 同时支持 API 密钥和通过外部凭证文件的
-        # Claude Code OAuth）。
+        # Check auth store and credential pool for non-env-var credentials.
+        # This applies to OAuth providers AND api_key providers that also
+        # support OAuth (e.g. anthropic supports both API key and Claude Code
+        # OAuth via external credential files).
         if not has_creds:
             try:
                 from hermes_cli.auth import _load_auth_store
@@ -919,10 +923,10 @@ def list_authenticated_providers(
                     has_creds = True
             except Exception as exc:
                 logger.debug("Auth store check failed for %s: %s", pid, exc)
-        # 回退：使用完整的自动播种检查凭证池。
-        # 这可以捕获存在于外部存储中的凭证（如
-        # Codex CLI 的 ~/.codex/auth.json），这些凭证由
-        # _seed_from_singletons() 按需导入，但尚未在原始 auth.json 中。
+        # Fallback: check the credential pool with full auto-seeding.
+        # This catches credentials that exist in external stores (e.g.
+        # Codex CLI ~/.codex/auth.json) which _seed_from_singletons()
+        # imports on demand but aren't in the raw auth.json yet.
         if not has_creds:
             try:
                 from agent.credential_pool import load_pool
@@ -931,11 +935,13 @@ def list_authenticated_providers(
                     has_creds = True
             except Exception as exc:
                 logger.debug("Credential pool check failed for %s: %s", hermes_slug, exc)
-        # 回退：直接检查外部凭证文件。
-        # 凭证池会通过 is_provider_explicitly_configured() 来限制 anthropic，
-        # 以防止辅助任务静默消耗 Claude Code 令牌（PR #4210）。
-        # 但 /model 选择器是面向发现的 — 我们希望显示
-        # 用户可以切换到的提供商，即使它们当前未配置。
+        # Fallback: check external credential files directly.
+        # The credential pool gates anthropic behind
+        # is_provider_explicitly_configured() to prevent auxiliary tasks
+        # from silently consuming Claude Code tokens (PR #4210).
+        # But the /model picker is discovery-oriented — we WANT to show
+        # providers the user can switch to, even if they aren't currently
+        # configured.
         if not has_creds and hermes_slug == "anthropic":
             try:
                 from agent.anthropic_adapter import (
@@ -952,7 +958,7 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # 使用精选列表 — 先按 Hermes slug 查找，回退到 overlay 键
+        # Use curated list — look up by Hermes slug, fall back to overlay key
         model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
         total = len(model_ids)
         top = model_ids[:max_models]
@@ -969,10 +975,10 @@ def list_authenticated_providers(
         seen_slugs.add(pid.lower())
         seen_slugs.add(hermes_slug.lower())
 
-    # --- 2b. 交叉检查规范提供商列表 ---
-    # 捕获在 CANONICAL_PROVIDERS 中但未在 PROVIDER_TO_MODELS_DEV
-    # 或 HERMES_OVERLAYS 中找到的提供商（保持 /model 与
-    # `hermes model` 同步）。
+    # --- 2b. Cross-check canonical provider list ---
+    # Catches providers that are in CANONICAL_PROVIDERS but weren't found
+    # in PROVIDER_TO_MODELS_DEV or HERMES_OVERLAYS (keeps /model in sync
+    # with `hermes model`).
     try:
         from hermes_cli.models import CANONICAL_PROVIDERS as _canon_provs
     except ImportError:
@@ -982,12 +988,12 @@ def list_authenticated_providers(
         if _cp.slug.lower() in seen_slugs:
             continue
 
-        # 通过 PROVIDER_REGISTRY (auth.py) 检查凭证
+        # Check credentials via PROVIDER_REGISTRY (auth.py)
         _cp_config = _auth_registry.get(_cp.slug)
         _cp_has_creds = False
         if _cp_config and _cp_config.api_key_env_vars:
             _cp_has_creds = any(os.environ.get(ev) for ev in _cp_config.api_key_env_vars)
-        # 也检查认证存储和凭证池
+        # Also check auth store and credential pool
         if not _cp_has_creds:
             try:
                 from hermes_cli.auth import _load_auth_store
@@ -1028,28 +1034,56 @@ def list_authenticated_providers(
         })
         seen_slugs.add(_cp.slug.lower())
 
-    # --- 3. 配置中用户自定义的端点 ---
+    # --- 3. User-defined endpoints from config ---
+    # Track (name, base_url) of what section 3 emits so section 4 can skip
+    # any overlapping ``custom_providers:`` entries.  Callers typically pass
+    # both (gateway/CLI invoke ``get_compatible_custom_providers()`` which
+    # merges ``providers:`` into the list) — without this, the same endpoint
+    # produces two picker rows: one bare-slug ("openrouter") from section 3
+    # and one "custom:openrouter" from section 4, both labelled identically.
+    _section3_emitted_pairs: set = set()
     if user_providers and isinstance(user_providers, dict):
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):
                 continue
+            # Skip if this slug was already emitted (e.g. canonical provider
+            # with the same name) or will be picked up by section 4.
+            if ep_name.lower() in seen_slugs:
+                continue
             display_name = ep_cfg.get("name", "") or ep_name
-            api_url = ep_cfg.get("api", "") or ep_cfg.get("url", "") or ""
-            default_model = ep_cfg.get("default_model", "")
+            # ``base_url`` is Hermes's canonical write key (matches
+            # custom_providers and _save_custom_provider); ``api`` / ``url``
+            # remain as fallbacks for hand-edited / legacy configs.
+            api_url = (
+                ep_cfg.get("base_url", "")
+                or ep_cfg.get("api", "")
+                or ep_cfg.get("url", "")
+                or ""
+            )
+            # ``default_model`` is the legacy key; ``model`` matches what
+            # custom_providers entries use, so accept either.
+            default_model = ep_cfg.get("default_model", "") or ep_cfg.get("model", "")
 
-            # 从 default_model 和完整 models 数组构建模型列表
+            # Build models list from both default_model and full models array
             models_list = []
             if default_model:
                 models_list.append(default_model)
-            # 也包含配置中的完整模型列表
+            # Also include the full models list from config.
+            # Hermes writes ``models:`` as a dict keyed by model id
+            # (see hermes_cli/main.py::_save_custom_provider); older
+            # configs or hand-edited files may still use a list.
             cfg_models = ep_cfg.get("models", [])
-            if isinstance(cfg_models, list):
+            if isinstance(cfg_models, dict):
+                for m in cfg_models:
+                    if m and m not in models_list:
+                        models_list.append(m)
+            elif isinstance(cfg_models, list):
                 for m in cfg_models:
                     if m and m not in models_list:
                         models_list.append(m)
 
-            # 如果设置了 URL，尝试探测 /v1/models（但不阻塞）
-            # 目前只显示配置中已知的内容
+            # Try to probe /v1/models if URL is set (but don't block on it)
+            # For now just show what we know from config
             results.append({
                 "slug": ep_name,
                 "name": display_name,
@@ -1060,15 +1094,23 @@ def list_authenticated_providers(
                 "source": "user-config",
                 "api_url": api_url,
             })
+            seen_slugs.add(ep_name.lower())
+            seen_slugs.add(custom_provider_slug(display_name).lower())
+            _pair = (
+                str(display_name).strip().lower(),
+                str(api_url).strip().rstrip("/").lower(),
+            )
+            if _pair[0] and _pair[1]:
+                _section3_emitted_pairs.add(_pair)
 
-    # --- 4. 配置中保存的自定义提供商 ---
-    # 每个 ``custom_providers`` 条目代表一个命名提供商下的一个模型。
-    # 共享相同提供商名称的条目被分组到单个选择器行中，
-    # 这样例如四个 Ollama Cloud 条目
-    # (qwen3-coder, glm-5.1, kimi-k2, minimax-m2.7) 会显示为一个
-    # "Ollama Cloud" 行，包含四个模型，而不是四个重复的
-    # "Ollama Cloud" 行。具有不同提供商名称的条目
-    # 仍然产生单独的行（如 Ollama Cloud vs Moonshot）。
+    # --- 4. Saved custom providers from config ---
+    # Each ``custom_providers`` entry represents one model under a named
+    # provider. Entries sharing the same provider name are grouped into a
+    # single picker row so that e.g. four Ollama Cloud entries
+    # (qwen3-coder, glm-5.1, kimi-k2, minimax-m2.7) appear as one
+    # "Ollama Cloud" row with four models inside instead of four
+    # duplicate "Ollama Cloud" rows. Entries with distinct provider names
+    # still produce separate rows (e.g. Ollama Cloud vs Moonshot).
     if custom_providers and isinstance(custom_providers, list):
         from collections import OrderedDict
 
@@ -1094,12 +1136,40 @@ def list_authenticated_providers(
                     "api_url": api_url,
                     "models": [],
                 }
+            # The singular ``model:`` field only holds the currently
+            # active model. Hermes's own writer (main.py::_save_custom_provider)
+            # stores every configured model as a dict under ``models:``;
+            # downstream readers (agent/models_dev.py, gateway/run.py,
+            # run_agent.py, hermes_cli/config.py) already consume that dict.
+            # The /model picker previously ignored it, so multi-model
+            # custom providers appeared to have only the active model.
             default_model = (entry.get("model") or "").strip()
             if default_model and default_model not in groups[slug]["models"]:
                 groups[slug]["models"].append(default_model)
 
+            cfg_models = entry.get("models", {})
+            if isinstance(cfg_models, dict):
+                for m in cfg_models:
+                    if m and m not in groups[slug]["models"]:
+                        groups[slug]["models"].append(m)
+            elif isinstance(cfg_models, list):
+                for m in cfg_models:
+                    if m and m not in groups[slug]["models"]:
+                        groups[slug]["models"].append(m)
+
         for slug, grp in groups.items():
             if slug.lower() in seen_slugs:
+                continue
+            # Skip if section 3 already emitted this endpoint under its
+            # ``providers:`` dict key — matches on (display_name, base_url),
+            # the tuple section 4 groups by.  Prevents two picker rows
+            # labelled identically when callers pass both ``user_providers``
+            # and a compatibility-merged ``custom_providers`` list.
+            _pair_key = (
+                str(grp["name"]).strip().lower(),
+                str(grp["api_url"]).strip().rstrip("/").lower(),
+            )
+            if _pair_key[0] and _pair_key[1] and _pair_key in _section3_emitted_pairs:
                 continue
             results.append({
                 "slug": slug,
@@ -1113,7 +1183,7 @@ def list_authenticated_providers(
             })
             seen_slugs.add(slug.lower())
 
-    # 排序：当前提供商优先，然后按模型数量降序
+    # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results

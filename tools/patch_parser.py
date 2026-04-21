@@ -290,10 +290,16 @@ def _validate_operations(
                 )
                 if count == 0:
                     label = f"'{hunk.context_hint}'" if hunk.context_hint else "(no hint)"
-                    errors.append(
+                    msg = (
                         f"{op.file_path}: hunk {label} not found"
                         + (f" — {match_error}" if match_error else "")
                     )
+                    try:
+                        from tools.fuzzy_match import format_no_match_hint
+                        msg += format_no_match_hint(match_error, count, search_pattern, simulated)
+                    except Exception:
+                        pass
+                    errors.append(msg)
                 else:
                     # 推进模拟状态，使后续 hunk 正确验证。
                     # 复用上面调用的结果——无需第二次模糊匹配。
@@ -536,7 +542,13 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
                             error = None
                 
                 if error:
-                    return False, f"Could not apply hunk: {error}"
+                    err_msg = f"Could not apply hunk: {error}"
+                    try:
+                        from tools.fuzzy_match import format_no_match_hint
+                        err_msg += format_no_match_hint(error, 0, search_pattern, new_content)
+                    except Exception:
+                        pass
+                    return False, err_msg
         else:
             # 纯添加 hunk（无上下文或删除行）。
             # 在上下文提示指示的位置插入，或在文件末尾插入。

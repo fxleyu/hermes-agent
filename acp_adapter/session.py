@@ -1,9 +1,10 @@
-"""ACP 会话管理器 -- 将 ACP 会话映射到 Hermes AIAgent 实例。
+"""ACP session manager — maps ACP sessions to Hermes AIAgent instances.
 
-会话持久化到共享的 SessionDB（``~/.hermes/state.db``），使其
-在进程重启后存活，并可通过 ``session_search`` 搜索。当编辑器
-在空闲/重启后重新连接时，``load_session`` / ``resume_session`` 调用
-会在数据库中找到持久化的会话并恢复完整的对话历史。
+Sessions are persisted to the shared SessionDB (``~/.hermes/state.db``) so they
+survive process restarts and appear in ``session_search``.  When the editor
+reconnects after idle/restart, the ``load_session`` / ``resume_session`` calls
+find the persisted session in the database and restore the full conversation
+history.
 """
 from __future__ import annotations
 
@@ -12,8 +13,12 @@ from hermes_constants import get_hermes_home
 import copy
 import json
 import logging
+import os
+import re
 import sys
+import time
 import uuid
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any, Dict, List, Optional
@@ -21,11 +26,69 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-def _acp_stderr_print(*args, **kwargs) -> None:
-    """ACP stdio 会话的尽力而为的人类可读输出接收器。
+def _normalize_cwd_for_compare(cwd: str | None) -> str:
+    raw = str(cwd or ".").strip()
+    if not raw:
+        raw = "."
+    expanded = os.path.expanduser(raw)
 
-    ACP 保留 stdout 用于 JSON-RPC 帧，因此 AIAgent 的任何附带
-    CLI/状态输出都必须从 stdout 重定向。将其路由到 stderr。
+    # Normalize Windows drive paths into the equivalent WSL mount form so
+    # ACP history filters match the same workspace across Windows and WSL.
+    match = re.match(r"^([A-Za-z]):[\\/](.*)$", expanded)
+    if match:
+        drive = match.group(1).lower()
+        tail = match.group(2).replace("\\", "/")
+        expanded = f"/mnt/{drive}/{tail}"
+    elif re.match(r"^/mnt/[A-Za-z]/", expanded):
+        expanded = f"/mnt/{expanded[5].lower()}/{expanded[7:]}"
+
+    return os.path.normpath(expanded)
+
+
+def _build_session_title(title: Any, preview: Any, cwd: str | None) -> str:
+    explicit = str(title or "").strip()
+    if explicit:
+        return explicit
+    preview_text = str(preview or "").strip()
+    if preview_text:
+        return preview_text
+    leaf = os.path.basename(str(cwd or "").rstrip("/\\"))
+    return leaf or "New thread"
+
+
+def _format_updated_at(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip():
+        return value
+    try:
+        return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
+def _updated_at_sort_key(value: Any) -> float:
+    if value is None:
+        return float("-inf")
+    if isinstance(value, (int, float)):
+        return float(value)
+    raw = str(value).strip()
+    if not raw:
+        return float("-inf")
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        try:
+            return float(raw)
+        except Exception:
+            return float("-inf")
+
+
+def _acp_stderr_print(*args, **kwargs) -> None:
+    """Best-effort human-readable output sink for ACP stdio sessions.
+
+    ACP reserves stdout for JSON-RPC frames, so any incidental CLI/status output
+    from AIAgent must be redirected away from stdout. Route it to stderr instead.
     """
     kwargs = dict(kwargs)
     kwargs.setdefault("file", sys.stderr)
@@ -33,7 +96,7 @@ def _acp_stderr_print(*args, **kwargs) -> None:
 
 
 def _register_task_cwd(task_id: str, cwd: str) -> None:
-    """将任务/会话 ID 绑定到编辑器的工作目录，供工具使用。"""
+    """Bind a task/session id to the editor's working directory for tools."""
     if not task_id:
         return
     try:
@@ -44,7 +107,7 @@ def _register_task_cwd(task_id: str, cwd: str) -> None:
 
 
 def _clear_task_cwd(task_id: str) -> None:
-    """移除 ACP 会话的任务特定 cwd 覆盖。"""
+    """Remove task-specific cwd overrides for an ACP session."""
     if not task_id:
         return
     try:
@@ -56,7 +119,7 @@ def _clear_task_cwd(task_id: str) -> None:
 
 @dataclass
 class SessionState:
-    """跟踪 ACP 管理的 Hermes 代理的每会话状态。"""
+    """Tracks per-session state for an ACP-managed Hermes agent."""
 
     session_id: str
     agent: Any  # AIAgent instance
@@ -67,31 +130,31 @@ class SessionState:
 
 
 class SessionManager:
-    """由 Hermes AIAgent 实例支持的线程安全 ACP 会话管理器。
+    """Thread-safe manager for ACP sessions backed by Hermes AIAgent instances.
 
-    会话在内存中保持以便快速访问，**同时**持久化到
-    共享的 SessionDB，使其在进程重启后存活并可通过
-    ``session_search`` 搜索。
+    Sessions are held in-memory for fast access **and** persisted to the
+    shared SessionDB so they survive process restarts and are searchable
+    via ``session_search``.
     """
 
     def __init__(self, agent_factory=None, db=None):
         """
         Args:
-            agent_factory: 可选的可调用对象，用于创建类似 AIAgent 的对象。
-                           用于测试。省略时使用当前 Hermes 运行时提供商配置
-                           创建真实的 AIAgent。
-            db:            可选的 SessionDB 实例。省略时延迟创建默认的
-                           SessionDB（``~/.hermes/state.db``）。
+            agent_factory: Optional callable that creates an AIAgent-like object.
+                           Used by tests. When omitted, a real AIAgent is created
+                           using the current Hermes runtime provider configuration.
+            db:            Optional SessionDB instance. When omitted, the default
+                           SessionDB (``~/.hermes/state.db``) is lazily created.
         """
         self._sessions: Dict[str, SessionState] = {}
         self._lock = Lock()
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
 
-    # ---- 公共 API ---------------------------------------------------------
+    # ---- public API ---------------------------------------------------------
 
     def create_session(self, cwd: str = ".") -> SessionState:
-        """使用唯一 ID 和全新的 AIAgent 创建新会话。"""
+        """Create a new session with a unique ID and a fresh AIAgent."""
         import threading
 
         session_id = str(uuid.uuid4())
@@ -111,20 +174,20 @@ class SessionManager:
         return state
 
     def get_session(self, session_id: str) -> Optional[SessionState]:
-        """返回 *session_id* 对应的会话，如果不存在则返回 ``None``。
+        """Return the session for *session_id*, or ``None``.
 
-        如果会话不在内存中但存在于数据库中（例如进程重启后），
-        将透明地恢复该会话。
+        If the session is not in memory but exists in the database (e.g. after
+        a process restart), it is transparently restored.
         """
         with self._lock:
             state = self._sessions.get(session_id)
         if state is not None:
             return state
-        # 尝试从数据库恢复。
+        # Attempt to restore from database.
         return self._restore(session_id)
 
     def remove_session(self, session_id: str) -> bool:
-        """从内存和数据库中移除会话。如果存在则返回 True。"""
+        """Remove a session from memory and database. Returns True if it existed."""
         with self._lock:
             existed = self._sessions.pop(session_id, None) is not None
         db_existed = self._delete_persisted(session_id)
@@ -133,7 +196,7 @@ class SessionManager:
         return existed or db_existed
 
     def fork_session(self, session_id: str, cwd: str = ".") -> Optional[SessionState]:
-        """将会话的历史深拷贝到新会话中。"""
+        """Deep-copy a session's history into a new session."""
         import threading
 
         original = self.get_session(session_id)  # checks DB too
@@ -161,51 +224,82 @@ class SessionManager:
         logger.info("Forked ACP session %s -> %s", session_id, new_id)
         return state
 
-    def list_sessions(self) -> List[Dict[str, Any]]:
-        """返回所有会话（内存 + 数据库）的轻量级信息字典。"""
-        # 首先收集内存中的会话。
-        with self._lock:
-            seen_ids = set(self._sessions.keys())
-            results = [
-                {
-                    "session_id": s.session_id,
-                    "cwd": s.cwd,
-                    "model": s.model,
-                    "history_len": len(s.history),
-                }
-                for s in self._sessions.values()
-            ]
-
-        # 合并当前不在内存中的持久化会话。
+    def list_sessions(self, cwd: str | None = None) -> List[Dict[str, Any]]:
+        """Return lightweight info dicts for all sessions (memory + database)."""
+        normalized_cwd = _normalize_cwd_for_compare(cwd) if cwd else None
         db = self._get_db()
+        persisted_rows: dict[str, dict[str, Any]] = {}
+
         if db is not None:
             try:
-                rows = db.search_sessions(source="acp", limit=1000)
-                for row in rows:
-                    sid = row["id"]
-                    if sid in seen_ids:
-                        continue
-                    # 从 model_config JSON 中提取 cwd。
-                    cwd = "."
-                    mc = row.get("model_config")
-                    if mc:
-                        try:
-                            cwd = json.loads(mc).get("cwd", ".")
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-                    results.append({
-                        "session_id": sid,
-                        "cwd": cwd,
-                        "model": row.get("model") or "",
-                        "history_len": row.get("message_count") or 0,
-                    })
+                for row in db.list_sessions_rich(source="acp", limit=1000):
+                    persisted_rows[str(row["id"])] = dict(row)
             except Exception:
-                logger.debug("Failed to list ACP sessions from DB", exc_info=True)
+                logger.debug("Failed to load ACP sessions from DB", exc_info=True)
 
+        # Collect in-memory sessions first.
+        with self._lock:
+            seen_ids = set(self._sessions.keys())
+            results = []
+            for s in self._sessions.values():
+                history_len = len(s.history)
+                if history_len <= 0:
+                    continue
+                if normalized_cwd and _normalize_cwd_for_compare(s.cwd) != normalized_cwd:
+                    continue
+                persisted = persisted_rows.get(s.session_id, {})
+                preview = next(
+                    (
+                        str(msg.get("content") or "").strip()
+                        for msg in s.history
+                        if msg.get("role") == "user" and str(msg.get("content") or "").strip()
+                    ),
+                    persisted.get("preview") or "",
+                )
+                results.append(
+                    {
+                        "session_id": s.session_id,
+                        "cwd": s.cwd,
+                        "model": s.model,
+                        "history_len": history_len,
+                        "title": _build_session_title(persisted.get("title"), preview, s.cwd),
+                        "updated_at": _format_updated_at(
+                            persisted.get("last_active") or persisted.get("started_at") or time.time()
+                        ),
+                    }
+                )
+
+        # Merge any persisted sessions not currently in memory.
+        for sid, row in persisted_rows.items():
+            if sid in seen_ids:
+                continue
+            message_count = int(row.get("message_count") or 0)
+            if message_count <= 0:
+                continue
+            # Extract cwd from model_config JSON.
+            session_cwd = "."
+            mc = row.get("model_config")
+            if mc:
+                try:
+                    session_cwd = json.loads(mc).get("cwd", ".")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            if normalized_cwd and _normalize_cwd_for_compare(session_cwd) != normalized_cwd:
+                continue
+            results.append({
+                "session_id": sid,
+                "cwd": session_cwd,
+                "model": row.get("model") or "",
+                "history_len": message_count,
+                "title": _build_session_title(row.get("title"), row.get("preview"), session_cwd),
+                "updated_at": _format_updated_at(row.get("last_active") or row.get("started_at")),
+            })
+
+        results.sort(key=lambda item: _updated_at_sort_key(item.get("updated_at")), reverse=True)
         return results
 
     def update_cwd(self, session_id: str, cwd: str) -> Optional[SessionState]:
-        """更新会话的工作目录及其工具覆盖。"""
+        """Update the working directory for a session and its tool overrides."""
         state = self.get_session(session_id)  # checks DB too
         if state is None:
             return None
@@ -215,14 +309,14 @@ class SessionManager:
         return state
 
     def cleanup(self) -> None:
-        """移除所有会话（内存和数据库），并清除任务特定的 cwd 覆盖。"""
+        """Remove all sessions (memory and database) and clear task-specific cwd overrides."""
         with self._lock:
             session_ids = list(self._sessions.keys())
             self._sessions.clear()
         for session_id in session_ids:
             _clear_task_cwd(session_id)
             self._delete_persisted(session_id)
-        # 同时移除数据库中当前不在内存中的 ACP 会话。
+        # Also remove any DB-only ACP sessions not currently in memory.
         db = self._get_db()
         if db is not None:
             try:
@@ -235,28 +329,28 @@ class SessionManager:
                 logger.debug("Failed to cleanup ACP sessions from DB", exc_info=True)
 
     def save_session(self, session_id: str) -> None:
-        """将会话的当前状态持久化到数据库。
+        """Persist the current state of a session to the database.
 
-        在提示完成、修改历史的斜杠命令和模型切换后
-        由服务器调用。
+        Called by the server after prompt completion, slash commands that
+        mutate history, and model switches.
         """
         with self._lock:
             state = self._sessions.get(session_id)
         if state is not None:
             self._persist(state)
 
-    # ---- 通过 SessionDB 持久化 ------------------------------------------
+    # ---- persistence via SessionDB ------------------------------------------
 
     def _get_db(self):
-        """延迟初始化并返回 SessionDB 实例。
+        """Lazily initialise and return the SessionDB instance.
 
-        如果数据库不可用（例如在最小化测试环境中导入错误），
-        则返回 ``None``。
+        Returns ``None`` if the DB is unavailable (e.g. import error in a
+        minimal test environment).
 
-        注意：我们动态解析 ``HERMES_HOME``，而不是依赖模块级别的
-        ``DEFAULT_DB_PATH`` 常量，因为该常量在导入时求值，
-        不会反映之后进行的环境变量更改
-        （例如测试夹具 ``_isolate_hermes_home``）。
+        Note: we resolve ``HERMES_HOME`` dynamically rather than relying on
+        the module-level ``DEFAULT_DB_PATH`` constant, because that constant
+        is evaluated at import time and won't reflect env-var changes made
+        later (e.g. by the test fixture ``_isolate_hermes_home``).
         """
         if self._db_instance is not None:
             return self._db_instance
@@ -270,16 +364,16 @@ class SessionManager:
             return None
 
     def _persist(self, state: SessionState) -> None:
-        """将会话状态写入数据库。
+        """Write session state to the database.
 
-        如果会话记录不存在则创建，然后用当前内存中的
-        历史替换所有存储的消息。
+        Creates the session record if it doesn't exist, then replaces all
+        stored messages with the current in-memory history.
         """
         db = self._get_db()
         if db is None:
             return
 
-        # 确保 model 是一个普通字符串（而非 MagicMock 或其他代理对象）。
+        # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
         session_meta = {"cwd": state.cwd}
         provider = getattr(state.agent, "provider", None)
@@ -294,7 +388,7 @@ class SessionManager:
         cwd_json = json.dumps(session_meta)
 
         try:
-            # 确保会话记录存在。
+            # Ensure the session record exists.
             existing = db.get_session(state.session_id)
             if existing is None:
                 db.create_session(
@@ -304,7 +398,7 @@ class SessionManager:
                     model_config={"cwd": state.cwd},
                 )
             else:
-                # 如果 model_config（包含 cwd）发生了变化则更新。
+                # Update model_config (contains cwd) if changed.
                 try:
                     with db._lock:
                         db._conn.execute(
@@ -315,7 +409,7 @@ class SessionManager:
                 except Exception:
                     logger.debug("Failed to update ACP session metadata", exc_info=True)
 
-            # 用当前历史替换存储的消息。
+            # Replace stored messages with current history.
             db.clear_messages(state.session_id)
             for msg in state.history:
                 db.append_message(
@@ -330,7 +424,7 @@ class SessionManager:
             logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)
 
     def _restore(self, session_id: str) -> Optional[SessionState]:
-        """从数据库将会话加载到内存中，重新创建 AIAgent。"""
+        """Load a session from the database into memory, recreating the AIAgent."""
         import threading
 
         db = self._get_db()
@@ -346,11 +440,11 @@ class SessionManager:
         if row is None:
             return None
 
-        # 仅恢复 ACP 会话。
+        # Only restore ACP sessions.
         if row.get("source") != "acp":
             return None
 
-        # 从 model_config 中提取 cwd。
+        # Extract cwd from model_config.
         cwd = "."
         requested_provider = row.get("billing_provider")
         restored_base_url = row.get("billing_base_url")
@@ -369,7 +463,7 @@ class SessionManager:
 
         model = row.get("model") or None
 
-        # 加载对话历史。
+        # Load conversation history.
         try:
             history = db.get_messages_as_conversation(session_id)
         except Exception:
@@ -404,7 +498,7 @@ class SessionManager:
         return state
 
     def _delete_persisted(self, session_id: str) -> bool:
-        """从数据库中删除会话。如果存在则返回 True。"""
+        """Delete a session from the database. Returns True if it existed."""
         db = self._get_db()
         if db is None:
             return False
@@ -414,7 +508,7 @@ class SessionManager:
             logger.debug("Failed to delete ACP session %s from DB", session_id, exc_info=True)
             return False
 
-    # ---- 内部方法 -----------------------------------------------------------
+    # ---- internal -----------------------------------------------------------
 
     def _make_agent(
         self,
@@ -468,7 +562,7 @@ class SessionManager:
 
         _register_task_cwd(session_id, cwd)
         agent = AIAgent(**kwargs)
-        # ACP stdio 传输要求 stdout 保持仅用于协议 JSON-RPC。
-        # 将 AIAgent 的任何附带人类可读输出路由到 stderr。
+        # ACP stdio transport requires stdout to remain protocol-only JSON-RPC.
+        # Route any incidental human-readable agent output to stderr instead.
         agent._print_fn = _acp_stderr_print
         return agent

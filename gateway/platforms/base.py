@@ -1,11 +1,12 @@
 """
-平台适配器基类接口。
+Base platform adapter interface.
 
-所有平台适配器（Telegram、Discord、WhatsApp 等）都继承此基类
-并实现其中的必要方法。
+All platform adapters (Telegram, Discord, WhatsApp) inherit from this
+and implement the required methods.
 """
 
 import asyncio
+import inspect
 import ipaddress
 import logging
 import os
@@ -18,33 +19,35 @@ import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
+from utils import normalize_proxy_url
+
 logger = logging.getLogger(__name__)
 
 
 def utf16_len(s: str) -> int:
-    """计算字符串 *s* 中 UTF-16 编码单元的数量。
+    """Count UTF-16 code units in *s*.
 
-    Telegram 的消息长度限制（4096）以 UTF-16 编码单元为计量单位，
-    而**非** Unicode 码点。基本多文种平面之外的字符（如 😀 表情、
-    CJK 扩展 B 区汉字、音乐符号等）在 UTF-16 中编码为代理对，
-    因此每个字符占用**两个** UTF-16 编码单元，尽管 Python 的
-    ``len()`` 将它们计为一个。
+    Telegram's message-length limit (4 096) is measured in UTF-16 code units,
+    **not** Unicode code-points.  Characters outside the Basic Multilingual
+    Plane (emoji like 😀, CJK Extension B, musical symbols, …) are encoded as
+    surrogate pairs and therefore consume **two** UTF-16 code units each, even
+    though Python's ``len()`` counts them as one.
 
-    移植自 nearai/ironclaw#2304，该 PR 发现了 Rust ``chars().count()``
-    的相同差异。
+    Ported from nearai/ironclaw#2304 which discovered the same discrepancy in
+    Rust's ``chars().count()``.
     """
     return len(s.encode("utf-16-le")) // 2
 
 
 def _prefix_within_utf16_limit(s: str, limit: int) -> str:
-    """返回 *s* 中 UTF-16 长度不超过 *limit* 的最长前缀。
+    """Return the longest prefix of *s* whose UTF-16 length ≤ *limit*.
 
-    与简单的 ``s[:limit]`` 不同，本函数会遵守代理对边界，
-    不会将一个多编码单元字符从中间切断。
+    Unlike a plain ``s[:limit]``, this respects surrogate-pair boundaries so
+    we never slice a multi-code-unit character in half.
     """
     if utf16_len(s) <= limit:
         return s
-    # 通过二分查找找到最长的安全前缀
+    # Binary search for the longest safe prefix
     lo, hi = 0, len(s)
     while lo < hi:
         mid = (lo + hi + 1) // 2
@@ -56,11 +59,11 @@ def _prefix_within_utf16_limit(s: str, limit: int) -> str:
 
 
 def _custom_unit_to_cp(s: str, budget: int, len_fn) -> int:
-    """返回最大的码点偏移 *n*，使得 ``len_fn(s[:n]) <= budget``。
+    """Return the largest codepoint offset *n* such that ``len_fn(s[:n]) <= budget``.
 
-    当 :meth:`BasePlatformAdapter.truncate_message` 使用的 *len_fn*
-    以不同于 Python 码点的单位度量长度（例如 UTF-16 编码单元）时使用此函数。
-    内部通过二分查找实现，时间复杂度为 O(log n) 次 *len_fn* 调用。
+    Used by :meth:`BasePlatformAdapter.truncate_message` when *len_fn* measures
+    length in units different from Python codepoints (e.g. UTF-16 code units).
+    Falls back to binary search which is O(log n) calls to *len_fn*.
     """
     if len_fn(s) <= budget:
         return len(s)
@@ -75,30 +78,31 @@ def _custom_unit_to_cp(s: str, budget: int, len_fn) -> int:
 
 
 def is_network_accessible(host: str) -> bool:
-    """判断 *host* 是否会将服务暴露到回环地址之外。
+    """Return True if *host* would expose the server beyond loopback.
 
-    回环地址（127.0.0.1、::1、IPv4 映射的 ::ffff:127.0.0.1）
-    仅限本地访问。未指定地址（0.0.0.0、::）会绑定所有接口。
-    主机名会进行 DNS 解析；DNS 解析失败时采用保守策略（返回 True）。
+    Loopback addresses (127.0.0.1, ::1, IPv4-mapped ::ffff:127.0.0.1)
+    are local-only.  Unspecified addresses (0.0.0.0, ::) bind all
+    interfaces.  Hostnames are resolved; DNS failure fails closed.
     """
     try:
         addr = ipaddress.ip_address(host)
         if addr.is_loopback:
             return False
-        # ::ffff:127.0.0.1 — Python 对映射地址报告 is_loopback=False，
-        # 因此需要显式检查底层 IPv4 地址。
+        # ::ffff:127.0.0.1 — Python reports is_loopback=False for mapped
+        # addresses, so check the underlying IPv4 explicitly.
         if getattr(addr, "ipv4_mapped", None) and addr.ipv4_mapped.is_loopback:
             return False
         return True
     except ValueError:
-        # host 是主机名时，需要在下面进行 DNS 解析
+        # when host variable is a hostname, we should try to resolve below
         pass
 
     try:
         resolved = _socket.getaddrinfo(
             host, None, _socket.AF_UNSPEC, _socket.SOCK_STREAM,
         )
-        # 如果主机名解析出至少一个非回环地址，则视为可通过网络访问
+        # if the hostname resolves into at least one non-loopback address,
+        # then we consider it to be network accessible
         for _family, _type, _proto, _canonname, sockaddr in resolved:
             addr = ipaddress.ip_address(sockaddr[0])
             if not addr.is_loopback:
@@ -109,10 +113,11 @@ def is_network_accessible(host: str) -> bool:
 
 
 def _detect_macos_system_proxy() -> str | None:
-    """通过 ``scutil --proxy`` 读取 macOS 系统 HTTP(S) 代理配置。
+    """Read the macOS system HTTP(S) proxy via ``scutil --proxy``.
 
-    如果启用了 HTTP 或 HTTPS 代理，返回 ``http://host:port`` 格式的 URL 字符串，
-    否则返回 *None*。在非 macOS 系统或发生子进程错误时静默回退。
+    Returns an ``http://host:port`` URL string if an HTTP or HTTPS proxy is
+    enabled, otherwise *None*.  Falls back silently on non-macOS or on any
+    subprocess error.
     """
     if sys.platform != "darwin":
         return None
@@ -130,7 +135,7 @@ def _detect_macos_system_proxy() -> str | None:
             key, _, val = line.partition(" : ")
             props[key.strip()] = val.strip()
 
-    # 优先使用 HTTPS 代理，回退到 HTTP 代理
+    # Prefer HTTPS, fall back to HTTP
     for enable_key, host_key, port_key in (
         ("HTTPSEnable", "HTTPSProxy", "HTTPSPort"),
         ("HTTPEnable", "HTTPProxy", "HTTPPort"),
@@ -144,38 +149,38 @@ def _detect_macos_system_proxy() -> str | None:
 
 
 def resolve_proxy_url(platform_env_var: str | None = None) -> str | None:
-    """从环境变量或 macOS 系统代理中获取代理 URL。
+    """Return a proxy URL from env vars, or macOS system proxy.
 
-    检查顺序：
-      0. *platform_env_var*（例如 ``DISCORD_PROXY``）— 最高优先级
-      1. HTTPS_PROXY / HTTP_PROXY / ALL_PROXY（及其小写变体）
-      2. macOS 系统代理，通过 ``scutil --proxy`` 自动检测
+    Check order:
+      0. *platform_env_var* (e.g. ``DISCORD_PROXY``) — highest priority
+      1. HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (and lowercase variants)
+      2. macOS system proxy via ``scutil --proxy`` (auto-detect)
 
-    未找到代理时返回 *None*。
+    Returns *None* if no proxy is found.
     """
     if platform_env_var:
         value = (os.environ.get(platform_env_var) or "").strip()
         if value:
-            return value
+            return normalize_proxy_url(value)
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy"):
         value = (os.environ.get(key) or "").strip()
         if value:
-            return value
-    return _detect_macos_system_proxy()
+            return normalize_proxy_url(value)
+    return normalize_proxy_url(_detect_macos_system_proxy())
 
 
 def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
-    """为 ``commands.Bot()`` / ``discord.Client()`` 构建代理参数。
+    """Build kwargs for ``commands.Bot()`` / ``discord.Client()`` with proxy.
 
-    返回值：
+    Returns:
       - SOCKS URL  → ``{"connector": ProxyConnector(..., rdns=True)}``
       - HTTP URL   → ``{"proxy": url}``
       - *None*     → ``{}``
 
-    ``rdns=True`` 强制通过代理进行远程 DNS 解析 — 许多 SOCKS 实现
-    （如 Shadowrocket、Clash）要求此选项，且对于绕过 GFW 背后的
-    DNS 污染至关重要。
+    ``rdns=True`` forces remote DNS resolution through the proxy — required
+    by many SOCKS implementations (Shadowrocket, Clash) and essential for
+    bypassing DNS pollution behind the GFW.
     """
     if not proxy_url:
         return {}
@@ -196,14 +201,14 @@ def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
 
 
 def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
-    """为独立的 ``aiohttp.ClientSession`` 构建代理参数。
+    """Build kwargs for standalone ``aiohttp.ClientSession`` with proxy.
 
-    返回 ``(session_kwargs, request_kwargs)``，其中：
+    Returns ``(session_kwargs, request_kwargs)`` where:
       - SOCKS → ``({"connector": ProxyConnector(...)}, {})``
       - HTTP  → ``({}, {"proxy": url})``
       - None  → ``({}, {})``
 
-    用法示例::
+    Usage::
 
         sess_kw, req_kw = proxy_kwargs_for_aiohttp(proxy_url)
         async with aiohttp.ClientSession(**sess_kw) as session:
@@ -249,7 +254,7 @@ GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
 
 
 def safe_url_for_log(url: str, max_len: int = 80) -> str:
-    """返回适合记录日志的 URL 字符串（去除查询参数/片段/用户凭据）。"""
+    """Return a URL string safe for logs (no query/fragment/userinfo)."""
     if max_len <= 0:
         return ""
 
@@ -266,7 +271,7 @@ def safe_url_for_log(url: str, max_len: int = 80) -> str:
         return raw[:max_len]
 
     if parsed.scheme and parsed.netloc:
-        # 去除可能嵌入的用户凭据（user:pass@host）
+        # Strip potential embedded credentials (user:pass@host).
         netloc = parsed.netloc.rsplit("@", 1)[-1]
         base = f"{parsed.scheme}://{netloc}"
         path = parsed.path or ""
@@ -286,12 +291,12 @@ def safe_url_for_log(url: str, max_len: int = 80) -> str:
 
 
 async def _ssrf_redirect_guard(response):
-    """对每个重定向目标重新进行安全校验，以防止基于重定向的 SSRF 攻击。
+    """Re-validate each redirect target to prevent redirect-based SSRF.
 
-    如果没有此防护，攻击者可以搭建一个公网 URL，通过 302 重定向到
-    http://169.254.169.254/ 来绕过请求前的 is_safe_url() 检查。
+    Without this, an attacker can host a public URL that 302-redirects to
+    http://169.254.169.254/ and bypass the pre-flight is_safe_url() check.
 
-    必须使用 async 是因为 httpx.AsyncClient 的响应事件钩子需要 await。
+    Must be async because httpx.AsyncClient awaits response event hooks.
     """
     if response.is_redirect and response.next_request:
         redirect_url = str(response.next_request.url)
@@ -303,25 +308,26 @@ async def _ssrf_redirect_guard(response):
 
 
 # ---------------------------------------------------------------------------
-# 图片缓存工具
+# Image cache utilities
 #
-# 当用户在消息平台上发送图片时，我们将其下载到本地缓存目录，
-# 以便视觉工具（接收本地文件路径）进行分析。这样可以避免
-# 平台临时 URL 失效的问题（例如 Telegram 文件 URL 约 1 小时后过期）。
+# When users send images on messaging platforms, we download them to a local
+# cache directory so they can be analyzed by the vision tool (which accepts
+# local file paths). This avoids issues with ephemeral platform URLs
+# (e.g. Telegram file URLs expire after ~1 hour).
 # ---------------------------------------------------------------------------
 
-# 默认路径：{HERMES_HOME}/cache/images/（历史路径：image_cache/）
+# Default location: {HERMES_HOME}/cache/images/ (legacy: image_cache/)
 IMAGE_CACHE_DIR = get_hermes_dir("cache/images", "image_cache")
 
 
 def get_image_cache_dir() -> Path:
-    """返回图片缓存目录，若不存在则创建。"""
+    """Return the image cache directory, creating it if it doesn't exist."""
     IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     return IMAGE_CACHE_DIR
 
 
 def _looks_like_image(data: bytes) -> bool:
-    """如果 *data* 以已知的图片魔术字节序列开头，返回 True。"""
+    """Return True if *data* starts with a known image magic-byte sequence."""
     if len(data) < 4:
         return False
     if data[:8] == b"\x89PNG\r\n\x1a\n":
@@ -339,18 +345,18 @@ def _looks_like_image(data: bytes) -> bool:
 
 def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
     """
-    将原始图片字节保存到缓存并返回绝对文件路径。
+    Save raw image bytes to the cache and return the absolute file path.
 
-    参数：
-        data: 原始图片字节数据。
-        ext:  文件扩展名，包含点号（例如 ".jpg"、".png"）。
+    Args:
+        data: Raw image bytes.
+        ext:  File extension including the dot (e.g. ".jpg", ".png").
 
-    返回：
-        缓存图片文件的绝对路径字符串。
+    Returns:
+        Absolute path to the cached image file as a string.
 
-    异常：
-        ValueError: 如果 *data* 看起来不是有效图片（例如上游服务器返回的
-            HTML 错误页面）。
+    Raises:
+        ValueError: If *data* does not look like a valid image (e.g. an HTML
+            error page returned by the upstream server).
     """
     if not _looks_like_image(data):
         snippet = data[:80].decode("utf-8", errors="replace")
@@ -367,32 +373,29 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
 
 async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) -> str:
     """
-    从 URL 下载图片并保存到本地缓存。
+    Download an image from a URL and save it to the local cache.
 
-    对临时性故障（超时、429、5xx）进行指数退避重试，
-    避免因单次 CDN 响应缓慢而丢失媒体文件。
+    Retries on transient failures (timeouts, 429, 5xx) with exponential
+    backoff so a single slow CDN response doesn't lose the media.
 
-    参数：
-        url: 要下载的 HTTP/HTTPS URL。
-        ext: 文件扩展名，包含点号（例如 ".jpg"、".png"）。
-        retries: 临时性故障的重试次数。
+    Args:
+        url: The HTTP/HTTPS URL to download from.
+        ext: File extension including the dot (e.g. ".jpg", ".png").
+        retries: Number of retry attempts on transient failures.
 
-    返回：
-        缓存图片文件的绝对路径字符串。
+    Returns:
+        Absolute path to the cached image file as a string.
 
-    异常：
-        ValueError: 如果 URL 指向私有/内部网络（SSRF 防护）。
+    Raises:
+        ValueError: If the URL targets a private/internal network (SSRF protection).
     """
     from tools.url_safety import is_safe_url
     if not is_safe_url(url):
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
-    import asyncio
     import httpx
-    import logging as _logging
-    _log = _logging.getLogger(__name__)
+    _log = logging.getLogger(__name__)
 
-    last_exc = None
     async with httpx.AsyncClient(
         timeout=30.0,
         follow_redirects=True,
@@ -410,7 +413,6 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                 response.raise_for_status()
                 return cache_image_from_bytes(response.content, ext)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
-                last_exc = exc
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
                 if attempt < retries:
@@ -426,14 +428,13 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                     await asyncio.sleep(wait)
                     continue
                 raise
-    raise last_exc
 
 
 def cleanup_image_cache(max_age_hours: int = 24) -> int:
     """
-    删除超过 *max_age_hours* 小时的缓存图片。
+    Delete cached images older than *max_age_hours*.
 
-    返回被删除的文件数量。
+    Returns the number of files removed.
     """
     import time
 
@@ -451,31 +452,31 @@ def cleanup_image_cache(max_age_hours: int = 24) -> int:
 
 
 # ---------------------------------------------------------------------------
-# 音频缓存工具
+# Audio cache utilities
 #
-# 与图片缓存相同的模式 — 平台上的语音消息下载到此处，
-# 以便 STT 工具（OpenAI Whisper）从本地文件进行语音转文字。
+# Same pattern as image cache -- voice messages from platforms are downloaded
+# here so the STT tool (OpenAI Whisper) can transcribe them from local files.
 # ---------------------------------------------------------------------------
 
 AUDIO_CACHE_DIR = get_hermes_dir("cache/audio", "audio_cache")
 
 
 def get_audio_cache_dir() -> Path:
-    """返回音频缓存目录，若不存在则创建。"""
+    """Return the audio cache directory, creating it if it doesn't exist."""
     AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     return AUDIO_CACHE_DIR
 
 
 def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
     """
-    将原始音频字节保存到缓存并返回绝对文件路径。
+    Save raw audio bytes to the cache and return the absolute file path.
 
-    参数：
-        data: 原始音频字节数据。
-        ext:  文件扩展名，包含点号（例如 ".ogg"、".mp3"）。
+    Args:
+        data: Raw audio bytes.
+        ext:  File extension including the dot (e.g. ".ogg", ".mp3").
 
-    返回：
-        缓存音频文件的绝对路径字符串。
+    Returns:
+        Absolute path to the cached audio file as a string.
     """
     cache_dir = get_audio_cache_dir()
     filename = f"audio_{uuid.uuid4().hex[:12]}{ext}"
@@ -486,32 +487,29 @@ def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
 
 async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) -> str:
     """
-    从 URL 下载音频文件并保存到本地缓存。
+    Download an audio file from a URL and save it to the local cache.
 
-    对临时性故障（超时、429、5xx）进行指数退避重试，
-    避免因单次 CDN 响应缓慢而丢失媒体文件。
+    Retries on transient failures (timeouts, 429, 5xx) with exponential
+    backoff so a single slow CDN response doesn't lose the media.
 
-    参数：
-        url: 要下载的 HTTP/HTTPS URL。
-        ext: 文件扩展名，包含点号（例如 ".ogg"、".mp3"）。
-        retries: 临时性故障的重试次数。
+    Args:
+        url: The HTTP/HTTPS URL to download from.
+        ext: File extension including the dot (e.g. ".ogg", ".mp3").
+        retries: Number of retry attempts on transient failures.
 
-    返回：
-        缓存音频文件的绝对路径字符串。
+    Returns:
+        Absolute path to the cached audio file as a string.
 
-    异常：
-        ValueError: 如果 URL 指向私有/内部网络（SSRF 防护）。
+    Raises:
+        ValueError: If the URL targets a private/internal network (SSRF protection).
     """
     from tools.url_safety import is_safe_url
     if not is_safe_url(url):
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
-    import asyncio
     import httpx
-    import logging as _logging
-    _log = _logging.getLogger(__name__)
+    _log = logging.getLogger(__name__)
 
-    last_exc = None
     async with httpx.AsyncClient(
         timeout=30.0,
         follow_redirects=True,
@@ -529,7 +527,6 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
                 response.raise_for_status()
                 return cache_audio_from_bytes(response.content, ext)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
-                last_exc = exc
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
                 if attempt < retries:
@@ -545,14 +542,46 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
                     await asyncio.sleep(wait)
                     continue
                 raise
-    raise last_exc
 
 
 # ---------------------------------------------------------------------------
-# 文档缓存工具
+# Video cache utilities
 #
-# 与图片/音频缓存相同的模式 — 平台上的文档下载到此处，
-# 以便 Agent 通过本地文件路径引用它们。
+# Same pattern as image/audio cache -- videos from platforms are downloaded
+# here so the agent can reference them by local file path.
+# ---------------------------------------------------------------------------
+
+VIDEO_CACHE_DIR = get_hermes_dir("cache/videos", "video_cache")
+
+SUPPORTED_VIDEO_TYPES = {
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
+    ".mkv": "video/x-matroska",
+    ".avi": "video/x-msvideo",
+}
+
+
+def get_video_cache_dir() -> Path:
+    """Return the video cache directory, creating it if it doesn't exist."""
+    VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return VIDEO_CACHE_DIR
+
+
+def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
+    """Save raw video bytes to the cache and return the absolute file path."""
+    cache_dir = get_video_cache_dir()
+    filename = f"video_{uuid.uuid4().hex[:12]}{ext}"
+    filepath = cache_dir / filename
+    filepath.write_bytes(data)
+    return str(filepath)
+
+
+# ---------------------------------------------------------------------------
+# Document cache utilities
+#
+# Same pattern as image/audio cache -- documents from platforms are downloaded
+# here so the agent can reference them by local file path.
 # ---------------------------------------------------------------------------
 
 DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
@@ -570,37 +599,37 @@ SUPPORTED_DOCUMENT_TYPES = {
 
 
 def get_document_cache_dir() -> Path:
-    """返回文档缓存目录，若不存在则创建。"""
+    """Return the document cache directory, creating it if it doesn't exist."""
     DOCUMENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     return DOCUMENT_CACHE_DIR
 
 
 def cache_document_from_bytes(data: bytes, filename: str) -> str:
     """
-    将原始文档字节保存到缓存并返回绝对文件路径。
+    Save raw document bytes to the cache and return the absolute file path.
 
-    缓存文件名保留原始的可读文件名，并添加唯一前缀：
-    ``doc_{uuid12}_{original_filename}``。
+    The cached filename preserves the original human-readable name with a
+    unique prefix: ``doc_{uuid12}_{original_filename}``.
 
-    参数：
-        data: 原始文档字节数据。
-        filename: 原始文件名（例如 "report.pdf"）。
+    Args:
+        data: Raw document bytes.
+        filename: Original filename (e.g. "report.pdf").
 
-    返回：
-        缓存文档文件的绝对路径字符串。
+    Returns:
+        Absolute path to the cached document file as a string.
 
-    异常：
-        ValueError: 如果清理后的路径逃逸出缓存目录。
+    Raises:
+        ValueError: If the sanitized path escapes the cache directory.
     """
     cache_dir = get_document_cache_dir()
-    # 清理：去除目录组件、null 字节和控制字符
+    # Sanitize: strip directory components, null bytes, and control characters
     safe_name = Path(filename).name if filename else "document"
     safe_name = safe_name.replace("\x00", "").strip()
     if not safe_name or safe_name in (".", ".."):
         safe_name = "document"
     cached_name = f"doc_{uuid.uuid4().hex[:12]}_{safe_name}"
     filepath = cache_dir / cached_name
-    # 最终安全检查：确保路径仍在缓存目录内
+    # Final safety check: ensure path stays inside cache dir
     if not filepath.resolve().is_relative_to(cache_dir.resolve()):
         raise ValueError(f"Path traversal rejected: {filename!r}")
     filepath.write_bytes(data)
@@ -609,9 +638,9 @@ def cache_document_from_bytes(data: bytes, filename: str) -> str:
 
 def cleanup_document_cache(max_age_hours: int = 24) -> int:
     """
-    删除超过 *max_age_hours* 小时的缓存文档。
+    Delete cached documents older than *max_age_hours*.
 
-    返回被删除的文件数量。
+    Returns the number of files removed.
     """
     import time
 
@@ -629,7 +658,7 @@ def cleanup_document_cache(max_age_hours: int = 24) -> int:
 
 
 class MessageType(Enum):
-    """入站消息的类型枚举。"""
+    """Types of incoming messages."""
     TEXT = "text"
     LOCATION = "location"
     PHOTO = "photo"
@@ -638,11 +667,11 @@ class MessageType(Enum):
     VOICE = "voice"
     DOCUMENT = "document"
     STICKER = "sticker"
-    COMMAND = "command"  # /command 风格的命令消息
+    COMMAND = "command"  # /command style
 
 
 class ProcessingOutcome(Enum):
-    """消息处理生命周期钩子的结果分类。"""
+    """Result classification for message-processing lifecycle hooks."""
 
     SUCCESS = "success"
     FAILURE = "failure"
@@ -652,65 +681,74 @@ class ProcessingOutcome(Enum):
 @dataclass
 class MessageEvent:
     """
-    来自平台的入站消息。
-
-    所有适配器统一生成的标准化消息表示。
+    Incoming message from a platform.
+    
+    Normalized representation that all adapters produce.
     """
-    # 消息内容
+    # Message content
     text: str
     message_type: MessageType = MessageType.TEXT
-
-    # 消息来源信息
+    
+    # Source information
     source: SessionSource = None
-
-    # 原始平台数据
+    
+    # Original platform data
     raw_message: Any = None
     message_id: Optional[str] = None
 
-    # 媒体附件
-    # media_urls: 本地文件路径（供视觉工具访问）
+    # Platform-specific update identifier.  For Telegram this is the
+    # ``update_id`` from the PTB Update wrapper; other platforms currently
+    # ignore it.  Used by ``/restart`` to record the triggering update so the
+    # new gateway can advance the Telegram offset past it and avoid processing
+    # the same ``/restart`` twice if PTB's graceful-shutdown ACK times out
+    # ("Error while calling `get_updates` one more time to mark all fetched
+    # updates" in gateway.log).
+    platform_update_id: Optional[int] = None
+    
+    # Media attachments
+    # media_urls: local file paths (for vision tool access)
     media_urls: List[str] = field(default_factory=list)
     media_types: List[str] = field(default_factory=list)
-
-    # 回复上下文
+    
+    # Reply context
     reply_to_message_id: Optional[str] = None
-    reply_to_text: Optional[str] = None  # 被回复消息的文本（用于上下文注入）
-
-    # 自动加载的技能，用于主题/频道绑定（例如 Telegram DM 主题、
-    # Discord channel_skill_bindings）。可以是单个名称或有序列表。
+    reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
+    
+    # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
+    # Discord channel_skill_bindings).  A single name or ordered list.
     auto_skill: Optional[str | list[str]] = None
 
-    # 每频道的临时系统提示词（例如 Discord channel_prompts）。
-    # 在 API 调用时应用，不会持久化到对话历史记录中。
+    # Per-channel ephemeral system prompt (e.g. Discord channel_prompts).
+    # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
-
-    # 内部标志 — 用于合成事件（如后台进程完成通知），
-    # 这些事件必须绕过用户授权检查。
+    
+    # Internal flag — set for synthetic events (e.g. background process
+    # completion notifications) that must bypass user authorization checks.
     internal: bool = False
 
-    # 时间戳
+    # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     
     def is_command(self) -> bool:
-        """检查是否为命令消息（例如 /new、/reset）。"""
+        """Check if this is a command message (e.g., /new, /reset)."""
         return self.text.startswith("/")
     
     def get_command(self) -> Optional[str]:
-        """如果是命令消息，提取命令名称。"""
+        """Extract command name if this is a command message."""
         if not self.is_command():
             return None
-        # 按空格分割，取第一个单词，去掉 /
+        # Split on space and get first word, strip the /
         parts = self.text.split(maxsplit=1)
         raw = parts[0][1:].lower() if parts else None
         if raw and "@" in raw:
             raw = raw.split("@", 1)[0]
-        # 拒绝文件路径：合法命令名中不包含 /
+        # Reject file paths: valid command names never contain /
         if raw and "/" in raw:
             return None
         return raw
     
     def get_command_args(self) -> str:
-        """获取命令之后的参数文本。"""
+        """Get the arguments after a command."""
         if not self.is_command():
             return self.text
         parts = self.text.split(maxsplit=1)
@@ -719,12 +757,12 @@ class MessageEvent:
 
 @dataclass 
 class SendResult:
-    """发送消息的结果。"""
+    """Result of sending a message."""
     success: bool
     message_id: Optional[str] = None
     error: Optional[str] = None
     raw_response: Any = None
-    retryable: bool = False  # 对于临时性连接错误为 True — 基类会自动重试
+    retryable: bool = False  # True for transient connection errors — base will retry automatically
 
 
 def merge_pending_message_event(
@@ -734,14 +772,16 @@ def merge_pending_message_event(
     *,
     merge_text: bool = False,
 ) -> None:
-    """存储或合并某个会话的待处理事件。
+    """Store or merge a pending event for a session.
 
-    图片连拍/相册通常以多个近乎同时到达的 PHOTO 事件形式出现。
-    将它们合并到已有的排队事件中，这样下一轮处理时能看到完整的连拍内容。
+    Photo bursts/albums often arrive as multiple near-simultaneous PHOTO
+    events. Merge those into the existing queued event so the next turn sees
+    the whole burst.
 
-    当 ``merge_text`` 启用时，快速跟进的 TEXT 事件会被追加而非替换待处理轮次。
-    这适用于 Telegram 的连续消息场景，避免用户的多条思考消息被静默截断为
-    只保留最后排队的片段。
+    When ``merge_text`` is enabled, rapid follow-up TEXT events are appended
+    instead of replacing the pending turn. This is used for Telegram bursty
+    follow-ups so a multi-part user thought is not silently truncated to only
+    the last queued fragment.
     """
     existing = pending_messages.get(session_key)
     if existing:
@@ -782,11 +822,13 @@ def merge_pending_message_event(
     pending_messages[session_key] = event
 
 
-# 表示临时性*连接*故障且值得重试的错误子串。
-# "timeout" / "timed out" / "readtimeout" / "writetimeout" 被有意排除：
-# 读/写超时意味着请求可能已到达服务器 — 重试非幂等调用（如 send_message）
-# 有产生重复投递的风险。"connecttimeout" 是安全的，因为连接从未建立。
-# 知道超时安全可重试的平台应显式设置 SendResult.retryable = True。
+# Error substrings that indicate a transient *connection* failure worth retrying.
+# "timeout" / "timed out" / "readtimeout" / "writetimeout" are intentionally
+# excluded: a read/write timeout on a non-idempotent call (e.g. send_message)
+# means the request may have reached the server — retrying risks duplicate
+# delivery.  "connecttimeout" is safe because the connection was never
+# established.  Platforms that know a timeout is safe to retry should set
+# SendResult.retryable = True explicitly.
 _RETRYABLE_ERROR_PATTERNS = (
     "connecterror",
     "connectionerror",
@@ -800,7 +842,7 @@ _RETRYABLE_ERROR_PATTERNS = (
 )
 
 
-# 消息处理器类型定义
+# Type for message handlers
 MessageHandler = Callable[[MessageEvent], Awaitable[Optional[str]]]
 
 
@@ -809,14 +851,14 @@ def resolve_channel_prompt(
     channel_id: str,
     parent_id: str | None = None,
 ) -> str | None:
-    """从平台配置中解析每频道的临时提示词。
+    """Resolve a per-channel ephemeral prompt from platform config.
 
-    在适配器的 ``config.extra`` 字典中查找 ``channel_prompts``。
-    优先精确匹配 *channel_id*；回退到 *parent_id*（适用于论坛帖子/
-    子频道继承父频道提示词的场景）。
+    Looks up ``channel_prompts`` in the adapter's ``config.extra`` dict.
+    Prefers an exact match on *channel_id*; falls back to *parent_id*
+    (useful for forum threads / child channels inheriting a parent prompt).
 
-    返回提示词字符串，或在未找到匹配时返回 None。空白/纯空格的
-    提示词视为不存在。
+    Returns the prompt string, or None if no match is found.  Blank/whitespace-
+    only prompts are treated as absent.
     """
     prompts = config_extra.get("channel_prompts") or {}
     if not isinstance(prompts, dict):
@@ -836,13 +878,13 @@ def resolve_channel_prompt(
 
 class BasePlatformAdapter(ABC):
     """
-    平台适配器基类。
-
-    子类实现各平台特定的逻辑：
-    - 连接和身份验证
-    - 接收消息
-    - 发送消息/回复
-    - 处理媒体文件
+    Base class for platform adapters.
+    
+    Subclasses implement platform-specific logic for:
+    - Connecting and authenticating
+    - Receiving messages
+    - Sending messages/responses
+    - Handling media
     """
     
     def __init__(self, config: PlatformConfig, platform: Platform):
@@ -855,24 +897,26 @@ class BasePlatformAdapter(ABC):
         self._fatal_error_retryable = True
         self._fatal_error_handler: Optional[Callable[["BasePlatformAdapter"], Awaitable[None] | None]] = None
         
-        # 追踪每个会话的活跃消息处理器，用于中断支持
-        # 键: session_key（例如 chat_id），值: (event, 用于中断的 asyncio.Event)
+        # Track active message handlers per session for interrupt support
+        # Key: session_key (e.g., chat_id), Value: (event, asyncio.Event for interrupt)
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
-        # 由 handle_message() 产生的后台消息处理任务。
-        # 网关关闭时会取消这些任务，防止旧网关实例在 --replace
-        # 或手动重启后继续处理任务。
+        # Background message-processing tasks spawned by handle_message().
+        # Gateway shutdown cancels these so an old gateway instance doesn't keep
+        # working on a task after --replace or manual restarts.
         self._background_tasks: set[asyncio.Task] = set()
-        # 在主响应投递完成后触发的一次性回调。
-        # 按 session_key 索引。GatewayRunner 用此机制将后台审核
-        # 通知（如 "💾 技能已创建"）延迟到主回复发送之后。
-        self._post_delivery_callbacks: Dict[str, Callable] = {}
+        # One-shot callbacks to fire after the main response is delivered.
+        # Keyed by session_key. Values are either a bare callback (legacy) or
+        # a ``(generation, callback)`` tuple so GatewayRunner can make deferred
+        # deliveries generation-aware and avoid stale runs clearing callbacks
+        # registered by a fresher run for the same session.
+        self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
-        # 已禁用语音输入自动 TTS 的聊天（通过 /voice off 设置）
+        # Chats where auto-TTS on voice input is disabled (set by /voice off)
         self._auto_tts_disabled_chats: set = set()
-        # 打字指示器已暂停的聊天（例如在等待审批期间）。
-        # _keep_typing 在 chat_id 位于此集合中时跳过 send_typing。
+        # Chats where typing indicator is paused (e.g. during approval waits).
+        # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
 
     @property
@@ -940,7 +984,7 @@ class BasePlatformAdapter(ABC):
             await result
 
     def _acquire_platform_lock(self, scope: str, identity: str, resource_desc: str) -> bool:
-        """为此适配器获取作用域锁。成功返回 True。"""
+        """Acquire a scoped lock for this adapter. Returns True on success."""
         from gateway.status import acquire_scoped_lock
         self._platform_lock_scope = scope
         self._platform_lock_identity = identity
@@ -960,7 +1004,7 @@ class BasePlatformAdapter(ABC):
         return False
 
     def _release_platform_lock(self) -> None:
-        """释放由 _acquire_platform_lock 获取的作用域锁。"""
+        """Release the scoped lock acquired by _acquire_platform_lock."""
         identity = getattr(self, '_platform_lock_identity', None)
         if not identity:
             return
@@ -970,47 +1014,49 @@ class BasePlatformAdapter(ABC):
 
     @property
     def name(self) -> str:
-        """本适配器的可读名称。"""
+        """Human-readable name for this adapter."""
         return self.platform.value.title()
     
     @property
     def is_connected(self) -> bool:
-        """检查适配器是否当前已连接。"""
+        """Check if adapter is currently connected."""
         return self._running
     
     def set_message_handler(self, handler: MessageHandler) -> None:
         """
-        设置入站消息的处理器。
-
-        处理器接收一个 MessageEvent，应返回可选的响应字符串。
+        Set the handler for incoming messages.
+        
+        The handler receives a MessageEvent and should return
+        an optional response string.
         """
         self._message_handler = handler
 
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
-        """设置可选的处理器，用于处理会话活跃期间到达的消息。"""
+        """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
     
     def set_session_store(self, session_store: Any) -> None:
         """
-        设置会话存储，用于检查活跃会话。
-
-        适配器在处理消息前需要检查某个线程/对话是否有活跃会话时使用
-        （例如 Slack 线程回复未显式 @ 提及的场景）。
+        Set the session store for checking active sessions.
+        
+        Used by adapters that need to check if a thread/conversation
+        has an active session before processing messages (e.g., Slack
+        thread replies without explicit mentions).
         """
         self._session_store = session_store
     
     @abstractmethod
     async def connect(self) -> bool:
         """
-        连接平台并开始接收消息。
-
-        连接成功返回 True。
+        Connect to the platform and start receiving messages.
+        
+        Returns True if connection was successful.
         """
         pass
     
     @abstractmethod
     async def disconnect(self) -> None:
-        """断开与平台的连接。"""
+        """Disconnect from the platform."""
         pass
     
     @abstractmethod
@@ -1022,45 +1068,70 @@ class BasePlatformAdapter(ABC):
         metadata: Optional[Dict[str, Any]] = None
     ) -> SendResult:
         """
-        向指定聊天发送消息。
-
-        参数：
-            chat_id: 目标聊天/频道 ID
-            content: 消息内容（可能是 Markdown 格式）
-            reply_to: 可选的回复目标消息 ID
-            metadata: 附加的平台特定选项
-
-        返回：
-            包含发送状态和消息 ID 的 SendResult
+        Send a message to a chat.
+        
+        Args:
+            chat_id: The chat/channel ID to send to
+            content: Message content (may be markdown)
+            reply_to: Optional message ID to reply to
+            metadata: Additional platform-specific options
+        
+        Returns:
+            SendResult with success status and message ID
         """
         pass
+
+    # Default: the adapter treats ``finalize=True`` on edit_message as a
+    # no-op and is happy to have the stream consumer skip redundant final
+    # edits.  Subclasses that *require* an explicit finalize call to close
+    # out the message lifecycle (e.g. rich card / AI assistant surfaces
+    # such as DingTalk AI Cards) override this to True (class attribute or
+    # property) so the stream consumer knows not to short-circuit.
+    REQUIRES_EDIT_FINALIZE: bool = False
 
     async def edit_message(
         self,
         chat_id: str,
         message_id: str,
         content: str,
+        *,
+        finalize: bool = False,
     ) -> SendResult:
         """
-        编辑之前发送的消息。可选方法 — 不支持编辑的平台返回
-        success=False，调用方回退到发送新消息。
+        Edit a previously sent message. Optional — platforms that don't
+        support editing return success=False and callers fall back to
+        sending a new message.
+
+        ``finalize`` signals that this is the last edit in a streaming
+        sequence.  Most platforms (Telegram, Slack, Discord, Matrix,
+        etc.) treat it as a no-op because their edit APIs have no notion
+        of message lifecycle state — an edit is an edit.  Platforms that
+        render streaming updates with a distinct "in progress" state and
+        require explicit closure (e.g. rich card / AI assistant surfaces
+        such as DingTalk AI Cards) use it to finalize the message and
+        transition the UI out of the streaming indicator — those should
+        also set ``REQUIRES_EDIT_FINALIZE = True`` so callers route a
+        final edit through even when content is unchanged.  Callers
+        should set ``finalize=True`` on the final edit of a streamed
+        response (typically when ``got_done`` fires in the stream
+        consumer) and leave it ``False`` on intermediate edits.
         """
         return SendResult(success=False, error="Not supported")
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """
-        发送打字指示器。
-
-        如果平台支持此功能，在子类中重写。
-        metadata: 可选字典，包含平台特定上下文（例如 Slack 的 thread_id）。
+        Send a typing indicator.
+        
+        Override in subclasses if the platform supports it.
+        metadata: optional dict with platform-specific context (e.g. thread_id for Slack).
         """
         pass
 
     async def stop_typing(self, chat_id: str) -> None:
-        """停止持久打字指示器（如果平台使用的话）。
+        """Stop a persistent typing indicator (if the platform uses one).
 
-        在使用后台打字循环的子类中重写。
-        对于使用单次打字指示器的平台，默认为空操作。
+        Override in subclasses that start background typing loops.
+        Default is a no-op for platforms with one-shot typing indicators.
         """
         pass
     
@@ -1073,12 +1144,13 @@ class BasePlatformAdapter(ABC):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """
-        通过平台 API 原生发送图片。
-
-        在子类中重写以将图片作为原生附件发送，
-        而非纯文本 URL。默认回退为发送 URL 文本消息。
+        Send an image natively via the platform API.
+        
+        Override in subclasses to send images as proper attachments
+        instead of plain-text URLs. Default falls back to sending the
+        URL as a text message.
         """
-        # 回退方案：以文本形式发送 URL（子类重写以实现原生图片发送）
+        # Fallback: send URL as text (subclasses override for native images)
         text = f"{caption}\n{image_url}" if caption else image_url
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
     
@@ -1091,55 +1163,56 @@ class BasePlatformAdapter(ABC):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """
-        通过平台 API 原生发送 GIF 动画。
-
-        在子类中重写以将 GIF 作为动画发送（例如 Telegram 的 send_animation），
-        使其在聊天中自动内联播放。默认回退到 send_image。
+        Send an animated GIF natively via the platform API.
+        
+        Override in subclasses to send GIFs as proper animations
+        (e.g., Telegram send_animation) so they auto-play inline.
+        Default falls back to send_image.
         """
         return await self.send_image(chat_id=chat_id, image_url=animation_url, caption=caption, reply_to=reply_to, metadata=metadata)
     
     @staticmethod
     def _is_animation_url(url: str) -> bool:
-        """检查 URL 是否指向 GIF 动画（而非静态图片）。"""
-        lower = url.lower().split('?')[0]  # 去除查询参数
+        """Check if a URL points to an animated GIF (vs a static image)."""
+        lower = url.lower().split('?')[0]  # Strip query params
         return lower.endswith('.gif')
 
     @staticmethod
     def extract_images(content: str) -> Tuple[List[Tuple[str, str]], str]:
         """
-        从响应中的 Markdown 和 HTML 图片标签中提取图片 URL。
-
-        匹配的模式：
-        - ![替代文本](https://example.com/image.png)
+        Extract image URLs from markdown and HTML image tags in a response.
+        
+        Finds patterns like:
+        - ![alt text](https://example.com/image.png)
         - <img src="https://example.com/image.png">
         - <img src="https://example.com/image.png"></img>
-
-        参数：
-            content: 要扫描的响应文本。
-
-        返回：
-            元组 ([(url, alt_text), ...] 列表, 移除图片标签后的清理文本)。
+        
+        Args:
+            content: The response text to scan.
+        
+        Returns:
+            Tuple of (list of (url, alt_text) pairs, cleaned content with image tags removed).
         """
         images = []
         cleaned = content
         
-        # 匹配 Markdown 图片：![alt](url)
+        # Match markdown images: ![alt](url)
         md_pattern = r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)'
         for match in re.finditer(md_pattern, content):
             alt_text = match.group(1)
             url = match.group(2)
-            # 仅提取看起来确实是图片的 URL
+            # Only extract URLs that look like actual images
             if any(url.lower().endswith(ext) or ext in url.lower() for ext in
                    ['.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn', 'replicate.delivery']):
                 images.append((url, alt_text))
         
-        # 匹配 HTML img 标签：<img src="url"> 或 <img src="url"></img> 或 <img src="url"/>
+        # Match HTML img tags: <img src="url"> or <img src="url"></img> or <img src="url"/>
         html_pattern = r'<img\s+src=["\']?(https?://[^\s"\'<>]+)["\']?\s*/?>\s*(?:</img>)?'
         for match in re.finditer(html_pattern, content):
             url = match.group(1)
             images.append((url, ""))
         
-        # 仅移除已匹配的图片标签（不是所有 Markdown 图片）
+        # Remove only the matched image tags from content (not all markdown images)
         if images:
             extracted_urls = {url for url, _ in images}
             def _remove_if_extracted(match):
@@ -1147,7 +1220,7 @@ class BasePlatformAdapter(ABC):
                 return '' if url in extracted_urls else match.group(0)
             cleaned = re.sub(md_pattern, _remove_if_extracted, cleaned)
             cleaned = re.sub(html_pattern, _remove_if_extracted, cleaned)
-            # 清理残留的多余空行
+            # Clean up leftover blank lines
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
         return images, cleaned
@@ -1161,10 +1234,11 @@ class BasePlatformAdapter(ABC):
         **kwargs,
     ) -> SendResult:
         """
-        通过平台 API 原生发送音频文件作为语音消息。
-
-        在子类中重写以发送语音气泡（Telegram）或文件附件（Discord）。
-        默认回退为发送文件路径文本。
+        Send an audio file as a native voice message via the platform API.
+        
+        Override in subclasses to send audio as voice bubbles (Telegram)
+        or file attachments (Discord). Default falls back to sending the
+        file path as text.
         """
         text = f"🔊 Audio: {audio_path}"
         if caption:
@@ -1178,10 +1252,10 @@ class BasePlatformAdapter(ABC):
         **kwargs,
     ) -> SendResult:
         """
-        播放语音回复的自动 TTS 音频。
+        Play auto-TTS audio for voice replies.
 
-        在子类中重写以实现隐式播放（例如 Web UI）。
-        默认回退到 send_voice（显示音频播放器）。
+        Override in subclasses for invisible playback (e.g. Web UI).
+        Default falls back to send_voice (shows audio player).
         """
         return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
 
@@ -1194,10 +1268,10 @@ class BasePlatformAdapter(ABC):
         **kwargs,
     ) -> SendResult:
         """
-        通过平台 API 原生发送视频。
+        Send a video natively via the platform API.
 
-        在子类中重写以发送可内联播放的视频媒体。
-        默认回退为发送文件路径文本。
+        Override in subclasses to send videos as inline playable media.
+        Default falls back to sending the file path as text.
         """
         text = f"🎬 Video: {video_path}"
         if caption:
@@ -1214,10 +1288,10 @@ class BasePlatformAdapter(ABC):
         **kwargs,
     ) -> SendResult:
         """
-        通过平台 API 原生发送文档/文件。
+        Send a document/file natively via the platform API.
 
-        在子类中重写以发送可下载的文件附件。
-        默认回退为发送文件路径文本。
+        Override in subclasses to send files as downloadable attachments.
+        Default falls back to sending the file path as text.
         """
         text = f"📎 File: {file_path}"
         if caption:
@@ -1233,11 +1307,11 @@ class BasePlatformAdapter(ABC):
         **kwargs,
     ) -> SendResult:
         """
-        通过平台 API 原生发送本地图片文件。
+        Send a local image file natively via the platform API.
 
-        与接收 URL 的 send_image() 不同，本方法接收本地文件路径。
-        在子类中重写以实现原生图片附件功能。
-        默认回退为发送文件路径文本。
+        Unlike send_image() which takes a URL, this takes a local file path.
+        Override in subclasses for native photo attachments.
+        Default falls back to sending the file path as text.
         """
         text = f"🖼️ Image: {image_path}"
         if caption:
@@ -1247,27 +1321,27 @@ class BasePlatformAdapter(ABC):
     @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """
-        从响应文本中提取 MEDIA:<path> 标签和 [[audio_as_voice]] 指令。
-
-        TTS 工具返回的响应格式如：
+        Extract MEDIA:<path> tags and [[audio_as_voice]] directives from response text.
+        
+        The TTS tool returns responses like:
             [[audio_as_voice]]
             MEDIA:/path/to/audio.ogg
-
-        参数：
-            content: 要扫描的响应文本。
-
-        返回：
-            元组 ([(path, is_voice), ...] 列表, 移除标签后的清理文本)。
+        
+        Args:
+            content: The response text to scan.
+        
+        Returns:
+            Tuple of (list of (path, is_voice) pairs, cleaned content with tags removed).
         """
         media = []
         cleaned = content
         
-        # 检查 [[audio_as_voice]] 指令
+        # Check for [[audio_as_voice]] directive
         has_voice_tag = "[[audio_as_voice]]" in content
         cleaned = cleaned.replace("[[audio_as_voice]]", "")
         
-        # 提取 MEDIA:<path> 标签，允许冒号后有可选空格，
-        # 以及引号/反引号包裹的路径（用于 LLM 格式化输出）。
+        # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
+        # and quoted/backticked paths for LLM-formatted outputs.
         media_pattern = re.compile(
             r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
@@ -1279,7 +1353,7 @@ class BasePlatformAdapter(ABC):
             if path:
                 media.append((os.path.expanduser(path), has_voice_tag))
 
-        # 从内容中移除 MEDIA 标签（包括外层的引号/反引号包装）
+        # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
         if media:
             cleaned = media_pattern.sub('', cleaned)
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
@@ -1289,17 +1363,19 @@ class BasePlatformAdapter(ABC):
     @staticmethod
     def extract_local_files(content: str) -> Tuple[List[str], str]:
         """
-        检测响应文本中裸露的本地文件路径，用于原生媒体投递。
+        Detect bare local file paths in response text for native media delivery.
 
-        匹配以 /... 或 ~/ 开头、以常见图片或视频扩展名结尾的绝对路径。
-        使用 ``os.path.isfile()`` 验证每个候选路径，避免对 URL 或
-        不存在的路径产生误判。
+        Matches absolute paths (/...) and tilde paths (~/) ending in common
+        image or video extensions.  Validates each candidate with
+        ``os.path.isfile()`` to avoid false positives from URLs or
+        non-existent paths.
 
-        围栏代码块（``` ... ```）和行内代码（`...`）中的路径会被忽略，
-        确保代码示例不会被错误截取。
+        Paths inside fenced code blocks (``` ... ```) and inline code
+        (`...`) are ignored so that code samples are never mutilated.
 
-        返回：
-            元组 (展开后的文件路径列表, 移除路径字符串后的清理文本)。
+        Returns:
+            Tuple of (list of expanded file paths, cleaned text with the
+            raw path strings removed).
         """
         _LOCAL_MEDIA_EXTS = (
             '.png', '.jpg', '.jpeg', '.gif', '.webp',
@@ -1307,15 +1383,15 @@ class BasePlatformAdapter(ABC):
         )
         ext_part = '|'.join(e.lstrip('.') for e in _LOCAL_MEDIA_EXTS)
 
-        # (?<![/:\w.]) 防止匹配 URL 内部（如 https://…/img.png）
-        #             和相对路径（./foo.png）
-        # (?:~/|/)    锚定到绝对路径或 home 相对路径
+        # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png)
+        #             and relative paths (./foo.png)
+        # (?:~/|/)    anchors to absolute or home-relative paths
         path_re = re.compile(
             r'(?<![/:\w.])(?:~/|/)(?:[\w.\-]+/)*[\w.\-]+\.(?:' + ext_part + r')\b',
             re.IGNORECASE,
         )
 
-        # 构建围栏代码块和行内代码覆盖的区间
+        # Build spans covered by fenced code blocks and inline code
         code_spans: list = []
         for m in re.finditer(r'```[^\n]*\n.*?```', content, re.DOTALL):
             code_spans.append((m.start(), m.end()))
@@ -1334,7 +1410,7 @@ class BasePlatformAdapter(ABC):
             if os.path.isfile(expanded):
                 found.append((raw, expanded))
 
-        # 按展开后的路径去重，保持发现顺序
+        # Deduplicate by expanded path, preserving discovery order
         seen: set = set()
         unique: list = []
         for raw, expanded in found:
@@ -1352,30 +1428,45 @@ class BasePlatformAdapter(ABC):
 
         return paths, cleaned
 
-    async def _keep_typing(self, chat_id: str, interval: float = 2.0, metadata=None) -> None:
+    async def _keep_typing(
+        self,
+        chat_id: str,
+        interval: float = 2.0,
+        metadata=None,
+        stop_event: asyncio.Event | None = None,
+    ) -> None:
         """
-        持续发送打字指示器直到被取消。
-
-        Telegram/Discord 的打字状态约 5 秒后过期，因此每 2 秒刷新一次，
-        以便在进度消息中断后快速恢复打字状态。
-
-        当聊天位于 ``_typing_paused`` 集合中时跳过 send_typing（例如
-        Agent 等待危险命令审批期间）。这对 Slack 的 Assistant API 至关重要，
-        其中 ``assistant_threads_setStatus`` 会禁用输入框 — 暂停打字
-        可以让用户输入 ``/approve`` 或 ``/deny``。
+        Continuously send typing indicator until cancelled.
+        
+        Telegram/Discord typing status expires after ~5 seconds, so we refresh every 2
+        to recover quickly after progress messages interrupt it.
+        
+        Skips send_typing when the chat is in ``_typing_paused`` (e.g. while
+        the agent is waiting for dangerous-command approval).  This is critical
+        for Slack's Assistant API where ``assistant_threads_setStatus`` disables
+        the compose box — pausing lets the user type ``/approve`` or ``/deny``.
         """
         try:
             while True:
+                if stop_event is not None and stop_event.is_set():
+                    return
                 if chat_id not in self._typing_paused:
                     await self.send_typing(chat_id, metadata=metadata)
-                await asyncio.sleep(interval)
+                if stop_event is None:
+                    await asyncio.sleep(interval)
+                    continue
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=interval)
+                except asyncio.TimeoutError:
+                    continue
+                return
         except asyncio.CancelledError:
-            pass  # 处理器完成时的正常取消
+            pass  # Normal cancellation when handler completes
         finally:
-            # 确保底层平台的打字循环也被停止。
-            # _keep_typing 可能在外部 stop_typing() 清空任务字典之后
-            # 又调用了 send_typing()，导致循环被重新创建。
-            # 仅取消 _keep_typing 本身无法清理这种情况。
+            # Ensure the underlying platform typing loop is stopped.
+            # _keep_typing may have called send_typing() after an outer
+            # stop_typing() cleared the task dict, recreating the loop.
+            # Cancelling _keep_typing alone won't clean that up.
             if hasattr(self, "stop_typing"):
                 try:
                     await self.stop_typing(chat_id)
@@ -1384,29 +1475,82 @@ class BasePlatformAdapter(ABC):
             self._typing_paused.discard(chat_id)
 
     def pause_typing_for_chat(self, chat_id: str) -> None:
-        """暂停某个聊天的打字指示器（例如在等待审批期间）。
+        """Pause typing indicator for a chat (e.g. during approval waits).
 
-        线程安全（CPython GIL）— 可以从同步 Agent 线程调用，
-        同时 ``_keep_typing`` 在异步事件循环上运行。
+        Thread-safe (CPython GIL) — can be called from the sync agent thread
+        while ``_keep_typing`` runs on the async event loop.
         """
         self._typing_paused.add(chat_id)
 
     def resume_typing_for_chat(self, chat_id: str) -> None:
-        """审批解决后恢复某个聊天的打字指示器。"""
+        """Resume typing indicator for a chat after approval resolves."""
         self._typing_paused.discard(chat_id)
 
-    # ── 处理生命周期钩子 ──────────────────────────────────────────
-    # 子类重写这些方法以响应消息处理事件
-    # （例如 Discord 添加 👀/✅/❌ 表情反应）。
+    async def interrupt_session_activity(self, session_key: str, chat_id: str) -> None:
+        """Signal the active session loop to stop and clear typing immediately."""
+        if session_key:
+            interrupt_event = self._active_sessions.get(session_key)
+            if interrupt_event is not None:
+                interrupt_event.set()
+        try:
+            await self.stop_typing(chat_id)
+        except Exception:
+            pass
+
+    def register_post_delivery_callback(
+        self,
+        session_key: str,
+        callback: Callable,
+        *,
+        generation: int | None = None,
+    ) -> None:
+        """Register a deferred callback to fire after the main response.
+
+        ``generation`` lets callers tie the callback to a specific gateway run
+        generation so stale runs cannot clear callbacks owned by a fresher run.
+        """
+        if not session_key or not callable(callback):
+            return
+        if generation is None:
+            self._post_delivery_callbacks[session_key] = callback
+        else:
+            self._post_delivery_callbacks[session_key] = (int(generation), callback)
+
+    def pop_post_delivery_callback(
+        self,
+        session_key: str,
+        *,
+        generation: int | None = None,
+    ) -> Callable | None:
+        """Pop a deferred callback, optionally requiring generation ownership."""
+        if not session_key:
+            return None
+        entry = self._post_delivery_callbacks.get(session_key)
+        if entry is None:
+            return None
+        if isinstance(entry, tuple) and len(entry) == 2:
+            entry_generation, callback = entry
+            if generation is not None and int(entry_generation) != int(generation):
+                return None
+            self._post_delivery_callbacks.pop(session_key, None)
+            return callback if callable(callback) else None
+        if generation is not None:
+            return None
+        self._post_delivery_callbacks.pop(session_key, None)
+        return entry if callable(entry) else None
+
+    # ── Processing lifecycle hooks ──────────────────────────────────────────
+    # Subclasses override these to react to message processing events
+    # (e.g. Discord adds 👀/✅/❌ reactions).
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """后台处理开始时调用的钩子。"""
+        """Hook called when background processing begins."""
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """后台处理完成时调用的钩子。"""
+        """Hook called when background processing completes."""
 
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
-        """运行生命周期钩子，不让失败中断消息处理流程。"""
+        """Run a lifecycle hook without letting failures break message flow."""
         hook = getattr(self, hook_name, None)
         if not callable(hook):
             return
@@ -1417,7 +1561,7 @@ class BasePlatformAdapter(ABC):
 
     @staticmethod
     def _is_retryable_error(error: Optional[str]) -> bool:
-        """如果错误字符串看起来像临时性网络故障，返回 True。"""
+        """Return True if the error string looks like a transient network failure."""
         if not error:
             return False
         lowered = error.lower()
@@ -1425,9 +1569,10 @@ class BasePlatformAdapter(ABC):
 
     @staticmethod
     def _is_timeout_error(error: Optional[str]) -> bool:
-        """如果错误字符串表示读/写超时，返回 True。
+        """Return True if the error string indicates a read/write timeout.
 
-        超时错误不可重试，也不应触发纯文本回退 — 请求可能已经被投递。
+        Timeout errors are NOT retryable and should NOT trigger plain-text
+        fallback — the request may have already been delivered.
         """
         if not error:
             return False
@@ -1444,11 +1589,12 @@ class BasePlatformAdapter(ABC):
         base_delay: float = 2.0,
     ) -> "SendResult":
         """
-        带自动重试的消息发送，用于临时性网络错误。
+        Send a message with automatic retry for transient network errors.
 
-        对于永久性失败（如格式/权限错误），在放弃前会尝试回退到纯文本版本。
-        如果所有尝试均因网络错误失败，会向用户发送简短的投递失败通知，
-        让他们知道需要重试而非无限等待。
+        On permanent failures (e.g. formatting / permission errors) falls back
+        to a plain-text version before giving up. If all attempts fail due to
+        network errors, sends the user a brief delivery-failure notice so they
+        know to retry rather than waiting indefinitely.
         """
 
         result = await self.send(
@@ -1464,13 +1610,13 @@ class BasePlatformAdapter(ABC):
         error_str = result.error or ""
         is_network = result.retryable or self._is_retryable_error(error_str)
 
-        # 超时错误不适合重试（消息可能已投递），
-        # 也不是格式错误 — 直接返回失败结果。
+        # Timeout errors are not safe to retry (message may have been
+        # delivered) and not formatting errors — return the failure as-is.
         if not is_network and self._is_timeout_error(error_str):
             return result
 
         if is_network:
-            # 对临时性错误使用指数退避重试
+            # Retry with exponential backoff for transient errors
             for attempt in range(1, max_retries + 1):
                 delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
                 logger.warning(
@@ -1489,9 +1635,9 @@ class BasePlatformAdapter(ABC):
                     return result
                 error_str = result.error or ""
                 if not (result.retryable or self._is_retryable_error(error_str)):
-                    break  # 错误类型变为非临时性 — 跳出重试循环，走纯文本回退
+                    break  # error switched to non-transient — fall through to plain-text fallback
             else:
-                # 所有重试耗尽（循环正常完成，未 break）— 通知用户
+                # All retries exhausted (loop completed without break) — notify user
                 logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
                 notice = (
                     "\u26a0\ufe0f Message delivery failed after multiple attempts. "
@@ -1503,7 +1649,7 @@ class BasePlatformAdapter(ABC):
                     logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, notify_err)
                 return result
 
-        # 非网络错误 / 重试后的格式失败：尝试纯文本回退
+        # Non-network / post-retry formatting failure: try plain text as fallback
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
         fallback_result = await self.send(
             chat_id=chat_id,
@@ -1517,12 +1663,12 @@ class BasePlatformAdapter(ABC):
 
     @staticmethod
     def _merge_caption(existing_text: Optional[str], new_text: str) -> str:
-        """将新的标题文本合并到已有文本中，避免重复。
+        """Merge a new caption into existing text, avoiding duplicates.
 
-        使用逐行精确匹配（非子串匹配）以防止误判 —
-        例如较短的标题因出现在较长标题的子串中而被静默丢弃
-        （如 "Meeting" 出现在 "Meeting agenda" 中）。
-        比较时会规范化空白字符。
+        Uses line-by-line exact match (not substring) to prevent false positives
+        where a shorter caption is silently dropped because it appears as a
+        substring of a longer one (e.g. "Meeting" inside "Meeting agenda").
+        Whitespace is normalised for comparison.
         """
         if not existing_text:
             return new_text
@@ -1533,10 +1679,11 @@ class BasePlatformAdapter(ABC):
 
     async def handle_message(self, event: MessageEvent) -> None:
         """
-        处理入站消息。
-
-        本方法通过产生后台任务来快速返回。
-        这使得在 Agent 运行期间仍可处理新消息，从而支持中断功能。
+        Process an incoming message.
+        
+        This method returns quickly by spawning background tasks.
+        This allows new messages to be processed even while an agent is running,
+        enabling interruption support.
         """
         if not self._message_handler:
             return
@@ -1547,18 +1694,22 @@ class BasePlatformAdapter(ABC):
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
         
-        # 检查此会话是否已有活跃的处理器
+        # Check if there's already an active handler for this session
         if session_key in self._active_sessions:
-            # 某些命令必须绕过活跃会话守卫，直接分发给网关运行器。
-            # 否则它们会被排队为待处理消息，并且：
-            #   - 以用户文本形式泄漏到对话中（/stop、/new），或
-            #   - 导致死锁（/approve、/deny — Agent 正在阻塞于 Event.wait）
+            # Certain commands must bypass the active-session guard and be
+            # dispatched directly to the gateway runner.  Without this, they
+            # are queued as pending messages and either:
+            #   - leak into the conversation as user text (/stop, /new), or
+            #   - deadlock (/approve, /deny — agent is blocked on Event.wait)
             #
-            # 内联分发：直接调用消息处理器并发送响应。
-            # 不要使用 _process_message_background — 它管理会话生命周期，
-            # 其清理操作会与正在运行的任务产生竞态（见 PR #4926）。
+            # Dispatch inline: call the message handler directly and send the
+            # response.  Do NOT use _process_message_background — it manages
+            # session lifecycle and its cleanup races with the running task
+            # (see PR #4926).
             cmd = event.get_command()
-            if cmd in ("approve", "deny", "status", "stop", "new", "reset", "background", "restart", "queue", "q"):
+            from hermes_cli.commands import should_bypass_active_session
+
+            if should_bypass_active_session(cmd):
                 logger.debug(
                     "[%s] Command '/%s' bypassing active-session guard for %s",
                     self.name, cmd, session_key,
@@ -1584,33 +1735,35 @@ class BasePlatformAdapter(ABC):
                 except Exception as e:
                     logger.error("[%s] Busy-session handler failed: %s", self.name, e, exc_info=True)
 
-            # 特殊处理：图片连拍/相册经常以多个近乎同时的消息到达。
-            # 将它们排队而不中断活跃的运行，当前任务完成后立即处理。
+            # Special case: photo bursts/albums frequently arrive as multiple near-
+            # simultaneous messages. Queue them without interrupting the active run,
+            # then process them immediately after the current task finishes.
             if event.message_type == MessageType.PHOTO:
                 logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
                 merge_pending_message_event(self._pending_messages, session_key, event)
-                return  # 现在不处理中断 - 当前任务完成后会处理
+                return  # Don't interrupt now - will run after current task completes
 
-            # 非图片跟进消息的默认行为：中断正在运行的 Agent
+            # Default behavior for non-photo follow-ups: interrupt the running agent
             logger.debug("[%s] New message while session %s is active — triggering interrupt", self.name, session_key)
             self._pending_messages[session_key] = event
-            # 发送中断信号（处理任务会检查这个事件）
+            # Signal the interrupt (the processing task checks this)
             self._active_sessions[session_key].set()
-            return  # 现在不处理 - 当前任务完成后会处理
-
-        # 在产生后台任务之前标记会话为活跃，以关闭竞态窗口 —
-        # 如果第二条消息在任务启动前到达，也会通过 _active_sessions
-        # 检查，从而产生重复任务。（grammY sequentialize /
-        # aiogram EventIsolation 模式 — 同步设置守卫，而非在任务内部设置。）
+            return  # Don't process now - will be handled after current task finishes
+        
+        # Mark session as active BEFORE spawning background task to close
+        # the race window where a second message arriving before the task
+        # starts would also pass the _active_sessions check and spawn a
+        # duplicate task.  (grammY sequentialize / aiogram EventIsolation
+        # pattern — set the guard synchronously, not inside the task.)
         self._active_sessions[session_key] = asyncio.Event()
 
-        # 产生后台任务处理此消息
+        # Spawn background task to process this message
         task = asyncio.create_task(self._process_message_background(event, session_key))
         try:
             self._background_tasks.add(task)
         except TypeError:
-            # 某些测试用轻量级哨兵桩替代 create_task()，
-            # 这些对象不可哈希且不支持生命周期回调。
+            # Some tests stub create_task() with lightweight sentinels that are not
+            # hashable and do not support lifecycle callbacks.
             return
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
@@ -1619,15 +1772,13 @@ class BasePlatformAdapter(ABC):
     @staticmethod
     def _get_human_delay() -> float:
         """
-        返回随机延迟秒数，用于模拟人类回复节奏。
+        Return a random delay in seconds for human-like response pacing.
 
-        通过环境变量配置：
-          HERMES_HUMAN_DELAY_MODE: "off"（默认）| "natural" | "custom"
-          HERMES_HUMAN_DELAY_MIN_MS: 最小延迟毫秒数（默认 800，custom 模式）
-          HERMES_HUMAN_DELAY_MAX_MS: 最大延迟毫秒数（默认 2500，custom 模式）
+        Reads from env vars:
+          HERMES_HUMAN_DELAY_MODE: "off" (default) | "natural" | "custom"
+          HERMES_HUMAN_DELAY_MIN_MS: minimum delay in ms (default 800, custom mode)
+          HERMES_HUMAN_DELAY_MAX_MS: maximum delay in ms (default 2500, custom mode)
         """
-        import random
-
         mode = os.getenv("HERMES_HUMAN_DELAY_MODE", "off").lower()
         if mode == "off":
             return 0.0
@@ -1638,8 +1789,8 @@ class BasePlatformAdapter(ABC):
         return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
 
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
-        """实际处理消息的后台任务。"""
-        # 跟踪投递结果，用于处理完成钩子
+        """Background task that actually processes the message."""
+        # Track delivery outcomes for the processing-complete hook
         delivery_attempted = False
         delivery_succeeded = False
 
@@ -1651,28 +1802,43 @@ class BasePlatformAdapter(ABC):
             if getattr(result, "success", False):
                 delivery_succeeded = True
 
-        # 复用 handle_message() 设置的中断事件（它在产生本任务之前
-        # 标记了会话为活跃以防止竞态）。
-        # 仅在条目被外部移除时回退到新建 Event。
+        # Reuse the interrupt event set by handle_message() (which marks
+        # the session active before spawning this task to prevent races).
+        # Fall back to a new Event only if the entry was removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
+        callback_generation = getattr(interrupt_event, "_hermes_run_generation", None)
         
-        # 启动持续打字指示器（每 2 秒刷新一次）
+        # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
-        typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id, metadata=_thread_metadata))
+        _keep_typing_kwargs = {"metadata": _thread_metadata}
+        try:
+            _keep_typing_sig = inspect.signature(self._keep_typing)
+        except (TypeError, ValueError):
+            _keep_typing_sig = None
+        if _keep_typing_sig is None or "stop_event" in _keep_typing_sig.parameters:
+            _keep_typing_kwargs["stop_event"] = interrupt_event
+        typing_task = asyncio.create_task(
+            self._keep_typing(
+                event.source.chat_id,
+                **_keep_typing_kwargs,
+            )
+        )
         
         try:
             await self._run_processing_hook("on_processing_start", event)
 
-            # 调用处理器（工具调用可能需要较长时间）
+            # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
             
-            # 有响应则发送。None/空响应在流式传输已投递文本时
-            # （already_sent=True）或消息被排队到活跃 Agent 后面时是正常的。
-            # 使用 DEBUG 级别日志以避免对预期行为产生噪音警告。
+            # Send response if any.  A None/empty response is normal when
+            # streaming already delivered the text (already_sent=True) or
+            # when the message was queued behind an active agent.  Log at
+            # DEBUG to avoid noisy warnings for expected behavior.
             #
-            # 当会话被新消息中断且待处理消息尚未被消费时，抑制过时响应。
-            # 待处理消息由下面的待处理消息处理器处理（#8221/#2483）。
+            # Suppress stale response when the session was interrupted by a
+            # new message that hasn't been consumed yet.  The pending message
+            # is processed by the pending-message handler below (#8221/#2483).
             if (
                 response
                 and interrupt_event.is_set()
@@ -1687,25 +1853,25 @@ class BasePlatformAdapter(ABC):
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
-                # 从 TTS 工具提取 MEDIA:<path> 标签，在其他处理之前
+                # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
                 
-                # 提取图片 URL 并作为原生平台附件发送
+                # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
-                # 从消息体中清除所有残留的内部指令（修复 #1561）
+                # Strip any remaining internal directives from message body (fixes #1561)
                 text_content = text_content.replace("[[audio_as_voice]]", "").strip()
                 text_content = re.sub(r"MEDIA:\s*\S+", "", text_content).strip()
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
 
-                # 自动检测裸露的本地文件路径，用于原生媒体投递
-                # （帮助不使用 MEDIA: 语法的小模型）
+                # Auto-detect bare local file paths for native media delivery
+                # (helps small models that don't use MEDIA: syntax)
                 local_files, text_content = self.extract_local_files(text_content)
                 if local_files:
                     logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
                 
-                # 自动 TTS：如果是语音消息，先生成音频（在发送文本之前）
-                # 当聊天已禁用语音模式（/voice off）时跳过
+                # Auto-TTS: if voice message, generate audio FIRST (before sending text)
+                # Skipped when the chat has voice mode disabled (/voice off)
                 _tts_path = None
                 if (event.message_type == MessageType.VOICE
                         and text_content
@@ -1726,7 +1892,7 @@ class BasePlatformAdapter(ABC):
                     except Exception as tts_err:
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
 
-                # 在文本之前播放 TTS 音频（语音优先体验）
+                # Play TTS audio before text (voice-first experience)
                 if _tts_path and Path(_tts_path).exists():
                     try:
                         await self.play_tts(
@@ -1740,7 +1906,7 @@ class BasePlatformAdapter(ABC):
                         except OSError:
                             pass
 
-                # 发送文本部分
+                # Send the text portion
                 if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     result = await self._send_with_retry(
@@ -1751,10 +1917,10 @@ class BasePlatformAdapter(ABC):
                     )
                     _record_delivery(result)
 
-                # 文本和媒体之间的类人节奏延迟
+                # Human-like pacing delay between text and media
                 human_delay = self._get_human_delay()
 
-                # 将提取的图片作为原生附件发送
+                # Send extracted images as native attachments
                 if images:
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
                 for image_url, alt_text in images:
@@ -1767,7 +1933,7 @@ class BasePlatformAdapter(ABC):
                             safe_url_for_log(image_url),
                             alt_text[:30] if alt_text else "",
                         )
-                        # 将 GIF 动画路由到 send_animation 以实现正确播放
+                        # Route animated GIFs through send_animation for proper playback
                         if self._is_animation_url(image_url):
                             img_result = await self.send_animation(
                                 chat_id=event.source.chat_id,
@@ -1787,7 +1953,7 @@ class BasePlatformAdapter(ABC):
                     except Exception as img_err:
                         logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
 
-                # 发送提取的媒体文件 — 根据文件类型路由
+                # Send extracted media files — route by file type
                 _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
                 _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
                 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
@@ -1827,7 +1993,7 @@ class BasePlatformAdapter(ABC):
                     except Exception as media_err:
                         logger.warning("[%s] Error sending media: %s", self.name, media_err)
 
-                # 将自动检测到的本地文件作为原生附件发送
+                # Send auto-detected local files as native attachments
                 for file_path in local_files:
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
@@ -1854,7 +2020,7 @@ class BasePlatformAdapter(ABC):
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
 
-            # 为处理钩子确定整体成功状态
+            # Determine overall success for the processing hook
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             await self._run_processing_hook(
                 "on_processing_complete",
@@ -1862,21 +2028,30 @@ class BasePlatformAdapter(ABC):
                 ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE,
             )
 
-            # 检查在处理期间是否有排队的待处理消息
+            # Check if there's a pending message that was queued during our processing
             if session_key in self._pending_messages:
                 pending_event = self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued message from interrupt", self.name)
-                # 在处理待处理消息之前清理当前会话
-                if session_key in self._active_sessions:
-                    del self._active_sessions[session_key]
+                # Keep the _active_sessions entry live across the turn chain
+                # and only CLEAR the interrupt Event — do NOT delete the entry.
+                # If we deleted here, a concurrent inbound message arriving
+                # during the awaits below would pass the Level-1 guard, spawn
+                # its own _process_message_background, and run simultaneously
+                # with the recursive drain below.  Two agents on one
+                # session_key = duplicate responses, duplicate tool calls.
+                # Clearing the Event keeps the guard live so follow-ups take
+                # the busy-handler path (queue + interrupt) as intended.
+                _active = self._active_sessions.get(session_key)
+                if _active is not None:
+                    _active.clear()
                 typing_task.cancel()
                 try:
                     await typing_task
                 except asyncio.CancelledError:
                     pass
-                # 在新的后台任务中处理待处理消息
+                # Process pending message in new background task
                 await self._process_message_background(pending_event, session_key)
-                return  # 已完成清理
+                return  # Already cleaned up
                 
         except asyncio.CancelledError:
             current_task = asyncio.current_task()
@@ -1888,7 +2063,7 @@ class BasePlatformAdapter(ABC):
         except Exception as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
-            # 向用户发送错误信息，避免他们陷入无回应的等待
+            # Send the error to the user so they aren't left with radio silence
             try:
                 error_type = type(e).__name__
                 error_detail = str(e)[:300] if str(e) else "no details available"
@@ -1903,56 +2078,105 @@ class BasePlatformAdapter(ABC):
                     metadata=_thread_metadata,
                 )
             except Exception:
-                pass  # 最后手段 — 不让错误上报本身导致处理器崩溃
+                pass  # Last resort — don't let error reporting crash the handler
         finally:
-            # 触发为此会话注册的一次性投递后回调
-            # （例如延迟的后台审核通知）。
-            _post_cb = getattr(self, "_post_delivery_callbacks", {}).pop(session_key, None)
+            # Fire any one-shot post-delivery callback registered for this
+            # session (e.g. deferred background-review notifications).
+            _callback_generation = callback_generation
+            if hasattr(self, "pop_post_delivery_callback"):
+                _post_cb = self.pop_post_delivery_callback(
+                    session_key,
+                    generation=_callback_generation,
+                )
+            else:
+                _post_cb = getattr(self, "_post_delivery_callbacks", {}).pop(session_key, None)
             if callable(_post_cb):
                 try:
                     _post_cb()
                 except Exception:
                     pass
-            # 停止打字指示器
+            # Stop typing indicator
             typing_task.cancel()
             try:
                 await typing_task
             except asyncio.CancelledError:
                 pass
-            # 同时取消平台级别的持久打字任务（例如 Discord），
-            # 这些任务可能在最后一次 stop_typing() 之后被 _keep_typing 重新创建
+            # Also cancel any platform-level persistent typing tasks (e.g. Discord)
+            # that may have been recreated by _keep_typing after the last stop_typing()
             try:
                 if hasattr(self, "stop_typing"):
                     await self.stop_typing(event.source.chat_id)
             except Exception:
                 pass
-            # 清理会话跟踪
-            if session_key in self._active_sessions:
-                del self._active_sessions[session_key]
+            # Late-arrival drain: a message may have arrived during the
+            # cleanup awaits above (typing_task cancel, stop_typing).  Such
+            # messages passed the Level-1 guard (entry still live, Event
+            # possibly set) and landed in _pending_messages via the
+            # busy-handler path.  Without this block, we would delete the
+            # active-session entry and the queued message would be silently
+            # dropped (user never gets a reply).
+            late_pending = self._pending_messages.pop(session_key, None)
+            if late_pending is not None:
+                logger.debug(
+                    "[%s] Late-arrival pending message during cleanup — spawning drain task",
+                    self.name,
+                )
+                _active = self._active_sessions.get(session_key)
+                if _active is not None:
+                    _active.clear()
+                drain_task = asyncio.create_task(
+                    self._process_message_background(late_pending, session_key)
+                )
+                try:
+                    self._background_tasks.add(drain_task)
+                    drain_task.add_done_callback(self._background_tasks.discard)
+                except TypeError:
+                    # Tests stub create_task() with non-hashable sentinels; tolerate.
+                    pass
+                # Leave _active_sessions[session_key] populated — the drain
+                # task's own lifecycle will clean it up.
+            else:
+                # Clean up session tracking
+                if session_key in self._active_sessions:
+                    del self._active_sessions[session_key]
     
     async def cancel_background_tasks(self) -> None:
-        """取消所有正在运行的后台消息处理任务。
+        """Cancel any in-flight background message-processing tasks.
 
-        在网关关闭/替换时使用，确保旧进程中的活跃会话
-        在适配器被拆除后不会继续运行。
+        Used during gateway shutdown/replacement so active sessions from the old
+        process do not keep running after adapters are being torn down.
         """
-        tasks = [task for task in self._background_tasks if not task.done()]
-        for task in tasks:
-            self._expected_cancelled_tasks.add(task)
-            task.cancel()
-        if tasks:
+        # Loop until no new tasks appear.  Without this, a message
+        # arriving during the `await asyncio.gather` below would spawn
+        # a fresh _process_message_background task (added to
+        # self._background_tasks at line ~1668 via handle_message),
+        # and the _background_tasks.clear() at the end of this method
+        # would drop the reference — the task runs untracked against a
+        # disconnecting adapter, logs send-failures, and may linger
+        # until it completes on its own.  Retrying the drain until the
+        # task set stabilizes closes the window.
+        MAX_DRAIN_ROUNDS = 5
+        for _ in range(MAX_DRAIN_ROUNDS):
+            tasks = [task for task in self._background_tasks if not task.done()]
+            if not tasks:
+                break
+            for task in tasks:
+                self._expected_cancelled_tasks.add(task)
+                task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            # Loop: late-arrival tasks spawned during the gather above
+            # will be in self._background_tasks now.  Re-check.
         self._background_tasks.clear()
         self._expected_cancelled_tasks.clear()
         self._pending_messages.clear()
         self._active_sessions.clear()
 
     def has_pending_interrupt(self, session_key: str) -> bool:
-        """检查某个会话是否有待处理的中断。"""
+        """Check if there's a pending interrupt for a session."""
         return session_key in self._active_sessions and self._active_sessions[session_key].is_set()
     
     def get_pending_message(self, session_key: str) -> Optional[MessageEvent]:
-        """获取并清除某个会话的待处理消息。"""
+        """Get and clear any pending message for a session."""
         return self._pending_messages.pop(session_key, None)
     
     def build_source(
@@ -1966,9 +2190,10 @@ class BasePlatformAdapter(ABC):
         chat_topic: Optional[str] = None,
         user_id_alt: Optional[str] = None,
         chat_id_alt: Optional[str] = None,
+        is_bot: bool = False,
     ) -> SessionSource:
-        """为当前平台构建 SessionSource 的辅助方法。"""
-        # 将空主题规范化为 None
+        """Helper to build a SessionSource for this platform."""
+        # Normalize empty topic to None
         if chat_topic is not None and not chat_topic.strip():
             chat_topic = None
         return SessionSource(
@@ -1982,27 +2207,28 @@ class BasePlatformAdapter(ABC):
             chat_topic=chat_topic.strip() if chat_topic else None,
             user_id_alt=user_id_alt,
             chat_id_alt=chat_id_alt,
+            is_bot=is_bot,
         )
     
     @abstractmethod
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """
-        获取聊天/频道的信息。
-
-        返回至少包含以下字段的字典：
-        - name: 聊天名称
-        - type: "dm"、"group"、"channel"
+        Get information about a chat/channel.
+        
+        Returns dict with at least:
+        - name: Chat name
+        - type: "dm", "group", "channel"
         """
         pass
     
     def format_message(self, content: str) -> str:
         """
-        为当前平台格式化消息。
-
-        在子类中重写以处理平台特定的格式
-        （例如 Telegram MarkdownV2、Discord markdown）。
-
-        默认实现原样返回内容。
+        Format a message for this platform.
+        
+        Override in subclasses to handle platform-specific formatting
+        (e.g., Telegram MarkdownV2, Discord markdown).
+        
+        Default implementation returns content as-is.
         """
         return content
     
@@ -2013,60 +2239,62 @@ class BasePlatformAdapter(ABC):
         len_fn: Optional["Callable[[str], int]"] = None,
     ) -> List[str]:
         """
-        将长消息分割为多个块，保留代码块边界。
+        Split a long message into chunks, preserving code block boundaries.
 
-        当分割点落在三反引号代码块内部时，会在当前块末尾关闭围栏，
-        并在下一块开头重新打开（使用原始语言标签）。多块响应
-        会添加如 ``(1/3)`` 的指示器。
+        When a split falls inside a triple-backtick code block, the fence is
+        closed at the end of the current chunk and reopened (with the original
+        language tag) at the start of the next chunk.  Multi-chunk responses
+        receive indicators like ``(1/3)``.
 
-        参数：
-            content: 完整的消息内容
-            max_length: 每块的最大长度（平台特定）
-            len_fn: 可选的长度计算函数。默认为 ``len``（Unicode 码点）。
-                     对于以 UTF-16 编码单元计量消息长度的平台（如 Telegram），
-                     传入 ``utf16_len``。
+        Args:
+            content: The full message content
+            max_length: Maximum length per chunk (platform-specific)
+            len_fn: Optional length function for measuring string length.
+                     Defaults to ``len`` (Unicode code-points).  Pass
+                     ``utf16_len`` for platforms that measure message
+                     length in UTF-16 code units (e.g. Telegram).
 
-        返回：
-            消息块列表
+        Returns:
+            List of message chunks
         """
         _len = len_fn or len
         if _len(content) <= max_length:
             return [content]
 
-        INDICATOR_RESERVE = 10   # 为 " (XX/XX)" 预留空间
+        INDICATOR_RESERVE = 10   # room for " (XX/XX)"
         FENCE_CLOSE = "\n```"
 
         chunks: List[str] = []
         remaining = content
-        # 当上一块在代码块中间结束时，此变量保存语言标签
-        # （可能为 ""），以便重新打开围栏。
+        # When the previous chunk ended mid-code-block, this holds the
+        # language tag (possibly "") so we can reopen the fence.
         carry_lang: Optional[str] = None
 
         while remaining:
-            # 如果是从上一块延续的代码块，
-            # 在前面添加带相同语言标签的新开始围栏。
+            # If we're continuing a code block from the previous chunk,
+            # prepend a new opening fence with the same language tag.
             prefix = f"```{carry_lang}\n" if carry_lang is not None else ""
 
-            # 在扣除前缀、可能的关闭围栏和块指示器后，
-            # 还能容纳多少正文文本。
+            # How much body text we can fit after accounting for the prefix,
+            # a potential closing fence, and the chunk indicator.
             headroom = max_length - INDICATOR_RESERVE - _len(prefix) - _len(FENCE_CLOSE)
             if headroom < 1:
                 headroom = max_length // 2
 
-            # 剩余内容能放进最后一个块
+            # Everything remaining fits in one final chunk
             if _len(prefix) + _len(remaining) <= max_length - INDICATOR_RESERVE:
                 chunks.append(prefix + remaining)
                 break
 
-            # 找一个自然分割点（优先选换行符，其次选空格）。
-            # 当 _len != len 时（例如 Telegram 的 utf16_len），headroom 的
-            # 单位是自定义单位。我们需要码点级别的切片位置，使其在
-            # 自定义单位的预算范围内。
+            # Find a natural split point (prefer newlines, then spaces).
+            # When _len != len (e.g. utf16_len for Telegram), headroom is
+            # measured in the custom unit.  We need codepoint-based slice
+            # positions that stay within the custom-unit budget.
             #
-            # _safe_slice_pos() 将自定义单位预算映射为最大码点偏移，
-            # 使得自定义长度 ≤ 预算。
+            # _safe_slice_pos() maps a custom-unit budget to the largest
+            # codepoint offset whose custom length ≤ budget.
             if _len is not len:
-                # 将 headroom（自定义单位）映射为码点切片长度
+                # Map headroom (custom units) → codepoint slice length
                 _cp_limit = _custom_unit_to_cp(remaining, headroom, _len)
             else:
                 _cp_limit = headroom
@@ -2077,11 +2305,12 @@ class BasePlatformAdapter(ABC):
             if split_at < 1:
                 split_at = _cp_limit
 
-            # 避免在行内代码段（`...`）中间分割。
-            # 如果 split_at 之前的文本有奇数个未转义反引号，
-            # 则分割点落在行内代码内部 — 产生的块会有未配对的反引号，
-            # 其中的特殊字符（如括号）会未被转义，
-            # 导致 Telegram 的 MarkdownV2 解析错误。
+            # Avoid splitting inside an inline code span (`...`).
+            # If the text before split_at has an odd number of unescaped
+            # backticks, the split falls inside inline code — the resulting
+            # chunk would have an unpaired backtick and any special characters
+            # (like parentheses) inside the broken span would be unescaped,
+            # causing MarkdownV2 parse errors on Telegram.
             candidate = remaining[:split_at]
             backtick_count = candidate.count("`") - candidate.count("\\`")
             if backtick_count % 2 == 1:
@@ -2090,7 +2319,7 @@ class BasePlatformAdapter(ABC):
                 while last_bt > 0 and candidate[last_bt - 1] == "\\":
                     last_bt = candidate.rfind("`", 0, last_bt)
                 if last_bt > 0:
-                    # 尝试在反引号之前找到一个空格或换行符
+                    # Try to find a space or newline just before the backtick
                     safe_split = candidate.rfind(" ", 0, last_bt)
                     nl_split = candidate.rfind("\n", 0, last_bt)
                     safe_split = max(safe_split, nl_split)
@@ -2102,8 +2331,8 @@ class BasePlatformAdapter(ABC):
 
             full_chunk = prefix + chunk_body
 
-            # 仅遍历 chunk_body（不包括我们添加的前缀）来
-            # 判断是否在一个未关闭的代码块中结束。
+            # Walk only the chunk_body (not the prefix we prepended) to
+            # determine whether we end inside an open code block.
             in_code = carry_lang is not None
             lang = carry_lang or ""
             for line in chunk_body.split("\n"):
@@ -2118,7 +2347,7 @@ class BasePlatformAdapter(ABC):
                         lang = tag.split()[0] if tag else ""
 
             if in_code:
-                # 关闭孤立的围栏，使此块本身是合法的
+                # Close the orphaned fence so the chunk is valid on its own
                 full_chunk += FENCE_CLOSE
                 carry_lang = lang
             else:
@@ -2126,7 +2355,7 @@ class BasePlatformAdapter(ABC):
 
             chunks.append(full_chunk)
 
-        # 当响应跨越多条消息时附加块指示器
+        # Append chunk indicators when the response spans multiple messages
         if len(chunks) > 1:
             total = len(chunks)
             chunks = [

@@ -1,4 +1,4 @@
-"""ACP 代理服务器 -- 通过代理客户端协议暴露 Hermes Agent。"""
+"""ACP agent server — exposes Hermes Agent via the Agent Client Protocol."""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ from acp.schema import (
     McpServerHttp,
     McpServerSse,
     McpServerStdio,
+    ModelInfo,
     NewSessionResponse,
     PromptResponse,
     ResumeSessionResponse,
@@ -36,6 +37,7 @@ from acp.schema import (
     SessionCapabilities,
     SessionForkCapabilities,
     SessionListCapabilities,
+    SessionModelState,
     SessionResumeCapabilities,
     SessionInfo,
     TextContentBlock,
@@ -43,13 +45,13 @@ from acp.schema import (
     Usage,
 )
 
-# AuthMethodAgent 在 agent-client-protocol 0.9.0 中从 AuthMethod 重命名而来
+# AuthMethodAgent was renamed from AuthMethod in agent-client-protocol 0.9.0
 try:
     from acp.schema import AuthMethodAgent
 except ImportError:
     from acp.schema import AuthMethod as AuthMethodAgent  # type: ignore[attr-defined]
 
-from acp_adapter.auth import detect_provider, has_provider
+from acp_adapter.auth import detect_provider
 from acp_adapter.events import (
     make_message_cb,
     make_step_cb,
@@ -66,8 +68,13 @@ try:
 except Exception:
     HERMES_VERSION = "0.0.0"
 
-# 用于并行运行 AIAgent（同步）的线程池。
+# Thread pool for running AIAgent (synchronous) in parallel.
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
+
+# Server-side page size for list_sessions. The ACP ListSessionsRequest schema
+# does not expose a client-side limit, so this is a fixed cap that clients
+# paginate against using `cursor` / `next_cursor`.
+_LIST_SESSIONS_PAGE_SIZE = 50
 
 
 def _extract_text(
@@ -79,19 +86,19 @@ def _extract_text(
         | EmbeddedResourceContentBlock
     ],
 ) -> str:
-    """从 ACP 内容块中提取纯文本。"""
+    """Extract plain text from ACP content blocks."""
     parts: list[str] = []
     for block in prompt:
         if isinstance(block, TextContentBlock):
             parts.append(block.text)
         elif hasattr(block, "text"):
             parts.append(str(block.text))
-        # 非文本块目前被忽略。
+        # Non-text blocks are ignored for now.
     return "\n".join(parts)
 
 
 class HermesACPAgent(acp.Agent):
-    """包装 Hermes AIAgent 的 ACP Agent 实现。"""
+    """ACP Agent implementation wrapping Hermes AIAgent."""
 
     _SLASH_COMMANDS = {
         "help": "Show available commands",
@@ -140,19 +147,111 @@ class HermesACPAgent(acp.Agent):
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
 
-    # ---- 连接生命周期 -----------------------------------------------
+    # ---- Connection lifecycle -----------------------------------------------
 
     def on_connect(self, conn: acp.Client) -> None:
-        """存储客户端连接，用于发送会话更新。"""
+        """Store the client connection for sending session updates."""
         self._conn = conn
         logger.info("ACP client connected")
+
+    @staticmethod
+    def _encode_model_choice(provider: str | None, model: str | None) -> str:
+        """Encode a model selection so ACP clients can keep provider context."""
+        raw_model = str(model or "").strip()
+        if not raw_model:
+            return ""
+        raw_provider = str(provider or "").strip().lower()
+        if not raw_provider:
+            return raw_model
+        return f"{raw_provider}:{raw_model}"
+
+    def _build_model_state(self, state: SessionState) -> SessionModelState | None:
+        """Return the ACP model selector payload for editors like Zed."""
+        model = str(state.model or getattr(state.agent, "model", "") or "").strip()
+        provider = getattr(state.agent, "provider", None) or detect_provider() or "openrouter"
+
+        try:
+            from hermes_cli.models import curated_models_for_provider, normalize_provider, provider_label
+
+            normalized_provider = normalize_provider(provider)
+            provider_name = provider_label(normalized_provider)
+            available_models: list[ModelInfo] = []
+            seen_ids: set[str] = set()
+
+            for model_id, description in curated_models_for_provider(normalized_provider):
+                rendered_model = str(model_id or "").strip()
+                if not rendered_model:
+                    continue
+                choice_id = self._encode_model_choice(normalized_provider, rendered_model)
+                if choice_id in seen_ids:
+                    continue
+                desc_parts = [f"Provider: {provider_name}"]
+                if description:
+                    desc_parts.append(str(description).strip())
+                if rendered_model == model:
+                    desc_parts.append("current")
+                available_models.append(
+                    ModelInfo(
+                        model_id=choice_id,
+                        name=rendered_model,
+                        description=" • ".join(part for part in desc_parts if part),
+                    )
+                )
+                seen_ids.add(choice_id)
+
+            current_model_id = self._encode_model_choice(normalized_provider, model)
+            if current_model_id and current_model_id not in seen_ids:
+                available_models.insert(
+                    0,
+                    ModelInfo(
+                        model_id=current_model_id,
+                        name=model,
+                        description=f"Provider: {provider_name} • current",
+                    ),
+                )
+
+            if available_models:
+                return SessionModelState(
+                    available_models=available_models,
+                    current_model_id=current_model_id or available_models[0].model_id,
+                )
+        except Exception:
+            logger.debug("Could not build ACP model state", exc_info=True)
+
+        if not model:
+            return None
+
+        fallback_choice = self._encode_model_choice(provider, model)
+        return SessionModelState(
+            available_models=[ModelInfo(model_id=fallback_choice, name=model)],
+            current_model_id=fallback_choice,
+        )
+
+    @staticmethod
+    def _resolve_model_selection(raw_model: str, current_provider: str) -> tuple[str, str]:
+        """Resolve ``provider:model`` input into the provider and normalized model id."""
+        target_provider = current_provider
+        new_model = raw_model.strip()
+
+        try:
+            from hermes_cli.models import detect_provider_for_model, parse_model_input
+
+            target_provider, new_model = parse_model_input(new_model, current_provider)
+            if target_provider == current_provider:
+                detected = detect_provider_for_model(new_model, current_provider)
+                if detected:
+                    target_provider, new_model = detected
+        except Exception:
+            logger.debug("Provider detection failed, using model as-is", exc_info=True)
+
+        return target_provider, new_model
 
     async def _register_session_mcp_servers(
         self,
         state: SessionState,
         mcp_servers: list[McpServerStdio | McpServerHttp | McpServerSse] | None,
     ) -> None:
-        """注册 ACP 提供的 MCP 服务器并刷新代理工具面板。"""
+        """Register ACP-provided MCP servers and refresh the agent tool surface."""
         if not mcp_servers:
             return
 
@@ -212,7 +311,7 @@ class HermesACPAgent(acp.Agent):
                 exc_info=True,
             )
 
-    # ---- ACP 生命周期 ------------------------------------------------------
+    # ---- ACP lifecycle ------------------------------------------------------
 
     async def initialize(
         self,
@@ -257,11 +356,20 @@ class HermesACPAgent(acp.Agent):
         )
 
     async def authenticate(self, method_id: str, **kwargs: Any) -> AuthenticateResponse | None:
-        if has_provider():
-            return AuthenticateResponse()
-        return None
+        # Only accept authenticate() calls whose method_id matches the
+        # provider we advertised in initialize(). Without this check,
+        # authenticate() would acknowledge any method_id as long as the
+        # server has provider credentials configured — harmless under
+        # Hermes' threat model (ACP is stdio-only, local-trust), but poor
+        # API hygiene and confusing if ACP ever grows multi-method auth.
+        provider = detect_provider()
+        if not provider:
+            return None
+        if not isinstance(method_id, str) or method_id.strip().lower() != provider:
+            return None
+        return AuthenticateResponse()
 
-    # ---- 会话管理 -------------------------------------------------
+    # ---- Session management -------------------------------------------------
 
     async def new_session(
         self,
@@ -273,7 +381,10 @@ class HermesACPAgent(acp.Agent):
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("New session %s (cwd=%s)", state.session_id, cwd)
         self._schedule_available_commands_update(state.session_id)
-        return NewSessionResponse(session_id=state.session_id)
+        return NewSessionResponse(
+            session_id=state.session_id,
+            models=self._build_model_state(state),
+        )
 
     async def load_session(
         self,
@@ -289,7 +400,7 @@ class HermesACPAgent(acp.Agent):
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Loaded session %s", session_id)
         self._schedule_available_commands_update(session_id)
-        return LoadSessionResponse()
+        return LoadSessionResponse(models=self._build_model_state(state))
 
     async def resume_session(
         self,
@@ -305,7 +416,7 @@ class HermesACPAgent(acp.Agent):
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Resumed session %s", state.session_id)
         self._schedule_available_commands_update(state.session_id)
-        return ResumeSessionResponse()
+        return ResumeSessionResponse(models=self._build_model_state(state))
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
         state = self.session_manager.get_session(session_id)
@@ -340,14 +451,46 @@ class HermesACPAgent(acp.Agent):
         cwd: str | None = None,
         **kwargs: Any,
     ) -> ListSessionsResponse:
-        infos = self.session_manager.list_sessions()
-        sessions = [
-            SessionInfo(session_id=s["session_id"], cwd=s["cwd"])
-            for s in infos
-        ]
-        return ListSessionsResponse(sessions=sessions)
+        """List ACP sessions with optional ``cwd`` filtering and cursor pagination.
 
-    # ---- 提示处理（核心） ------------------------------------------------------
+        ``cwd`` is passed through to ``SessionManager.list_sessions`` which already
+        normalizes and filters by working directory. ``cursor`` is a ``session_id``
+        previously returned as ``next_cursor``; results resume after that entry.
+        Server-side page size is capped at ``_LIST_SESSIONS_PAGE_SIZE``; when more
+        results remain, ``next_cursor`` is set to the last returned ``session_id``.
+        """
+        infos = self.session_manager.list_sessions(cwd=cwd)
+
+        if cursor:
+            for idx, s in enumerate(infos):
+                if s["session_id"] == cursor:
+                    infos = infos[idx + 1:]
+                    break
+            else:
+                # Unknown cursor -> empty page (do not fall back to full list).
+                infos = []
+
+        has_more = len(infos) > _LIST_SESSIONS_PAGE_SIZE
+        infos = infos[:_LIST_SESSIONS_PAGE_SIZE]
+
+        sessions = []
+        for s in infos:
+            updated_at = s.get("updated_at")
+            if updated_at is not None and not isinstance(updated_at, str):
+                updated_at = str(updated_at)
+            sessions.append(
+                SessionInfo(
+                    session_id=s["session_id"],
+                    cwd=s["cwd"],
+                    title=s.get("title"),
+                    updated_at=updated_at,
+                )
+            )
+
+        next_cursor = sessions[-1].session_id if has_more and sessions else None
+        return ListSessionsResponse(sessions=sessions, next_cursor=next_cursor)
+
+    # ---- Prompt (core) ------------------------------------------------------
 
     async def prompt(
         self,
@@ -361,7 +504,7 @@ class HermesACPAgent(acp.Agent):
         session_id: str,
         **kwargs: Any,
     ) -> PromptResponse:
-        """对用户提示运行 Hermes，并将事件流式返回给编辑器。"""
+        """Run Hermes on the user's prompt and stream events back to the editor."""
         state = self.session_manager.get_session(session_id)
         if state is None:
             logger.error("prompt: session %s not found", session_id)
@@ -371,7 +514,7 @@ class HermesACPAgent(acp.Agent):
         if not user_text:
             return PromptResponse(stop_reason="end_turn")
 
-        # 拦截斜杠命令 -- 在本地处理，不调用 LLM
+        # Intercept slash commands — handle locally without calling the LLM
         if user_text.startswith("/"):
             response_text = self._handle_slash_command(user_text, state)
             if response_text is not None:
@@ -389,12 +532,13 @@ class HermesACPAgent(acp.Agent):
             state.cancel_event.clear()
 
         tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
+        tool_call_meta: dict[str, dict[str, Any]] = {}
         previous_approval_cb = None
 
         if conn:
-            tool_progress_cb = make_tool_progress_cb(conn, session_id, loop, tool_call_ids)
+            tool_progress_cb = make_tool_progress_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
             thinking_cb = make_thinking_cb(conn, session_id, loop)
-            step_cb = make_step_cb(conn, session_id, loop, tool_call_ids)
+            step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
             message_cb = make_message_cb(conn, session_id, loop)
             approval_cb = make_approval_callback(conn.request_permission, loop, session_id)
         else:
@@ -445,10 +589,23 @@ class HermesACPAgent(acp.Agent):
 
         if result.get("messages"):
             state.history = result["messages"]
-            # 持久化更新后的历史记录，使会话在进程重启后存活。
+            # Persist updated history so sessions survive process restarts.
             self.session_manager.save_session(session_id)
 
         final_response = result.get("final_response", "")
+        if final_response:
+            try:
+                from agent.title_generator import maybe_auto_title
+
+                maybe_auto_title(
+                    self.session_manager._get_db(),
+                    session_id,
+                    user_text,
+                    final_response,
+                    state.history,
+                )
+            except Exception:
+                logger.debug("Failed to auto-title ACP session %s", session_id, exc_info=True)
         if final_response and conn:
             update = acp.update_agent_message_text(final_response)
             await conn.session_update(session_id, update)
@@ -466,7 +623,7 @@ class HermesACPAgent(acp.Agent):
         stop_reason = "cancelled" if state.cancel_event and state.cancel_event.is_set() else "end_turn"
         return PromptResponse(stop_reason=stop_reason, usage=usage)
 
-    # ---- 斜杠命令（无头模式）-------------------------------------------
+    # ---- Slash commands (headless) -------------------------------------------
 
     @classmethod
     def _available_commands(cls) -> list[AvailableCommand]:
@@ -485,7 +642,7 @@ class HermesACPAgent(acp.Agent):
         return commands
 
     async def _send_available_commands_update(self, session_id: str) -> None:
-        """向已连接的 ACP 客户端通告支持的斜杠命令。"""
+        """Advertise supported slash commands to the connected ACP client."""
         if not self._conn:
             return
 
@@ -493,8 +650,8 @@ class HermesACPAgent(acp.Agent):
             await self._conn.session_update(
                 session_id=session_id,
                 update=AvailableCommandsUpdate(
-                    sessionUpdate="available_commands_update",
-                    availableCommands=self._available_commands(),
+                    session_update="available_commands_update",
+                    available_commands=self._available_commands(),
                 ),
             )
         except Exception:
@@ -505,7 +662,7 @@ class HermesACPAgent(acp.Agent):
             )
 
     def _schedule_available_commands_update(self, session_id: str) -> None:
-        """在会话响应排队后发送命令通告。"""
+        """Send the command advertisement after the session response is queued."""
         if not self._conn:
             return
         loop = asyncio.get_running_loop()
@@ -514,10 +671,10 @@ class HermesACPAgent(acp.Agent):
         )
 
     def _handle_slash_command(self, text: str, state: SessionState) -> str | None:
-        """分发斜杠命令并返回响应文本。
+        """Dispatch a slash command and return the response text.
 
-        对于未识别的命令返回 ``None``，使其直接传递给 LLM
-        （用户可能将 ``/something`` 作为普通文本输入）。
+        Returns ``None`` for unrecognized commands so they fall through
+        to the LLM (the user may have typed ``/something`` as prose).
         """
         parts = text.split(maxsplit=1)
         cmd = parts[0].lstrip("/").lower()
@@ -534,7 +691,7 @@ class HermesACPAgent(acp.Agent):
         }.get(cmd)
 
         if handler is None:
-            return None  # 不是已知命令 -- 让 LLM 处理
+            return None  # not a known command — let the LLM handle it
 
         try:
             return handler(args, state)
@@ -556,27 +713,15 @@ class HermesACPAgent(acp.Agent):
             provider = getattr(state.agent, "provider", None) or "auto"
             return f"Current model: {model}\nProvider: {provider}"
 
-        new_model = args.strip()
-        target_provider = None
         current_provider = getattr(state.agent, "provider", None) or "openrouter"
-
-        # 自动检测请求模型的提供商
-        try:
-            from hermes_cli.models import parse_model_input, detect_provider_for_model
-            target_provider, new_model = parse_model_input(new_model, current_provider)
-            if target_provider == current_provider:
-                detected = detect_provider_for_model(new_model, current_provider)
-                if detected:
-                    target_provider, new_model = detected
-        except Exception:
-            logger.debug("Provider detection failed, using model as-is", exc_info=True)
+        target_provider, new_model = self._resolve_model_selection(args, current_provider)
 
         state.model = new_model
         state.agent = self.session_manager._make_agent(
             session_id=state.session_id,
             cwd=state.cwd,
             model=new_model,
-            requested_provider=target_provider or current_provider,
+            requested_provider=target_provider,
         )
         self.session_manager.save_session(state.session_id)
         provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider
@@ -594,7 +739,7 @@ class HermesACPAgent(acp.Agent):
             for t in tools:
                 name = t.get("function", {}).get("name", "?")
                 desc = t.get("function", {}).get("description", "")
-                # 截断过长的描述
+                # Truncate long descriptions
                 if len(desc) > 80:
                     desc = desc[:77] + "..."
                 lines.append(f"  {name}: {desc}")
@@ -606,7 +751,7 @@ class HermesACPAgent(acp.Agent):
         n_messages = len(state.history)
         if n_messages == 0:
             return "Conversation is empty (no messages yet)."
-        # 按角色统计
+        # Count by role
         roles: dict[str, int] = {}
         for msg in state.history:
             role = msg.get("role", "unknown")
@@ -670,28 +815,38 @@ class HermesACPAgent(acp.Agent):
     def _cmd_version(self, args: str, state: SessionState) -> str:
         return f"Hermes Agent v{HERMES_VERSION}"
 
-    # ---- 模型切换（ACP 协议方法）-------------------------------
+    # ---- Model switching (ACP protocol method) -------------------------------
 
     async def set_session_model(
         self, model_id: str, session_id: str, **kwargs: Any
     ) -> SetSessionModelResponse | None:
-        """切换会话的模型（由 ACP 协议调用）。"""
+        """Switch the model for a session (called by ACP protocol)."""
         state = self.session_manager.get_session(session_id)
         if state:
-            state.model = model_id
             current_provider = getattr(state.agent, "provider", None)
-            current_base_url = getattr(state.agent, "base_url", None)
-            current_api_mode = getattr(state.agent, "api_mode", None)
+            requested_provider, resolved_model = self._resolve_model_selection(
+                model_id,
+                current_provider or "openrouter",
+            )
+            state.model = resolved_model
+            provider_changed = bool(current_provider and requested_provider != current_provider)
+            current_base_url = None if provider_changed else getattr(state.agent, "base_url", None)
+            current_api_mode = None if provider_changed else getattr(state.agent, "api_mode", None)
             state.agent = self.session_manager._make_agent(
                 session_id=session_id,
                 cwd=state.cwd,
-                model=model_id,
-                requested_provider=current_provider,
+                model=resolved_model,
+                requested_provider=requested_provider,
                 base_url=current_base_url,
                 api_mode=current_api_mode,
             )
             self.session_manager.save_session(session_id)
-            logger.info("Session %s: model switched to %s", session_id, model_id)
+            logger.info(
+                "Session %s: model switched to %s via provider %s",
+                session_id,
+                resolved_model,
+                requested_provider,
+            )
             return SetSessionModelResponse()
         logger.warning("Session %s: model switch requested for missing session", session_id)
         return None
@@ -699,7 +854,7 @@ class HermesACPAgent(acp.Agent):
     async def set_session_mode(
         self, mode_id: str, session_id: str, **kwargs: Any
     ) -> SetSessionModeResponse | None:
-        """持久化编辑器请求的模式，使 ACP 客户端在模式切换时不会失败。"""
+        """Persist the editor-requested mode so ACP clients do not fail on mode switches."""
         state = self.session_manager.get_session(session_id)
         if state is None:
             logger.warning("Session %s: mode switch requested for missing session", session_id)
@@ -712,7 +867,7 @@ class HermesACPAgent(acp.Agent):
     async def set_config_option(
         self, config_id: str, session_id: str, value: str, **kwargs: Any
     ) -> SetSessionConfigOptionResponse | None:
-        """接受 ACP 配置选项更新，即使 Hermes 尚未有类型化的 ACP 配置界面。"""
+        """Accept ACP config option updates even when Hermes has no typed ACP config surface yet."""
         state = self.session_manager.get_session(session_id)
         if state is None:
             logger.warning("Session %s: config update requested for missing session", session_id)

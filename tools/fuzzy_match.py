@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
 """
-文件操作的模糊匹配模块
+Fuzzy Matching Module for File Operations
 
-实现了一条多策略匹配链，以稳健地查找和替换文本，
-适应 LLM 生成代码中常见的空白、缩进和转义差异。
+Implements a multi-strategy matching chain to robustly find and replace text,
+accommodating variations in whitespace, indentation, and escaping common
+in LLM-generated code.
 
-8 策略链（灵感来自 OpenCode），按顺序尝试：
-1. 精确匹配 - 直接字符串比较
-2. 行级修剪 - 逐行去除首尾空白
-3. 空白规范化 - 将多个空格/制表符折叠为单个空格
-4. 缩进灵活 - 完全忽略缩进差异
-5. 转义规范化 - 将 \\n 字面量转换为实际换行符
-6. 边界修剪 - 仅修剪首行和末行的空白
-7. 块锚定 - 匹配首行+末行，使用相似度比较中间部分
-8. 上下文感知 - 50% 行相似度阈值
+The 8-strategy chain (inspired by OpenCode), tried in order:
+1. Exact match - Direct string comparison
+2. Line-trimmed - Strip leading/trailing whitespace per line
+3. Whitespace normalized - Collapse multiple spaces/tabs to single space
+4. Indentation flexible - Ignore indentation differences entirely
+5. Escape normalized - Convert \\n literals to actual newlines
+6. Trimmed boundary - Trim first/last line whitespace only
+7. Block anchor - Match first+last lines, use similarity for middle
+8. Context-aware - 50% line similarity threshold
 
-多次出现的匹配通过 replace_all 标志处理。
+Multi-occurrence matching is handled via the replace_all flag.
 
-用法:
+Usage:
     from tools.fuzzy_match import fuzzy_find_and_replace
-
+    
     new_content, match_count, strategy, error = fuzzy_find_and_replace(
         content="def foo():\\n    pass",
         old_string="def foo():",
@@ -33,14 +34,14 @@ from typing import Tuple, Optional, List, Callable
 from difflib import SequenceMatcher
 
 UNICODE_MAP = {
-    "\u201c": '"', "\u201d": '"',  # 智能双引号
-    "\u2018": "'", "\u2019": "'",  # 智能单引号
-    "\u2014": "--", "\u2013": "-", # 长破折号/短破折号
-    "\u2026": "...", "\u00a0": " ", # 省略号和不间断空格
+    "\u201c": '"', "\u201d": '"',  # smart double quotes
+    "\u2018": "'", "\u2019": "'",  # smart single quotes
+    "\u2014": "--", "\u2013": "-", # em/en dashes
+    "\u2026": "...", "\u00a0": " ", # ellipsis and non-breaking space
 }
 
 def _unicode_normalize(text: str) -> str:
-    """将 Unicode 字符规范化为对应的标准 ASCII 等价物。"""
+    """Normalizes Unicode characters to their standard ASCII equivalents."""
     for char, repl in UNICODE_MAP.items():
         text = text.replace(char, repl)
     return text
@@ -49,18 +50,18 @@ def _unicode_normalize(text: str) -> str:
 def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
                             replace_all: bool = False) -> Tuple[str, int, Optional[str], Optional[str]]:
     """
-    使用一系列逐渐宽松的模糊匹配策略查找并替换文本。
+    Find and replace text using a chain of increasingly fuzzy matching strategies.
 
-    参数:
-        content: 要搜索的文件内容
-        old_string: 要查找的文本
-        new_string: 替换文本
-        replace_all: 如果为 True，替换所有出现的位置；如果为 False，要求匹配唯一
+    Args:
+        content: The file content to search in
+        old_string: The text to find
+        new_string: The replacement text
+        replace_all: If True, replace all occurrences; if False, require uniqueness
 
-    返回:
-        元组 (new_content, match_count, strategy_name, error_message)
-        - 成功: (修改后的内容, 替换次数, 使用的策略名, None)
-        - 失败: (原始内容, 0, None, 错误描述)
+    Returns:
+        Tuple of (new_content, match_count, strategy_name, error_message)
+        - If successful: (modified_content, number_of_replacements, strategy_used, None)
+        - If failed: (original_content, 0, None, error_description)
     """
     if not old_string:
         return content, 0, None, "old_string cannot be empty"
@@ -68,7 +69,7 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
     if old_string == new_string:
         return content, 0, None, "old_string and new_string are identical"
 
-    # 按顺序尝试每种匹配策略
+    # Try each matching strategy in order
     strategies: List[Tuple[str, Callable]] = [
         ("exact", _strategy_exact),
         ("line_trimmed", _strategy_line_trimmed),
@@ -85,35 +86,90 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
         matches = strategy_fn(content, old_string)
 
         if matches:
-            # 使用当前策略找到了匹配
+            # Found matches with this strategy
             if len(matches) > 1 and not replace_all:
                 return content, 0, None, (
                     f"Found {len(matches)} matches for old_string. "
                     f"Provide more context to make it unique, or use replace_all=True."
                 )
 
-            # 执行替换
+            # Escape-drift guard: when the matched strategy is NOT `exact`,
+            # we matched via some form of normalization. If new_string
+            # contains shell/JSON-style escape sequences (\' or \") that
+            # would be written literally into the file but the matched
+            # region of the file has no such sequences, this is almost
+            # certainly tool-call serialization drift — the model typed
+            # an apostrophe/quote and the transport added a stray
+            # backslash. Writing new_string as-is would corrupt the file.
+            # Block with a helpful error so the model re-reads and retries
+            # instead of the caller silently persisting garbage (or not).
+            if strategy_name != "exact":
+                drift_err = _detect_escape_drift(content, matches, old_string, new_string)
+                if drift_err:
+                    return content, 0, None, drift_err
+
+            # Perform replacement
             new_content = _apply_replacements(content, matches, new_string)
             return new_content, len(matches), strategy_name, None
 
-    # 没有策略找到匹配
+    # No strategy found a match
     return content, 0, None, "Could not find a match for old_string in the file"
+
+
+def _detect_escape_drift(content: str, matches: List[Tuple[int, int]],
+                         old_string: str, new_string: str) -> Optional[str]:
+    """Detect tool-call escape-drift artifacts in new_string.
+
+    Looks for ``\\'`` or ``\\"`` sequences that are present in both
+    old_string and new_string (i.e. the model copy-pasted them as "context"
+    it intended to preserve) but don't exist in the matched region of the
+    file. That pattern indicates the transport layer inserted spurious
+    shell-style escapes around apostrophes or quotes — writing new_string
+    verbatim would literally insert ``\\'`` into source code.
+
+    Returns an error string if drift is detected, None otherwise.
+    """
+    # Cheap pre-check: bail out unless new_string actually contains a
+    # suspect escape sequence. This keeps the guard free for all the
+    # common, correct cases.
+    if "\\'" not in new_string and '\\"' not in new_string:
+        return None
+
+    # Aggregate matched regions of the file — that's what new_string will
+    # replace. If the suspect escapes are present there already, the
+    # model is genuinely preserving them (valid for some languages /
+    # escaped strings); accept the patch.
+    matched_regions = "".join(content[start:end] for start, end in matches)
+
+    for suspect in ("\\'", '\\"'):
+        if suspect in new_string and suspect in old_string and suspect not in matched_regions:
+            plain = suspect[1]  # "'" or '"'
+            return (
+                f"Escape-drift detected: old_string and new_string contain "
+                f"the literal sequence {suspect!r} but the matched region of "
+                f"the file does not. This is almost always a tool-call "
+                f"serialization artifact where an apostrophe or quote got "
+                f"prefixed with a spurious backslash. Re-read the file with "
+                f"read_file and pass old_string/new_string without "
+                f"backslash-escaping {plain!r} characters."
+            )
+    return None
 
 
 def _apply_replacements(content: str, matches: List[Tuple[int, int]], new_string: str) -> str:
     """
-    在指定位置应用替换。
-
-    参数:
-        content: 原始内容
-        matches: 要替换的 (start, end) 位置列表
-        new_string: 替换文本
-
-    返回:
-        应用替换后的内容
+    Apply replacements at the given positions.
+    
+    Args:
+        content: Original content
+        matches: List of (start, end) positions to replace
+        new_string: Replacement text
+    
+    Returns:
+        Content with replacements applied
     """
-    # 按位置降序排列匹配项，从末尾向前替换
-    # 这样可以保持前面匹配项的位置不变
+    # Sort matches by position (descending) to replace from end to start
+    # This preserves positions of earlier matches
     sorted_matches = sorted(matches, key=lambda x: x[0], reverse=True)
     
     result = content
@@ -124,11 +180,11 @@ def _apply_replacements(content: str, matches: List[Tuple[int, int]], new_string
 
 
 # =============================================================================
-# 匹配策略
+# Matching Strategies
 # =============================================================================
 
 def _strategy_exact(content: str, pattern: str) -> List[Tuple[int, int]]:
-    """策略 1：精确字符串匹配。"""
+    """Strategy 1: Exact string match."""
     matches = []
     start = 0
     while True:
@@ -142,18 +198,18 @@ def _strategy_exact(content: str, pattern: str) -> List[Tuple[int, int]]:
 
 def _strategy_line_trimmed(content: str, pattern: str) -> List[Tuple[int, int]]:
     """
-    策略 2：逐行空白修剪匹配。
-
-    匹配前去除每行的首尾空白。
+    Strategy 2: Match with line-by-line whitespace trimming.
+    
+    Strips leading/trailing whitespace from each line before matching.
     """
-    # 通过修剪每行来规范化模式和内容
+    # Normalize pattern and content by trimming each line
     pattern_lines = [line.strip() for line in pattern.split('\n')]
     pattern_normalized = '\n'.join(pattern_lines)
     
     content_lines = content.split('\n')
     content_normalized_lines = [line.strip() for line in content_lines]
     
-    # 构建从规范化位置回到原始位置的映射
+    # Build mapping from normalized positions back to original positions
     return _find_normalized_matches(
         content, content_lines, content_normalized_lines,
         pattern, pattern_normalized
@@ -162,30 +218,30 @@ def _strategy_line_trimmed(content: str, pattern: str) -> List[Tuple[int, int]]:
 
 def _strategy_whitespace_normalized(content: str, pattern: str) -> List[Tuple[int, int]]:
     """
-    策略 3：将多个空白折叠为单个空格。
+    Strategy 3: Collapse multiple whitespace to single space.
     """
     def normalize(s):
-        # 将多个空格/制表符折叠为单个空格，保留换行符
+        # Collapse multiple spaces/tabs to single space, preserve newlines
         return re.sub(r'[ \t]+', ' ', s)
     
     pattern_normalized = normalize(pattern)
     content_normalized = normalize(content)
     
-    # 在规范化内容中查找，然后映射回原始位置
+    # Find in normalized, map back to original
     matches_in_normalized = _strategy_exact(content_normalized, pattern_normalized)
     
     if not matches_in_normalized:
         return []
     
-    # 将位置映射回原始内容
+    # Map positions back to original content
     return _map_normalized_positions(content, content_normalized, matches_in_normalized)
 
 
 def _strategy_indentation_flexible(content: str, pattern: str) -> List[Tuple[int, int]]:
     """
-    策略 4：完全忽略缩进差异。
-
-    匹配前去除所有行的前导空白。
+    Strategy 4: Ignore indentation differences entirely.
+    
+    Strips all leading whitespace from lines before matching.
     """
     content_lines = content.split('\n')
     content_stripped_lines = [line.lstrip() for line in content_lines]
@@ -199,18 +255,18 @@ def _strategy_indentation_flexible(content: str, pattern: str) -> List[Tuple[int
 
 def _strategy_escape_normalized(content: str, pattern: str) -> List[Tuple[int, int]]:
     """
-    策略 5：将转义序列转换为实际字符。
-
-    处理 \\n -> 换行, \\t -> 制表符等。
+    Strategy 5: Convert escape sequences to actual characters.
+    
+    Handles \\n -> newline, \\t -> tab, etc.
     """
     def unescape(s):
-        # 转换常见的转义序列
+        # Convert common escape sequences
         return s.replace('\\n', '\n').replace('\\t', '\t').replace('\\r', '\r')
     
     pattern_unescaped = unescape(pattern)
     
     if pattern_unescaped == pattern:
-        # 没有需要转换的转义序列，跳过此策略
+        # No escapes to convert, skip this strategy
         return []
     
     return _strategy_exact(content, pattern_unescaped)
@@ -218,15 +274,15 @@ def _strategy_escape_normalized(content: str, pattern: str) -> List[Tuple[int, i
 
 def _strategy_trimmed_boundary(content: str, pattern: str) -> List[Tuple[int, int]]:
     """
-    策略 6：仅修剪首行和末行的空白。
-
-    当模式边界存在空白差异时特别有用。
+    Strategy 6: Trim whitespace from first and last lines only.
+    
+    Useful when the pattern boundaries have whitespace differences.
     """
     pattern_lines = pattern.split('\n')
     if not pattern_lines:
         return []
     
-    # 仅修剪首行和末行
+    # Trim only first and last lines
     pattern_lines[0] = pattern_lines[0].strip()
     if len(pattern_lines) > 1:
         pattern_lines[-1] = pattern_lines[-1].strip()
@@ -235,21 +291,21 @@ def _strategy_trimmed_boundary(content: str, pattern: str) -> List[Tuple[int, in
     
     content_lines = content.split('\n')
     
-    # 在内容中搜索匹配的块
+    # Search through content for matching block
     matches = []
     pattern_line_count = len(pattern_lines)
     
     for i in range(len(content_lines) - pattern_line_count + 1):
         block_lines = content_lines[i:i + pattern_line_count]
         
-        # 修剪此块的首行和末行
+        # Trim first and last of this block
         check_lines = block_lines.copy()
         check_lines[0] = check_lines[0].strip()
         if len(check_lines) > 1:
             check_lines[-1] = check_lines[-1].strip()
         
         if '\n'.join(check_lines) == modified_pattern:
-            # 找到匹配 - 计算原始位置
+            # Found match - calculate original positions
             start_pos, end_pos = _calculate_line_positions(
                 content_lines, i, i + pattern_line_count, len(content)
             )
@@ -259,15 +315,15 @@ def _strategy_trimmed_boundary(content: str, pattern: str) -> List[Tuple[int, in
 
 
 def _build_orig_to_norm_map(original: str) -> List[int]:
-    """构建一个将每个原始字符索引映射到其规范化索引的列表。
+    """Build a list mapping each original character index to its normalized index.
 
-    因为 UNICODE_MAP 的替换可能会扩展字符（例如长破折号 -> '--'、
-    省略号 -> '...'），规范化后的字符串可能比原始字符串更长。
-    此映射让我们能够将规范化字符串中的位置转换回原始字符串中的
-    对应位置。
+    Because UNICODE_MAP replacements may expand characters (e.g. em-dash → '--',
+    ellipsis → '...'), the normalised string can be longer than the original.
+    This map lets us convert positions in the normalised string back to the
+    corresponding positions in the original string.
 
-    返回一个长度为 ``len(original) + 1`` 的列表；条目 ``i`` 是
-    字符 ``i`` 映射到的规范化索引。
+    Returns a list of length ``len(original) + 1``; entry ``i`` is the
+    normalised index that character ``i`` maps to.
     """
     result: List[int] = []
     norm_pos = 0
@@ -275,7 +331,7 @@ def _build_orig_to_norm_map(original: str) -> List[int]:
         result.append(norm_pos)
         repl = UNICODE_MAP.get(char)
         norm_pos += len(repl) if repl is not None else 1
-    result.append(norm_pos)  # 哨兵值：最后一个字符之后的位置
+    result.append(norm_pos)  # sentinel: one past the last character
     return result
 
 
@@ -283,22 +339,22 @@ def _map_positions_norm_to_orig(
     orig_to_norm: List[int],
     norm_matches: List[Tuple[int, int]],
 ) -> List[Tuple[int, int]]:
-    """将规范化字符串中的 (start, end) 位置转换回原始字符串中的位置。"""
-    # 反转映射：规范化位置 -> 第一个具有该规范化位置的原始位置
+    """Convert (start, end) positions in the normalised string to original positions."""
+    # Invert the map: norm_pos -> first original position with that norm_pos
     norm_to_orig_start: dict[int, int] = {}
     for orig_pos, norm_pos in enumerate(orig_to_norm[:-1]):
         if norm_pos not in norm_to_orig_start:
             norm_to_orig_start[norm_pos] = orig_pos
 
     results: List[Tuple[int, int]] = []
-    orig_len = len(orig_to_norm) - 1  # 原始字符的数量
+    orig_len = len(orig_to_norm) - 1  # number of original characters
 
     for norm_start, norm_end in norm_matches:
         if norm_start not in norm_to_orig_start:
             continue
         orig_start = norm_to_orig_start[norm_start]
 
-        # 向前遍历直到 orig_to_norm[orig_end] >= norm_end
+        # Walk forward until orig_to_norm[orig_end] >= norm_end
         orig_end = orig_start
         while orig_end < orig_len and orig_to_norm[orig_end] < norm_end:
             orig_end += 1
@@ -309,18 +365,20 @@ def _map_positions_norm_to_orig(
 
 
 def _strategy_unicode_normalized(content: str, pattern: str) -> List[Tuple[int, int]]:
-    """策略 7：Unicode 规范化。
+    """Strategy 7: Unicode normalisation.
 
-    将智能引号、长/短破折号、省略号和不间断空格在 *content* 和 *pattern*
-    中规范化为其 ASCII 等价物，然后在规范化副本上运行精确匹配和行级修剪匹配。
+    Normalises smart quotes, em/en-dashes, ellipsis, and non-breaking spaces
+    to their ASCII equivalents in both *content* and *pattern*, then runs
+    exact and line_trimmed matching on the normalised copies.
 
-    通过 ``_build_orig_to_norm_map`` 将位置映射回*原始*字符串——这是
-    必要的，因为某些 UNICODE_MAP 替换会将单个字符扩展为多个 ASCII 字符，
-    直接复制位置会导致不正确的结果。
+    Positions are mapped back to the *original* string via
+    ``_build_orig_to_norm_map`` — necessary because some UNICODE_MAP
+    replacements expand a single character into multiple ASCII characters,
+    making a naïve position copy incorrect.
     """
-    # 对两侧进行规范化。内容或模式（或两者）都可能包含 Unicode 变体——
-    # 例如内容中有长破折号应匹配 LLM 的 ASCII '--'，反之亦然。
-    # 仅当两者都未变化时才跳过。
+    # Normalize both sides. Either the content or the pattern (or both) may
+    # carry unicode variants — e.g. content has an em-dash that should match
+    # the LLM's ASCII '--', or vice-versa.  Skip only when neither changes.
     norm_pattern = _unicode_normalize(pattern)
     norm_content = _unicode_normalize(content)
     if norm_content == content and norm_pattern == pattern:
@@ -339,10 +397,10 @@ def _strategy_unicode_normalized(content: str, pattern: str) -> List[Tuple[int, 
 
 def _strategy_block_anchor(content: str, pattern: str) -> List[Tuple[int, int]]:
     """
-    策略 8：通过锚定首行和末行进行匹配。
-    使用宽松阈值和 Unicode 规范化进行调整。
+    Strategy 8: Match by anchoring on first and last lines.
+    Adjusted with permissive thresholds and unicode normalization.
     """
-    # 对两个字符串进行规范化以用于比较，同时保留原始内容用于偏移量计算
+    # Normalize both strings for comparison while keeping original content for offset calculation
     norm_pattern = _unicode_normalize(pattern)
     norm_content = _unicode_normalize(content)
     
@@ -353,9 +411,9 @@ def _strategy_block_anchor(content: str, pattern: str) -> List[Tuple[int, int]]:
     first_line = pattern_lines[0].strip()
     last_line = pattern_lines[-1].strip()
     
-    # 使用规范化的行进行匹配逻辑
+    # Use normalized lines for matching logic
     norm_content_lines = norm_content.split('\n')
-    # 但使用原始行来计算 start/end 位置，以防止索引偏移
+    # BUT use original lines for calculating start/end positions to prevent index shift
     orig_content_lines = content.split('\n')
     
     pattern_line_count = len(pattern_lines)
@@ -369,22 +427,22 @@ def _strategy_block_anchor(content: str, pattern: str) -> List[Tuple[int, int]]:
     matches = []
     candidate_count = len(potential_matches)
     
-    # 阈值逻辑：唯一匹配使用 0.50，多个候选使用 0.70。
-    # 之前的值（0.10 / 0.30）过于宽松——10% 的中间段相似度
-    # 可能会匹配到完全不相关的代码块。
+    # Thresholding logic: 0.50 for unique matches, 0.70 for multiple candidates.
+    # Previous values (0.10 / 0.30) were dangerously loose — a 10% middle-section
+    # similarity could match completely unrelated blocks.
     threshold = 0.50 if candidate_count == 1 else 0.70
 
     for i in potential_matches:
         if pattern_line_count <= 2:
             similarity = 1.0
         else:
-            # 比较规范化后的中间部分
+            # Compare normalized middle sections
             content_middle = '\n'.join(norm_content_lines[i+1:i+pattern_line_count-1])
             pattern_middle = '\n'.join(pattern_lines[1:-1])
             similarity = SequenceMatcher(None, content_middle, pattern_middle).ratio()
         
         if similarity >= threshold:
-            # 使用原始行计算位置，以确保文件中的字符偏移量正确
+            # Calculate positions using ORIGINAL lines to ensure correct character offsets in the file
             start_pos, end_pos = _calculate_line_positions(
                 orig_content_lines, i, i + pattern_line_count, len(content)
             )
@@ -395,9 +453,9 @@ def _strategy_block_anchor(content: str, pattern: str) -> List[Tuple[int, int]]:
 
 def _strategy_context_aware(content: str, pattern: str) -> List[Tuple[int, int]]:
     """
-    策略 9：逐行相似度匹配，50% 阈值。
-
-    查找至少 50% 的行具有高相似度的代码块。
+    Strategy 9: Line-by-line similarity with 50% threshold.
+    
+    Finds blocks where at least 50% of lines have high similarity.
     """
     pattern_lines = pattern.split('\n')
     content_lines = content.split('\n')
@@ -411,14 +469,14 @@ def _strategy_context_aware(content: str, pattern: str) -> List[Tuple[int, int]]
     for i in range(len(content_lines) - pattern_line_count + 1):
         block_lines = content_lines[i:i + pattern_line_count]
         
-        # 计算逐行相似度
+        # Calculate line-by-line similarity
         high_similarity_count = 0
         for p_line, c_line in zip(pattern_lines, block_lines):
             sim = SequenceMatcher(None, p_line.strip(), c_line.strip()).ratio()
             if sim >= 0.80:
                 high_similarity_count += 1
         
-        # 需要至少 50% 的行具有高相似度
+        # Need at least 50% of lines to have high similarity
         if high_similarity_count >= len(pattern_lines) * 0.5:
             start_pos, end_pos = _calculate_line_positions(
                 content_lines, i, i + pattern_line_count, len(content)
@@ -429,21 +487,21 @@ def _strategy_context_aware(content: str, pattern: str) -> List[Tuple[int, int]]
 
 
 # =============================================================================
-# 辅助函数
+# Helper Functions
 # =============================================================================
 
 def _calculate_line_positions(content_lines: List[str], start_line: int,
                               end_line: int, content_length: int) -> Tuple[int, int]:
-    """从行索引计算起始和结束字符位置。
+    """Calculate start and end character positions from line indices.
 
-    参数:
-        content_lines: 行列表（不含换行符）
-        start_line: 起始行索引（从 0 开始）
-        end_line: 结束行索引（不含，从 0 开始）
-        content_length: 原始内容字符串的总长度
+    Args:
+        content_lines: List of lines (without newlines)
+        start_line: Starting line index (0-based)
+        end_line: Ending line index (exclusive, 0-based)
+        content_length: Total length of the original content string
 
-    返回:
-        原始内容中的 (start_pos, end_pos) 元组
+    Returns:
+        Tuple of (start_pos, end_pos) in the original content
     """
     start_pos = sum(len(line) + 1 for line in content_lines[:start_line])
     end_pos = sum(len(line) + 1 for line in content_lines[:end_line]) - 1
@@ -456,17 +514,17 @@ def _find_normalized_matches(content: str, content_lines: List[str],
                               content_normalized_lines: List[str],
                               pattern: str, pattern_normalized: str) -> List[Tuple[int, int]]:
     """
-    在规范化内容中查找匹配并映射回原始位置。
-
-    参数:
-        content: 原始内容字符串
-        content_lines: 原始内容按行分割
-        content_normalized_lines: 规范化后的内容行
-        pattern: 原始模式
-        pattern_normalized: 规范化后的模式
-
-    返回:
-        原始内容中的 (start, end) 位置列表
+    Find matches in normalized content and map back to original positions.
+    
+    Args:
+        content: Original content string
+        content_lines: Original content split by lines
+        content_normalized_lines: Normalized content lines
+        pattern: Original pattern
+        pattern_normalized: Normalized pattern
+    
+    Returns:
+        List of (start, end) positions in the original content
     """
     pattern_norm_lines = pattern_normalized.split('\n')
     num_pattern_lines = len(pattern_norm_lines)
@@ -474,11 +532,11 @@ def _find_normalized_matches(content: str, content_lines: List[str],
     matches = []
     
     for i in range(len(content_normalized_lines) - num_pattern_lines + 1):
-        # 检查此块是否匹配
+        # Check if this block matches
         block = '\n'.join(content_normalized_lines[i:i + num_pattern_lines])
         
         if block == pattern_normalized:
-            # 找到匹配 - 计算原始位置
+            # Found a match - calculate original positions
             start_pos, end_pos = _calculate_line_positions(
                 content_lines, i, i + num_pattern_lines, len(content)
             )
@@ -490,15 +548,15 @@ def _find_normalized_matches(content: str, content_lines: List[str],
 def _map_normalized_positions(original: str, normalized: str,
                                normalized_matches: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
     """
-    将规范化字符串中的位置映射回原始字符串。
-
-    这是一种尽力而为的映射，适用于空白规范化场景。
+    Map positions from normalized string back to original.
+    
+    This is a best-effort mapping that works for whitespace normalization.
     """
     if not normalized_matches:
         return []
     
-    # 构建从规范化到原始的字符映射
-    orig_to_norm = []  # orig_to_norm[i] = 规范化字符串中的位置
+    # Build character mapping from normalized to original
+    orig_to_norm = []  # orig_to_norm[i] = position in normalized
     
     orig_idx = 0
     norm_idx = 0
@@ -509,27 +567,27 @@ def _map_normalized_positions(original: str, normalized: str,
             orig_idx += 1
             norm_idx += 1
         elif original[orig_idx] in ' \t' and normalized[norm_idx] == ' ':
-            # 原始文本中有空格/制表符，规范化后折叠为一个空格
+            # Original has space/tab, normalized collapsed to space
             orig_to_norm.append(norm_idx)
             orig_idx += 1
-            # 暂不推进 norm_idx——等所有空白字符被消费完毕
+            # Don't advance norm_idx yet - wait until all whitespace consumed
             if orig_idx < len(original) and original[orig_idx] not in ' \t':
                 norm_idx += 1
         elif original[orig_idx] in ' \t':
-            # 原始文本中的多余空白
+            # Extra whitespace in original
             orig_to_norm.append(norm_idx)
             orig_idx += 1
         else:
-            # 不匹配——在我们的规范化下不应发生
+            # Mismatch - shouldn't happen with our normalization
             orig_to_norm.append(norm_idx)
             orig_idx += 1
     
-    # 填充剩余部分
+    # Fill remaining
     while orig_idx < len(original):
         orig_to_norm.append(len(normalized))
         orig_idx += 1
     
-    # 反向映射：对于每个规范化位置，找到原始范围
+    # Reverse mapping: for each normalized position, find original range
     norm_to_orig_start = {}
     norm_to_orig_end = {}
     
@@ -538,26 +596,109 @@ def _map_normalized_positions(original: str, normalized: str,
             norm_to_orig_start[norm_pos] = orig_pos
         norm_to_orig_end[norm_pos] = orig_pos
     
-    # 映射匹配结果
+    # Map matches
     original_matches = []
     for norm_start, norm_end in normalized_matches:
-        # 查找原始起始位置
+        # Find original start
         if norm_start in norm_to_orig_start:
             orig_start = norm_to_orig_start[norm_start]
         else:
-            # 查找最近的位置
+            # Find nearest
             orig_start = min(i for i, n in enumerate(orig_to_norm) if n >= norm_start)
         
-        # 查找原始结束位置
+        # Find original end
         if norm_end - 1 in norm_to_orig_end:
             orig_end = norm_to_orig_end[norm_end - 1] + 1
         else:
             orig_end = orig_start + (norm_end - norm_start)
         
-        # 扩展以包含被规范化的尾部空白
+        # Expand to include trailing whitespace that was normalized
         while orig_end < len(original) and original[orig_end] in ' \t':
             orig_end += 1
         
         original_matches.append((orig_start, min(orig_end, len(original))))
     
     return original_matches
+
+
+def find_closest_lines(old_string: str, content: str, context_lines: int = 2, max_results: int = 3) -> str:
+    """Find lines in content most similar to old_string for "did you mean?" feedback.
+
+    Returns a formatted string showing the closest matching lines with context,
+    or empty string if no useful match is found.
+    """
+    if not old_string or not content:
+        return ""
+
+    old_lines = old_string.splitlines()
+    content_lines = content.splitlines()
+
+    if not old_lines or not content_lines:
+        return ""
+
+    # Use first line of old_string as anchor for search
+    anchor = old_lines[0].strip()
+    if not anchor:
+        # Try second line if first is blank
+        candidates = [l.strip() for l in old_lines if l.strip()]
+        if not candidates:
+            return ""
+        anchor = candidates[0]
+
+    # Score each line in content by similarity to anchor
+    scored = []
+    for i, line in enumerate(content_lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        ratio = SequenceMatcher(None, anchor, stripped).ratio()
+        if ratio > 0.3:
+            scored.append((ratio, i))
+
+    if not scored:
+        return ""
+
+    # Take top matches
+    scored.sort(key=lambda x: -x[0])
+    top = scored[:max_results]
+
+    parts = []
+    seen_ranges = set()
+    for _, line_idx in top:
+        start = max(0, line_idx - context_lines)
+        end = min(len(content_lines), line_idx + len(old_lines) + context_lines)
+        key = (start, end)
+        if key in seen_ranges:
+            continue
+        seen_ranges.add(key)
+        snippet = "\n".join(
+            f"{start + j + 1:4d}| {content_lines[start + j]}"
+            for j in range(end - start)
+        )
+        parts.append(snippet)
+
+    if not parts:
+        return ""
+
+    return "\n---\n".join(parts)
+
+
+def format_no_match_hint(error: Optional[str], match_count: int,
+                         old_string: str, content: str) -> str:
+    """Return a '\\n\\nDid you mean...' snippet for plain no-match errors.
+
+    Gated so the hint only fires for actual "old_string not found" failures.
+    Ambiguous-match ("Found N matches"), escape-drift, and identical-strings
+    errors all have ``match_count == 0`` but a "did you mean?" snippet would
+    be misleading — those failed for unrelated reasons.
+
+    Returns an empty string when there's nothing useful to append.
+    """
+    if match_count != 0:
+        return ""
+    if not error or not error.startswith("Could not find"):
+        return ""
+    hint = find_closest_lines(old_string, content)
+    if not hint:
+        return ""
+    return "\n\nDid you mean one of these sections?\n" + hint

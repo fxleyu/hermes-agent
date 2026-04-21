@@ -1,20 +1,21 @@
 """
-检查点管理器 — 通过影子 git 仓库实现透明的文件系统快照。
+Checkpoint Manager — Transparent filesystem snapshots via shadow git repos.
 
-在文件变更操作（write_file、patch）之前自动创建工作目录快照，
-每个对话轮次触发一次。提供回滚到任何先前检查点的功能。
+Creates automatic snapshots of working directories before file-mutating
+operations (write_file, patch), triggered once per conversation turn.
+Provides rollback to any previous checkpoint.
 
-这不是一个工具 — LLM 永远看不到它。它是由 ``checkpoints``
-配置标志或 ``--checkpoints`` CLI 标志控制的透明基础设施。
+This is NOT a tool — the LLM never sees it.  It's transparent infrastructure
+controlled by the ``checkpoints`` config flag or ``--checkpoints`` CLI flag.
 
-架构:
-    ~/.hermes/checkpoints/{sha256(abs_dir)[:16]}/   — 影子 git 仓库
-        HEAD, refs/, objects/                        — 标准 git 内部结构
-        HERMES_WORKDIR                               — 原始目录路径
-        info/exclude                                 — 默认排除规则
+Architecture:
+    ~/.hermes/checkpoints/{sha256(abs_dir)[:16]}/   — shadow git repo
+        HEAD, refs/, objects/                        — standard git internals
+        HERMES_WORKDIR                               — original dir path
+        info/exclude                                 — default excludes
 
-影子仓库使用 GIT_DIR + GIT_WORK_TREE，因此没有 git 状态
-泄漏到用户的项目目录中。
+The shadow repo uses GIT_DIR + GIT_WORK_TREE so no git state leaks
+into the user's project directory.
 """
 
 import hashlib
@@ -30,7 +31,7 @@ from typing import Dict, List, Optional, Set
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# 常量
+# Constants
 # ---------------------------------------------------------------------------
 
 CHECKPOINT_BASE = get_hermes_home() / "checkpoints"
@@ -58,26 +59,26 @@ DEFAULT_EXCLUDES = [
     ".git/",
 ]
 
-# Git 子进程超时时间（秒）。
+# Git subprocess timeout (seconds).
 _GIT_TIMEOUT: int = max(10, min(60, int(os.getenv("HERMES_CHECKPOINT_TIMEOUT", "30"))))
 
-# 最大快照文件数 — 跳过巨大目录以避免性能下降。
+# Max files to snapshot — skip huge directories to avoid slowdowns.
 _MAX_FILES = 50_000
 
-# 有效的 git 提交哈希模式: 4-40 个十六进制字符（短或完整 SHA-1/SHA-256）。
+# Valid git commit hash pattern: 4–40 hex chars (short or full SHA-1/SHA-256).
 _COMMIT_HASH_RE = re.compile(r'^[0-9a-fA-F]{4,64}$')
 
 
 # ---------------------------------------------------------------------------
-# 输入验证辅助函数
+# Input validation helpers
 # ---------------------------------------------------------------------------
 
 def _validate_commit_hash(commit_hash: str) -> Optional[str]:
-    """验证提交哈希以防止 git 参数注入。
+    """Validate a commit hash to prevent git argument injection.
 
-    如果无效则返回错误字符串，有效则返回 None。
-    以 '-' 开头的值会被解释为 git 标志
-    （如 '--patch'、'-p'）而不是修订标识符。
+    Returns an error string if invalid, None if valid.
+    Values starting with '-' would be interpreted as git flags
+    (e.g., '--patch', '-p') instead of revision specifiers.
     """
     if not commit_hash or not commit_hash.strip():
         return "Empty commit hash"
@@ -89,16 +90,16 @@ def _validate_commit_hash(commit_hash: str) -> Optional[str]:
 
 
 def _validate_file_path(file_path: str, working_dir: str) -> Optional[str]:
-    """验证文件路径以防止路径遍历到工作目录之外。
+    """Validate a file path to prevent path traversal outside the working directory.
 
-    如果无效则返回错误字符串，有效则返回 None。
+    Returns an error string if invalid, None if valid.
     """
     if not file_path or not file_path.strip():
         return "Empty file path"
-    # 拒绝绝对路径 — 恢复目标必须相对于工作目录
+    # Reject absolute paths — restore targets must be relative to the workdir
     if os.path.isabs(file_path):
         return f"File path must be relative, got absolute path: {file_path!r}"
-    # 解析并检查是否包含在工作目录内
+    # Resolve and check containment within working_dir
     abs_workdir = _normalize_path(working_dir)
     resolved = (abs_workdir / file_path).resolve()
     try:
@@ -109,36 +110,37 @@ def _validate_file_path(file_path: str, working_dir: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# 影子仓库辅助函数
+# Shadow repo helpers
 # ---------------------------------------------------------------------------
 
 def _normalize_path(path_value: str) -> Path:
-    """返回用于检查点操作的规范绝对路径。"""
+    """Return a canonical absolute path for checkpoint operations."""
     return Path(path_value).expanduser().resolve()
 
 
 def _shadow_repo_path(working_dir: str) -> Path:
-    """确定性的影子仓库路径: sha256(abs_path)[:16]。"""
+    """Deterministic shadow repo path: sha256(abs_path)[:16]."""
     abs_path = str(_normalize_path(working_dir))
     dir_hash = hashlib.sha256(abs_path.encode()).hexdigest()[:16]
     return CHECKPOINT_BASE / dir_hash
 
 
 def _git_env(shadow_repo: Path, working_dir: str) -> dict:
-    """构建将 git 重定向到影子仓库的环境变量字典。
+    """Build env dict that redirects git to the shadow repo.
 
-    影子仓库是 Hermes 的内部基础设施 — 它不能继承用户的
-    全局或系统 git 配置。用户级设置如 ``commit.gpgsign = true``、
-    签名钩子或凭证助手要么会中断后台快照，要么更糟，
-    在每次写入文件时产生交互式提示（pinentry GUI 窗口）。
+    The shadow repo is internal Hermes infrastructure — it must NOT inherit
+    the user's global or system git config.  User-level settings like
+    ``commit.gpgsign = true``, signing hooks, or credential helpers would
+    either break background snapshots or, worse, spawn interactive prompts
+    (pinentry GUI windows) mid-session every time a file is written.
 
-    隔离策略:
-    * ``GIT_CONFIG_GLOBAL=<os.devnull>`` — 忽略 ``~/.gitconfig``（git 2.32+）。
-    * ``GIT_CONFIG_SYSTEM=<os.devnull>`` — 忽略 ``/etc/gitconfig``（git 2.32+）。
-    * ``GIT_CONFIG_NOSYSTEM=1`` — 用于旧版 git 的双重保险。
+    Isolation strategy:
+    * ``GIT_CONFIG_GLOBAL=<os.devnull>`` — ignore ``~/.gitconfig`` (git 2.32+).
+    * ``GIT_CONFIG_SYSTEM=<os.devnull>`` — ignore ``/etc/gitconfig`` (git 2.32+).
+    * ``GIT_CONFIG_NOSYSTEM=1`` — legacy belt-and-suspenders for older git.
 
-    影子仓库仍有自己的仓库级配置（user.email、user.name、
-    commit.gpgsign=false），在 ``_init_shadow_repo`` 中设置。
+    The shadow repo still has its own per-repo config (user.email, user.name,
+    commit.gpgsign=false) set in ``_init_shadow_repo``.
     """
     normalized_working_dir = _normalize_path(working_dir)
     env = os.environ.copy()
@@ -147,10 +149,10 @@ def _git_env(shadow_repo: Path, working_dir: str) -> dict:
     env.pop("GIT_INDEX_FILE", None)
     env.pop("GIT_NAMESPACE", None)
     env.pop("GIT_ALTERNATE_OBJECT_DIRECTORIES", None)
-    # 将影子仓库与用户的全局/系统 git 配置隔离。
-    # 防止 commit.gpgsign、钩子、别名、凭证助手等
-    # 泄漏到后台快照中。使用 os.devnull 实现跨平台支持
-    # （POSIX 上是 ``/dev/null``，Windows 上是 ``nul``）。
+    # Isolate the shadow repo from the user's global/system git config.
+    # Prevents commit.gpgsign, hooks, aliases, credential helpers, etc. from
+    # leaking into background snapshots.  Uses os.devnull for cross-platform
+    # support (``/dev/null`` on POSIX, ``nul`` on Windows).
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_SYSTEM"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"
@@ -164,11 +166,11 @@ def _run_git(
     timeout: int = _GIT_TIMEOUT,
     allowed_returncodes: Optional[Set[int]] = None,
 ) -> tuple:
-    """对影子仓库运行 git 命令。返回 (ok, stdout, stderr)。
+    """Run a git command against the shadow repo.  Returns (ok, stdout, stderr).
 
-    ``allowed_returncodes`` 抑制已知/预期的非零退出码的错误日志，
-    同时保留正常的 ``ok = (returncode == 0)`` 约定。
-    示例: ``git diff --cached --quiet`` 在存在变更时返回 1。
+    ``allowed_returncodes`` suppresses error logging for known/expected non-zero
+    exits while preserving the normal ``ok = (returncode == 0)`` contract.
+    Example: ``git diff --cached --quiet`` returns 1 when changes exist.
     """
     normalized_working_dir = _normalize_path(working_dir)
     if not normalized_working_dir.exists():
@@ -219,7 +221,7 @@ def _run_git(
 
 
 def _init_shadow_repo(shadow_repo: Path, working_dir: str) -> Optional[str]:
-    """如需要则初始化影子仓库。返回错误字符串或 None。"""
+    """Initialise shadow repo if needed.  Returns error string or None."""
     if (shadow_repo / "HEAD").exists():
         return None
 
@@ -231,10 +233,11 @@ def _init_shadow_repo(shadow_repo: Path, working_dir: str) -> Optional[str]:
 
     _run_git(["config", "user.email", "hermes@local"], shadow_repo, working_dir)
     _run_git(["config", "user.name", "Hermes Checkpoint"], shadow_repo, working_dir)
-    # 在影子仓库中显式禁用提交/标签签名。_git_env 已经
-    # 与用户全局配置隔离，但将这些写入影子仓库自身的配置
-    # 是双重保险 — 即使有人直接（不使用 GIT_CONFIG_* 环境变量）
-    # 检查或对影子仓库运行 git 命令，也能保证正确。
+    # Explicitly disable commit/tag signing in the shadow repo.  _git_env
+    # already isolates from the user's global config, but writing these into
+    # the shadow's own config is belt-and-suspenders — it guarantees the
+    # shadow repo is correct even if someone inspects or runs git against it
+    # directly (without the GIT_CONFIG_* env vars).
     _run_git(["config", "commit.gpgsign", "false"], shadow_repo, working_dir)
     _run_git(["config", "tag.gpgSign", "false"], shadow_repo, working_dir)
 
@@ -253,7 +256,7 @@ def _init_shadow_repo(shadow_repo: Path, working_dir: str) -> Optional[str]:
 
 
 def _dir_file_count(path: str) -> int:
-    """快速估算文件数量（超过 _MAX_FILES 时提前停止）。"""
+    """Quick file count estimate (stops early if over _MAX_FILES)."""
     count = 0
     try:
         for _ in Path(path).rglob("*"):
@@ -266,52 +269,53 @@ def _dir_file_count(path: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# 检查点管理器
+# CheckpointManager
 # ---------------------------------------------------------------------------
 
 class CheckpointManager:
-    """管理自动文件系统检查点。
+    """Manages automatic filesystem checkpoints.
 
-    设计为由 AIAgent 拥有。在每个对话轮次开始时调用 ``new_turn()``，
-    在任何文件变更工具调用之前调用 ``ensure_checkpoint(dir, reason)``。
-    管理器会去重，每个目录每个轮次最多创建一个快照。
+    Designed to be owned by AIAgent.  Call ``new_turn()`` at the start of
+    each conversation turn and ``ensure_checkpoint(dir, reason)`` before
+    any file-mutating tool call.  The manager deduplicates so at most one
+    snapshot is taken per directory per turn.
 
-    参数
+    Parameters
     ----------
     enabled : bool
-        主开关（来自配置/CLI 标志）。
+        Master switch (from config / CLI flag).
     max_snapshots : int
-        每个目录最多保留此数量的检查点。
+        Keep at most this many checkpoints per directory.
     """
 
     def __init__(self, enabled: bool = False, max_snapshots: int = 50):
         self.enabled = enabled
         self.max_snapshots = max_snapshots
         self._checkpointed_dirs: Set[str] = set()
-        self._git_available: Optional[bool] = None  # 延迟探测
+        self._git_available: Optional[bool] = None  # lazy probe
 
     # ------------------------------------------------------------------
-    # 轮次生命周期
+    # Turn lifecycle
     # ------------------------------------------------------------------
 
     def new_turn(self) -> None:
-        """重置每轮次去重。在每个代理迭代开始时调用。"""
+        """Reset per-turn dedup.  Call at the start of each agent iteration."""
         self._checkpointed_dirs.clear()
 
     # ------------------------------------------------------------------
-    # 公共 API
+    # Public API
     # ------------------------------------------------------------------
 
     def ensure_checkpoint(self, working_dir: str, reason: str = "auto") -> bool:
-        """如果启用且本轮次尚未完成，则创建检查点。
+        """Take a checkpoint if enabled and not already done this turn.
 
-        成功创建返回 True，否则返回 False。
-        永不抛异常 — 所有错误静默记录日志。
+        Returns True if a checkpoint was taken, False otherwise.
+        Never raises — all errors are silently logged.
         """
         if not self.enabled:
             return False
 
-        # 延迟 git 探测
+        # Lazy git probe
         if self._git_available is None:
             self._git_available = shutil.which("git") is not None
             if not self._git_available:
@@ -321,12 +325,12 @@ class CheckpointManager:
 
         abs_dir = str(_normalize_path(working_dir))
 
-        # 跳过根目录、主目录和其他过于宽泛的目录
+        # Skip root, home, and other overly broad directories
         if abs_dir in ("/", str(Path.home())):
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
             return False
 
-        # 本轮次已创建过检查点？
+        # Already checkpointed this turn?
         if abs_dir in self._checkpointed_dirs:
             return False
 
@@ -339,10 +343,10 @@ class CheckpointManager:
             return False
 
     def list_checkpoints(self, working_dir: str) -> List[Dict]:
-        """列出目录的可用检查点。
+        """List available checkpoints for a directory.
 
-        返回字典列表，包含键: hash、short_hash、timestamp、reason、
-        files_changed、insertions、deletions。最新的在前。
+        Returns a list of dicts with keys: hash, short_hash, timestamp, reason,
+        files_changed, insertions, deletions.  Most recent first.
         """
         abs_dir = str(_normalize_path(working_dir))
         shadow = _shadow_repo_path(abs_dir)
@@ -371,11 +375,11 @@ class CheckpointManager:
                     "insertions": 0,
                     "deletions": 0,
                 }
-                # 获取此提交的差异统计
+                # Get diffstat for this commit
                 stat_ok, stat_out, _ = _run_git(
                     ["diff", "--shortstat", f"{parts[0]}~1", parts[0]],
                     shadow, abs_dir,
-                    allowed_returncodes={128, 129},  # 第一个提交没有父提交
+                    allowed_returncodes={128, 129},  # first commit has no parent
                 )
                 if stat_ok and stat_out:
                     self._parse_shortstat(stat_out, entry)
@@ -384,8 +388,7 @@ class CheckpointManager:
 
     @staticmethod
     def _parse_shortstat(stat_line: str, entry: Dict) -> None:
-        """解析 git --shortstat 输出到条目字典中。"""
-        import re
+        """Parse git --shortstat output into entry dict."""
         m = re.search(r'(\d+) file', stat_line)
         if m:
             entry["files_changed"] = int(m.group(1))
@@ -397,11 +400,11 @@ class CheckpointManager:
             entry["deletions"] = int(m.group(1))
 
     def diff(self, working_dir: str, commit_hash: str) -> Dict:
-        """显示检查点与当前工作树之间的差异。
+        """Show diff between a checkpoint and the current working tree.
 
-        返回包含 success、diff 文本和统计摘要的字典。
+        Returns dict with success, diff text, and stat summary.
         """
-        # 验证 commit_hash 以防止 git 参数注入
+        # Validate commit_hash to prevent git argument injection
         hash_err = _validate_commit_hash(commit_hash)
         if hash_err:
             return {"success": False, "error": hash_err}
@@ -412,29 +415,29 @@ class CheckpointManager:
         if not (shadow / "HEAD").exists():
             return {"success": False, "error": "No checkpoints exist for this directory"}
 
-        # 验证提交是否存在
+        # Verify the commit exists
         ok, _, err = _run_git(
             ["cat-file", "-t", commit_hash], shadow, abs_dir,
         )
         if not ok:
             return {"success": False, "error": f"Checkpoint '{commit_hash}' not found"}
 
-        # 暂存当前状态以与检查点进行比较
+        # Stage current state to compare against checkpoint
         _run_git(["add", "-A"], shadow, abs_dir, timeout=_GIT_TIMEOUT * 2)
 
-        # 获取统计摘要: 检查点 vs 当前工作树
+        # Get stat summary: checkpoint vs current working tree
         ok_stat, stat_out, _ = _run_git(
             ["diff", "--stat", commit_hash, "--cached"],
             shadow, abs_dir,
         )
 
-        # 获取实际差异（限制大小以避免终端溢出）
+        # Get actual diff (limited to avoid terminal flood)
         ok_diff, diff_out, _ = _run_git(
             ["diff", commit_hash, "--cached", "--no-color"],
             shadow, abs_dir,
         )
 
-        # 取消暂存以避免污染影子仓库索引
+        # Unstage to avoid polluting the shadow repo index
         _run_git(["reset", "HEAD", "--quiet"], shadow, abs_dir)
 
         if not ok_stat and not ok_diff:
@@ -447,26 +450,26 @@ class CheckpointManager:
         }
 
     def restore(self, working_dir: str, commit_hash: str, file_path: str = None) -> Dict:
-        """将文件恢复到检查点状态。
+        """Restore files to a checkpoint state.
 
-        使用 ``git checkout <hash> -- .``（或特定文件）来恢复
-        已跟踪文件而不移动 HEAD — 安全且可逆。
+        Uses ``git checkout <hash> -- .`` (or a specific file) which restores
+        tracked files without moving HEAD — safe and reversible.
 
-        参数
+        Parameters
         ----------
-        file_path : str, 可选
-            如果提供，只恢复此文件而非整个目录。
+        file_path : str, optional
+            If provided, restore only this file instead of the entire directory.
 
-        返回包含 success/error 信息的字典。
+        Returns dict with success/error info.
         """
-        # 验证 commit_hash 以防止 git 参数注入
+        # Validate commit_hash to prevent git argument injection
         hash_err = _validate_commit_hash(commit_hash)
         if hash_err:
             return {"success": False, "error": hash_err}
 
         abs_dir = str(_normalize_path(working_dir))
 
-        # 验证 file_path 以防止路径遍历到工作目录之外
+        # Validate file_path to prevent path traversal outside the working dir
         if file_path:
             path_err = _validate_file_path(file_path, abs_dir)
             if path_err:
@@ -477,17 +480,17 @@ class CheckpointManager:
         if not (shadow / "HEAD").exists():
             return {"success": False, "error": "No checkpoints exist for this directory"}
 
-        # 验证提交是否存在
+        # Verify the commit exists
         ok, _, err = _run_git(
             ["cat-file", "-t", commit_hash], shadow, abs_dir,
         )
         if not ok:
             return {"success": False, "error": f"Checkpoint '{commit_hash}' not found", "debug": err or None}
 
-        # 恢复前先对当前状态创建检查点（这样可以撤销撤销操作）
+        # Take a checkpoint of current state before restoring (so you can undo the undo)
         self._take(abs_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})")
 
-        # 恢复 — 整个目录或单个文件
+        # Restore — full directory or single file
         restore_target = file_path if file_path else "."
         ok, stdout, err = _run_git(
             ["checkout", commit_hash, "--", restore_target],
@@ -497,7 +500,7 @@ class CheckpointManager:
         if not ok:
             return {"success": False, "error": f"Restore failed: {err}", "debug": err or None}
 
-        # 获取恢复内容的信息
+        # Get info about what was restored
         ok2, reason_out, _ = _run_git(
             ["log", "--format=%s", "-1", commit_hash], shadow, abs_dir,
         )
@@ -514,11 +517,11 @@ class CheckpointManager:
         return result
 
     def get_working_dir_for_path(self, file_path: str) -> str:
-        """将文件路径解析到其用于检查点的工作目录。
+        """Resolve a file path to its working directory for checkpointing.
 
-        从文件的父目录向上查找合理的项目根目录
-        （包含 .git、pyproject.toml、package.json 等的目录）。
-        回退到文件的父目录。
+        Walks up from the file's parent to find a reasonable project root
+        (directory containing .git, pyproject.toml, package.json, etc.).
+        Falls back to the file's parent directory.
         """
         path = _normalize_path(file_path)
         if path.is_dir():
@@ -526,7 +529,7 @@ class CheckpointManager:
         else:
             candidate = path.parent
 
-        # 向上查找项目根标记
+        # Walk up looking for project root markers
         markers = {".git", "pyproject.toml", "package.json", "Cargo.toml",
                     "go.mod", "Makefile", "pom.xml", ".hg", "Gemfile"}
         check = candidate
@@ -535,15 +538,15 @@ class CheckpointManager:
                 return str(check)
             check = check.parent
 
-        # 未找到项目根 — 使用文件的父目录
+        # No project root found — use the file's parent
         return str(candidate)
 
     # ------------------------------------------------------------------
-    # 内部方法
+    # Internal
     # ------------------------------------------------------------------
 
     def _take(self, working_dir: str, reason: str) -> bool:
-        """创建快照。成功返回 True。"""
+        """Take a snapshot.  Returns True on success."""
         shadow = _shadow_repo_path(working_dir)
 
         # Init if needed
@@ -552,12 +555,12 @@ class CheckpointManager:
             logger.debug("Checkpoint init failed: %s", err)
             return False
 
-        # 快速大小检查 — 不要尝试快照巨大的目录
+        # Quick size guard — don't try to snapshot enormous directories
         if _dir_file_count(working_dir) > _MAX_FILES:
             logger.debug("Checkpoint skipped: >%d files in %s", _MAX_FILES, working_dir)
             return False
 
-        # 暂存所有内容
+        # Stage everything
         ok, _, err = _run_git(
             ["add", "-A"], shadow, working_dir, timeout=_GIT_TIMEOUT * 2,
         )
@@ -565,7 +568,7 @@ class CheckpointManager:
             logger.debug("Checkpoint git-add failed: %s", err)
             return False
 
-        # 检查是否有内容需要提交
+        # Check if there's anything to commit
         ok_diff, diff_out, _ = _run_git(
             ["diff", "--cached", "--quiet"],
             shadow,
@@ -573,13 +576,13 @@ class CheckpointManager:
             allowed_returncodes={1},
         )
         if ok_diff:
-            # 没有变更需要提交
+            # No changes to commit
             logger.debug("Checkpoint skipped: no changes in %s", working_dir)
             return False
 
-        # 提交。``--no-gpg-sign`` 内联覆盖了在 _init_shadow_repo 中
-        # 添加 commit.gpgsign=false 配置之前创建的影子仓库 — 这样
-        # 拥有现有检查点的用户永远不会遇到 GPG pinentry 弹窗。
+        # Commit.  ``--no-gpg-sign`` inline covers shadow repos created before
+        # the commit.gpgsign=false config was added to _init_shadow_repo — so
+        # users with existing checkpoints never hit a GPG pinentry popup.
         ok, _, err = _run_git(
             ["commit", "-m", reason, "--allow-empty-message", "--no-gpg-sign"],
             shadow, working_dir, timeout=_GIT_TIMEOUT * 2,
@@ -590,13 +593,13 @@ class CheckpointManager:
 
         logger.debug("Checkpoint taken in %s: %s", working_dir, reason)
 
-        # 清理旧快照
+        # Prune old snapshots
         self._prune(shadow, working_dir)
 
         return True
 
     def _prune(self, shadow_repo: Path, working_dir: str) -> None:
-        """通过孤立重置只保留最后 max_snapshots 个提交。"""
+        """Keep only the last max_snapshots commits via orphan reset."""
         ok, stdout, _ = _run_git(
             ["rev-list", "--count", "HEAD"], shadow_repo, working_dir,
         )
@@ -611,29 +614,29 @@ class CheckpointManager:
         if count <= self.max_snapshots:
             return
 
-        # 为简单起见，我们实际上并不修剪 — git 的打包机制
-        # 能高效处理这个问题，而且对象都很小。日志列表
-        # 已经被 max_snapshots 限制了。
-        # 完整的修剪需要 rebase --onto 或 filter-branch，
-        # 对于后台功能来说太脆弱了。我们只限制日志视图。
+        # For simplicity, we don't actually prune — git's pack mechanism
+        # handles this efficiently, and the objects are small.  The log
+        # listing is already limited by max_snapshots.
+        # Full pruning would require rebase --onto or filter-branch which
+        # is fragile for a background feature.  We just limit the log view.
         logger.debug("Checkpoint repo has %d commits (limit %d)", count, self.max_snapshots)
 
 
 def format_checkpoint_list(checkpoints: List[Dict], directory: str) -> str:
-    """格式化检查点列表以向用户展示。"""
+    """Format checkpoint list for display to user."""
     if not checkpoints:
         return f"No checkpoints found for {directory}"
 
     lines = [f"📸 Checkpoints for {directory}:\n"]
     for i, cp in enumerate(checkpoints, 1):
-        # 解析 ISO 时间戳为可读格式
+        # Parse ISO timestamp to something readable
         ts = cp["timestamp"]
         if "T" in ts:
             ts = ts.split("T")[1].split("+")[0].split("-")[0][:5]  # HH:MM
             date = cp["timestamp"].split("T")[0]
             ts = f"{date} {ts}"
 
-        # 构建变更摘要
+        # Build change summary
         files = cp.get("files_changed", 0)
         ins = cp.get("insertions", 0)
         dele = cp.get("deletions", 0)

@@ -304,7 +304,7 @@ class MattermostAdapter(BasePlatformAdapter):
         )
 
     async def edit_message(
-        self, chat_id: str, message_id: str, content: str
+        self, chat_id: str, message_id: str, content: str, *, finalize: bool = False
     ) -> SendResult:
         """编辑已有的帖子。"""
         formatted = self.format_message(content)
@@ -410,7 +410,6 @@ class MattermostAdapter(BasePlatformAdapter):
             logger.warning("Mattermost：已阻止不安全的 URL（SSRF 防护）")
             return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
 
-        import asyncio
         import aiohttp
 
         last_exc = None

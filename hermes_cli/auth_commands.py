@@ -1,4 +1,4 @@
-"""凭证池认证子命令。"""
+"""Credential-pool auth subcommands."""
 
 from __future__ import annotations
 
@@ -32,12 +32,12 @@ from hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_constants import OPENROUTER_BASE_URL
 
 
-# 支持 OAuth 登录（除 API 密钥外）的提供商。
+# Providers that support OAuth login in addition to API keys.
 _OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli"}
 
 
 def _get_custom_provider_names() -> list:
-    """返回 (显示名称, 池键, 提供商键) 元组列表。"""
+    """Return list of (display_name, pool_key, provider_key) tuples."""
     try:
         from hermes_cli.config import get_compatible_custom_providers, load_config
 
@@ -58,11 +58,11 @@ def _get_custom_provider_names() -> list:
 
 
 def _resolve_custom_provider_input(raw: str) -> str | None:
-    """如果原始输入匹配自定义提供商条目名称（不区分大小写），返回其池键。"""
+    """If raw input matches a custom_providers entry name (case-insensitive), return its pool key."""
     normalized = (raw or "").strip().lower().replace(" ", "-")
     if not normalized:
         return None
-    # 直接匹配 'custom:name' 格式
+    # Direct match on 'custom:name' format
     if normalized.startswith(CUSTOM_POOL_PREFIX):
         return normalized
     for display_name, pool_key, provider_key in _get_custom_provider_names():
@@ -77,7 +77,7 @@ def _normalize_provider(provider: str) -> str:
     normalized = (provider or "").strip().lower()
     if normalized in {"or", "open-router"}:
         return "openrouter"
-    # 检查是否匹配自定义提供商名称
+    # Check if it matches a custom provider name
     custom_key = _resolve_custom_provider_input(normalized)
     if custom_key:
         return custom_key
@@ -152,6 +152,23 @@ def auth_add_command(args) -> None:
 
     pool = load_pool(provider)
 
+    # Clear ALL suppressions for this provider — re-adding a credential is
+    # a strong signal the user wants auth re-enabled.  This covers env:*
+    # (shell-exported vars), gh_cli (copilot), claude_code, qwen-cli,
+    # device_code (codex), etc.  One consistent re-engagement pattern.
+    # Matches the Codex device_code re-link pattern that predates this.
+    if not provider.startswith(CUSTOM_POOL_PREFIX):
+        try:
+            from hermes_cli.auth import (
+                _load_auth_store,
+                unsuppress_credential_source,
+            )
+            suppressed = _load_auth_store().get("suppressed_sources", {})
+            for src in list(suppressed.get(provider, []) or []):
+                unsuppress_credential_source(provider, src)
+        except Exception:
+            pass
+
     if requested_type == AUTH_TYPE_API_KEY:
         token = (getattr(args, "api_key", None) or "").strip()
         if not token:
@@ -217,22 +234,21 @@ def auth_add_command(args) -> None:
             ca_bundle=getattr(args, "ca_bundle", None),
             min_key_ttl_seconds=max(60, int(getattr(args, "min_key_ttl_seconds", 5 * 60))),
         )
-        label = (getattr(args, "label", None) or "").strip() or label_from_token(
-            creds.get("access_token", ""),
-            _oauth_default_label(provider, len(pool.entries()) + 1),
+        # Honor `--label <name>` so nous matches other providers' UX.  The
+        # helper embeds this into providers.nous so that label_from_token
+        # doesn't overwrite it on every subsequent load_pool("nous").
+        custom_label = (getattr(args, "label", None) or "").strip() or None
+        entry = auth_mod.persist_nous_credentials(creds, label=custom_label)
+        shown_label = entry.label if entry is not None else label_from_token(
+            creds.get("access_token", ""), _oauth_default_label(provider, 1),
         )
-        entry = PooledCredential.from_dict(provider, {
-            **creds,
-            "label": label,
-            "auth_type": AUTH_TYPE_OAUTH,
-            "source": f"{SOURCE_MANUAL}:device_code",
-            "base_url": creds.get("inference_base_url"),
-        })
-        pool.add_entry(entry)
-        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        print(f'Saved {provider} OAuth device-code credentials: "{shown_label}"')
         return
 
     if provider == "openai-codex":
+        # Clear any existing suppression marker so a re-link after `hermes auth
+        # remove openai-codex` works without the new tokens being skipped.
+        auth_mod.unsuppress_credential_source(provider, "device_code")
         creds = auth_mod._codex_device_code_login()
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
             creds["tokens"]["access_token"],
@@ -339,43 +355,28 @@ def auth_remove_command(args) -> None:
         raise SystemExit(f'No credential matching "{target}" for provider {provider}.')
     print(f"Removed {provider} credential #{index} ({removed.label})")
 
-    # 如果这是一个环境变量注入的凭证，同时从 .env 文件中清除该环境变量，
-    # 以防止在下次调用 load_pool() 时重新注入。
-    if removed.source.startswith("env:"):
-        env_var = removed.source[len("env:"):]
-        if env_var:
-            from hermes_cli.config import remove_env_value
-            cleared = remove_env_value(env_var)
-            if cleared:
-                print(f"Cleared {env_var} from .env")
+    # Unified removal dispatch.  Every credential source Hermes reads from
+    # (env vars, external OAuth files, auth.json blocks, custom config)
+    # has a RemovalStep registered in agent.credential_sources.  The step
+    # handles its source-specific cleanup and we centralise suppression +
+    # user-facing output here so every source behaves identically from
+    # the user's perspective.
+    from agent.credential_sources import find_removal_step
+    from hermes_cli.auth import suppress_credential_source
 
-    # 如果这是一个单例注入的凭证（OAuth device_code、hermes_pkce），
-    # 清除底层认证存储/凭证文件，以防止在下次调用 load_pool() 时重新注入。
-    elif removed.source == "device_code" and provider in ("openai-codex", "nous"):
-        from hermes_cli.auth import (
-            _load_auth_store, _save_auth_store, _auth_store_lock,
-        )
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
-            providers_dict = auth_store.get("providers")
-            if isinstance(providers_dict, dict) and provider in providers_dict:
-                del providers_dict[provider]
-                _save_auth_store(auth_store)
-                print(f"Cleared {provider} OAuth tokens from auth store")
+    step = find_removal_step(provider, removed.source)
+    if step is None:
+        # Unregistered source — e.g. "manual", which has nothing external
+        # to clean up.  The pool entry is already gone; we're done.
+        return
 
-    elif removed.source == "hermes_pkce" and provider == "anthropic":
-        from hermes_constants import get_hermes_home
-        oauth_file = get_hermes_home() / ".anthropic_oauth.json"
-        if oauth_file.exists():
-            oauth_file.unlink()
-            print("Cleared Hermes Anthropic OAuth credentials")
-
-    elif removed.source == "claude_code" and provider == "anthropic":
-        from hermes_cli.auth import suppress_credential_source
-        suppress_credential_source(provider, "claude_code")
-        print("Suppressed claude_code credential — it will not be re-seeded.")
-        print("Note: Claude Code credentials still live in ~/.claude/.credentials.json")
-        print("Run `hermes auth add anthropic` to re-enable if needed.")
+    result = step.remove_fn(provider, removed)
+    for line in result.cleaned:
+        print(line)
+    if result.suppress:
+        suppress_credential_source(provider, removed.source)
+    for line in result.hints:
+        print(line)
 
 
 def auth_reset_command(args) -> None:
@@ -386,14 +387,14 @@ def auth_reset_command(args) -> None:
 
 
 def _interactive_auth() -> None:
-    """当裸调用 `hermes auth` 时的交互式凭证池管理。"""
-    # 首先显示当前凭证池状态
+    """Interactive credential pool management when `hermes auth` is called bare."""
+    # Show current pool status first
     print("Credential Pool Status")
     print("=" * 50)
 
     auth_list_command(SimpleNamespace(provider=None))
 
-    # 显示 AWS Bedrock 凭证状态（不在凭证池中——使用 boto3 凭证链）
+    # Show AWS Bedrock credential status (not in the pool — uses boto3 chain)
     try:
         from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
         if has_aws_credentials():
@@ -412,10 +413,10 @@ def _interactive_auth() -> None:
                 print(f"  Identity: (could not resolve — boto3 STS call failed)")
             print()
     except ImportError:
-        pass  # boto3 或 bedrock_adapter 不可用
+        pass  # boto3 or bedrock_adapter not available
     print()
 
-    # 主菜单
+    # Main menu
     choices = [
         "Add a credential",
         "Remove a credential",
@@ -446,7 +447,7 @@ def _interactive_auth() -> None:
 
 
 def _pick_provider(prompt: str = "Provider") -> str:
-    """通过自动补全提示选择提供商名称。"""
+    """Prompt for a provider name with auto-complete hints."""
     known = sorted(set(list(PROVIDER_REGISTRY.keys()) + ["openrouter"]))
     custom_names = _get_custom_provider_names()
     if custom_names:
@@ -467,7 +468,7 @@ def _interactive_add() -> None:
     if provider not in PROVIDER_REGISTRY and provider != "openrouter" and not provider.startswith(CUSTOM_POOL_PREFIX):
         raise SystemExit(f"Unknown provider: {provider}")
 
-    # 对于支持 OAuth 的提供商，询问使用哪种认证类型
+    # For OAuth-capable providers, ask which type
     if provider in _OAUTH_CAPABLE_PROVIDERS:
         print(f"\n{provider} supports both API keys and OAuth login.")
         print("  1. API key (paste a key from the provider dashboard)")
@@ -505,7 +506,7 @@ def _interactive_remove() -> None:
         print(f"No credentials for {provider}.")
         return
 
-    # 显示带索引的条目列表
+    # Show entries with indices
     for i, e in enumerate(pool.entries(), 1):
         exhausted = _format_exhausted_status(e)
         print(f"  #{i}  {e.label:25s} {e.auth_type:10s} {e.source}{exhausted} [id:{e.id}]")
@@ -582,5 +583,5 @@ def auth_command(args) -> None:
     if action == "reset":
         auth_reset_command(args)
         return
-    # 没有子命令——启动交互模式
+    # No subcommand — launch interactive mode
     _interactive_auth()

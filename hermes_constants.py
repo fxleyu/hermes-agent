@@ -13,7 +13,8 @@ def get_hermes_home() -> Path:
     读取 HERMES_HOME 环境变量，回退到 ~/.hermes。
     这是唯一的权威来源 -- 所有其他副本都应从此处导入。
     """
-    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    val = os.environ.get("HERMES_HOME", "").strip()
+    return Path(val) if val else Path.home() / ".hermes"
 
 
 def get_default_hermes_root() -> Path:
