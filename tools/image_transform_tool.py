@@ -95,13 +95,94 @@ async def image_transform_tool(
                     "error": f"文件不存在: {source}",
                 })
 
-        # 2. 检测 MIME 类型并转为 base64 data URL
+        # 2. 读取配置
+        resolved_model = model
+        timeout = DEFAULT_TIMEOUT
+        base_url = None
+        api_key = None
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            it_cfg = cfg.get("auxiliary", {}).get("image_transform", {})
+            if not resolved_model:
+                resolved_model = it_cfg.get("model") or DEFAULT_MODEL
+            _t = it_cfg.get("timeout")
+            if _t is not None:
+                timeout = float(_t)
+            base_url = it_cfg.get("base_url") or None
+            api_key = it_cfg.get("api_key") or None
+        except Exception:
+            pass
+        if not resolved_model:
+            resolved_model = DEFAULT_MODEL
+
+        # 3. 判断是否使用 Images API（gpt-image 系列模型）
+        _model_lower = resolved_model.lower()
+        use_images_api = "gpt-image" in _model_lower or "dall-e" in _model_lower
+
+        if use_images_api:
+            # — Images API 路径（适用于 gpt-image-2, dall-e-3 等）—
+            import asyncio
+            from openai import OpenAI
+
+            image_b64 = base64.b64encode(image_path.read_bytes()).decode()
+
+            def _call_images_api():
+                client = OpenAI(
+                    base_url=base_url or "https://api.openai.com/v1",
+                    api_key=api_key or os.environ.get("OPENAI_API_KEY", ""),
+                    timeout=timeout,
+                )
+                return client.images.edit(
+                    model=resolved_model,
+                    image=image_path.open("rb"),
+                    prompt=prompt,
+                    n=1,
+                    size="1024x1024",
+                )
+
+            logger.info("Image transform: calling Images API (model=%s)", resolved_model)
+            response = await asyncio.get_event_loop().run_in_executor(None, _call_images_api)
+
+            # 提取结果
+            img_data = response.data[0]
+            if img_data.b64_json:
+                image_bytes = base64.b64decode(img_data.b64_json)
+            elif img_data.url:
+                # 下载返回的 URL
+                import httpx
+                async with httpx.AsyncClient(timeout=60) as http_client:
+                    dl_resp = await http_client.get(img_data.url)
+                    dl_resp.raise_for_status()
+                    image_bytes = dl_resp.content
+            else:
+                return json.dumps({
+                    "success": False,
+                    "error": "Images API 未返回图片数据。",
+                })
+
+            out_ext = ".png"
+            output_path = _get_output_dir() / f"img2img_{uuid.uuid4().hex[:12]}{out_ext}"
+            output_path.write_bytes(image_bytes)
+
+            logger.info("Image transform complete: %s (%d bytes)", output_path, len(image_bytes))
+            media_tag = f"MEDIA:{output_path}"
+            return json.dumps({
+                "success": True,
+                "image_path": str(output_path),
+                "media_tag": media_tag,
+                "description": "图片转换完成。",
+            })
+
+        # — Chat Completions API 路径（适用于 Gemini 等模型）—
+
+        # 2b. 检测 MIME 类型并转为 base64 data URL
         mime_type = _detect_image_mime_type(image_path)
         if not mime_type:
             mime_type = "image/jpeg"
         image_data_url = _image_to_base64_data_url(image_path, mime_type)
 
-        # 3. 构造多模态消息
+        # 3b. 构造多模态消息
         messages = [
             {
                 "role": "user",
@@ -118,18 +199,7 @@ async def image_transform_tool(
             }
         ]
 
-        # 4. 读取配置中的超时时间
-        timeout = DEFAULT_TIMEOUT
-        try:
-            from hermes_cli.config import load_config
-            cfg = load_config()
-            _t = cfg.get("auxiliary", {}).get("image_transform", {}).get("timeout")
-            if _t is not None:
-                timeout = float(_t)
-        except Exception:
-            pass
-
-        # 5. 调用 LLM
+        # 4. 调用 LLM
         call_kwargs: Dict[str, Any] = {
             "task": "image_transform",
             "messages": messages,
@@ -138,10 +208,10 @@ async def image_transform_tool(
             "timeout": timeout,
             "extra_body": {"modalities": ["text", "image"]},
         }
-        if model:
-            call_kwargs["model"] = model
+        if resolved_model:
+            call_kwargs["model"] = resolved_model
 
-        logger.info("Image transform: calling LLM (model=%s)", model or "config default")
+        logger.info("Image transform: calling LLM (model=%s)", resolved_model or "config default")
         response = await async_call_llm(**call_kwargs)
 
         # 6. 从响应中提取图片
