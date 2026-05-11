@@ -116,9 +116,77 @@ async def image_transform_tool(
         if not resolved_model:
             resolved_model = DEFAULT_MODEL
 
-        # 3. 判断模型类型（gpt-image 系列不需要 modalities 参数）
+        # 3. 判断是否使用 Images API（gpt-image / dall-e 系列）
         _model_lower = resolved_model.lower()
         _is_gpt_image = "gpt-image" in _model_lower or "dall-e" in _model_lower
+
+        if _is_gpt_image:
+            # — Images API 路径 —
+            # gpt-image / dall-e 不支持 Chat Completions，必须用 images.edit
+            import asyncio
+            from agent.auxiliary_client import _resolve_task_provider_model, _get_cached_client
+
+            r_provider, r_model, r_base_url, r_api_key, r_api_mode = _resolve_task_provider_model(
+                task="image_transform",
+                model=resolved_model,
+                base_url=base_url,
+                api_key=api_key,
+            )
+            client, final_model = _get_cached_client(
+                r_provider,
+                r_model,
+                base_url=r_base_url,
+                api_key=r_api_key,
+                api_mode=r_api_mode,
+            )
+            if client is None:
+                return json.dumps({
+                    "success": False,
+                    "error": "无法创建 LLM 客户端，请检查配置。",
+                })
+
+            def _call_images_api():
+                return client.images.edit(
+                    model=final_model or resolved_model,
+                    image=image_path.open("rb"),
+                    prompt=prompt,
+                    n=1,
+                    size="1024x1024",
+                )
+
+            logger.info("Image transform: calling Images API (model=%s)", final_model or resolved_model)
+            response = await asyncio.get_event_loop().run_in_executor(None, _call_images_api)
+
+            # 提取结果
+            img_data = response.data[0]
+            if getattr(img_data, "b64_json", None):
+                image_bytes = base64.b64decode(img_data.b64_json)
+            elif getattr(img_data, "url", None):
+                import httpx
+                async with httpx.AsyncClient(timeout=60) as http_client:
+                    dl_resp = await http_client.get(img_data.url)
+                    dl_resp.raise_for_status()
+                    image_bytes = dl_resp.content
+            else:
+                return json.dumps({
+                    "success": False,
+                    "error": "Images API 未返回图片数据。",
+                })
+
+            out_ext = ".png"
+            output_path = _get_output_dir() / f"img2img_{uuid.uuid4().hex[:12]}{out_ext}"
+            output_path.write_bytes(image_bytes)
+
+            logger.info("Image transform complete: %s (%d bytes)", output_path, len(image_bytes))
+            media_tag = f"MEDIA:{output_path}"
+            return json.dumps({
+                "success": True,
+                "image_path": str(output_path),
+                "media_tag": media_tag,
+                "description": "图片转换完成。",
+            })
+
+        # — Chat Completions API 路径（适用于 Gemini 等模型）—
 
         # 检测 MIME 类型并转为 base64 data URL
         mime_type = _detect_image_mime_type(image_path)
@@ -150,10 +218,8 @@ async def image_transform_tool(
             "temperature": 0.8,
             "max_tokens": 4096,
             "timeout": timeout,
+            "extra_body": {"modalities": ["text", "image"]},
         }
-        # gpt-image / dall-e 模型不支持 modalities 参数
-        if not _is_gpt_image:
-            call_kwargs["extra_body"] = {"modalities": ["text", "image"]}
         if resolved_model:
             call_kwargs["model"] = resolved_model
 
