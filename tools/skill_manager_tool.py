@@ -767,6 +767,7 @@ SKILL_MANAGE_SCHEMA = {
 
 
 # --- 注册 ---
+from tools.registry import registry
 
 registry.register(
     name="skill_manage",

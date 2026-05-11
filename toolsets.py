@@ -35,8 +35,8 @@ _HERMES_CORE_TOOLS = [
     "terminal", "process",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
-    # Vision + image generation
-    "vision_analyze", "image_generate",
+    # Vision + image generation + image transform
+    "vision_analyze", "image_generate", "image_transform",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
