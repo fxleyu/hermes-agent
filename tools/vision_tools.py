@@ -41,6 +41,7 @@ from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 from hermes_constants import get_hermes_dir
 from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -346,7 +347,7 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
             data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
         return data_url  # fall through to size-check in caller
     # Convert RGBA to RGB for JPEG output
-    if pil_format == "JPEG" and img.mode in ("RGBA", "P"):
+    if pil_format == "JPEG" and img.mode in {"RGBA", "P"}:
         img = img.convert("RGB")
 
     # Strategy: halve dimensions until base64 fits, up to 4 rounds.
@@ -913,11 +914,26 @@ async def vision_analyze_tool(
 
 
 def check_vision_requirements() -> bool:
-    """Check if the configured runtime vision path can resolve a client."""
+    """Check if the configured runtime vision path can resolve a client.
+
+    Mirrors the fallback chain that ``call_llm(task="vision")`` actually uses
+    at runtime: first the explicit ``auxiliary.vision.provider`` (if any),
+    and if that fails, the auto chain (main provider → openrouter → nous).
+    Without the auto-fallback step the tool would disappear from the model's
+    tool list whenever the explicit provider name was unresolvable, even
+    when the auto chain would have served the request (issue #31179).
+    """
     try:
         from agent.auxiliary_client import resolve_vision_provider_client
-
+    except ImportError:
+        return False
+    try:
         _provider, client, _model = resolve_vision_provider_client()
+        if client is not None:
+            return True
+        # Same fallback to "auto" that call_llm performs when the configured
+        # provider can't be resolved.
+        _provider, client, _model = resolve_vision_provider_client(provider="auto")
         return client is not None
     except Exception:
         return False
@@ -937,7 +953,7 @@ if __name__ == "__main__":
     if not api_available:
         print("❌ No auxiliary vision model available")
         print("Configure a supported multimodal backend (OpenRouter, Nous, Codex, Anthropic, or a custom OpenAI-compatible endpoint).")
-        exit(1)
+        sys.exit(1)
     else:
         print("✅ Vision model available")
     
