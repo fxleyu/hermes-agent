@@ -213,16 +213,41 @@ async def image_transform_tool(
                     "error": "无法创建 LLM 客户端，请检查配置。",
                 })
 
+            # 根据原图宽高比选择最佳输出尺寸
+            try:
+                from PIL import Image as PILImage
+                with PILImage.open(image_path) as img:
+                    orig_w, orig_h = img.size
+                ratio = orig_w / orig_h
+                if ratio > 1.3:
+                    output_size = "1536x1024"  # 横图
+                elif ratio < 0.77:
+                    output_size = "1024x1536"  # 竖图
+                else:
+                    output_size = "1024x1024"  # 方图
+            except Exception:
+                orig_w, orig_h = None, None
+                output_size = "1024x1024"
+
+            # 为 Images API 增强 prompt，注入保留原图的指令
+            enhanced_prompt = (
+                f"{prompt}\n\n"
+                "IMPORTANT: Preserve the original image's composition, subject identity, "
+                "pose, proportions, clothing, camera angle, and key background elements. "
+                "Apply only the requested transformation — do not redesign the scene. "
+                "No text, watermark, logo, or extra objects unless requested."
+            )
+
             def _call_images_api():
                 return client.images.edit(
                     model=final_model or resolved_model,
                     image=image_path.open("rb"),
-                    prompt=prompt,
+                    prompt=enhanced_prompt,
                     n=1,
-                    size="1024x1024",
+                    size=output_size,
                 )
 
-            logger.info("Image transform: calling Images API (model=%s)", final_model or resolved_model)
+            logger.info("Image transform: calling Images API (model=%s, size=%s)", final_model or resolved_model, output_size)
             response = await asyncio.get_event_loop().run_in_executor(None, _call_images_api)
 
             # 提取结果
@@ -241,8 +266,33 @@ async def image_transform_tool(
                     "error": "Images API 未返回图片数据。",
                 })
 
+            # 后处理：恢复原图宽高比
             out_ext = ".png"
             output_path = _get_output_dir() / f"img2img_{uuid.uuid4().hex[:12]}{out_ext}"
+            if orig_w and orig_h:
+                try:
+                    from PIL import Image as PILImage
+                    import io
+                    im = PILImage.open(io.BytesIO(image_bytes)).convert("RGB")
+                    w, h = im.size
+                    target_ratio = orig_w / orig_h
+                    current_ratio = w / h
+                    if abs(current_ratio - target_ratio) > 0.02:
+                        if current_ratio > target_ratio:
+                            nw = round(h * target_ratio)
+                            left = (w - nw) // 2
+                            im = im.crop((left, 0, left + nw, h))
+                        else:
+                            nh = round(w / target_ratio)
+                            top = (h - nh) // 2
+                            im = im.crop((0, top, w, top + nh))
+                    im = im.resize((orig_w, orig_h), PILImage.LANCZOS)
+                    buf = io.BytesIO()
+                    im.save(buf, "PNG", optimize=True)
+                    image_bytes = buf.getvalue()
+                except Exception as e:
+                    logger.warning("Post-process resize failed, using raw output: %s", e)
+
             output_path.write_bytes(image_bytes)
 
             logger.info("Image transform complete: %s (%d bytes)", output_path, len(image_bytes))
@@ -255,6 +305,14 @@ async def image_transform_tool(
             })
 
         # — Chat Completions API 路径（适用于 Gemini 等模型）—
+
+        # 获取原图尺寸用于后处理
+        try:
+            from PIL import Image as PILImage
+            with PILImage.open(image_path) as img:
+                orig_w, orig_h = img.size
+        except Exception:
+            orig_w, orig_h = None, None
 
         # 检测 MIME 类型并转为 base64 data URL
         mime_type = _detect_image_mime_type(image_path)
@@ -311,7 +369,7 @@ async def image_transform_tool(
                 ),
             })
 
-        # 7. 保存生成的图片
+        # 7. 保存生成的图片（后处理恢复原图宽高比）
         ext_map = {
             "image/png": ".png",
             "image/jpeg": ".jpg",
@@ -320,6 +378,33 @@ async def image_transform_tool(
         }
         out_ext = ext_map.get(resp_mime, ".png")
         output_path = _get_output_dir() / f"img2img_{uuid.uuid4().hex[:12]}{out_ext}"
+
+        if orig_w and orig_h:
+            try:
+                from PIL import Image as PILImage
+                import io
+                im = PILImage.open(io.BytesIO(image_bytes)).convert("RGB")
+                w, h = im.size
+                target_ratio = orig_w / orig_h
+                current_ratio = w / h
+                if abs(current_ratio - target_ratio) > 0.02:
+                    if current_ratio > target_ratio:
+                        nw = round(h * target_ratio)
+                        left = (w - nw) // 2
+                        im = im.crop((left, 0, left + nw, h))
+                    else:
+                        nh = round(w / target_ratio)
+                        top = (h - nh) // 2
+                        im = im.crop((0, top, w, top + nh))
+                im = im.resize((orig_w, orig_h), PILImage.LANCZOS)
+                buf = io.BytesIO()
+                im.save(buf, "PNG", optimize=True)
+                image_bytes = buf.getvalue()
+                out_ext = ".png"
+                output_path = _get_output_dir() / f"img2img_{uuid.uuid4().hex[:12]}{out_ext}"
+            except Exception as e:
+                logger.warning("Post-process resize failed, using raw output: %s", e)
+
         output_path.write_bytes(image_bytes)
 
         logger.info(
