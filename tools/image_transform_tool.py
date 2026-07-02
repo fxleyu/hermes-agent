@@ -213,29 +213,32 @@ async def image_transform_tool(
                     "error": "无法创建 LLM 客户端，请检查配置。",
                 })
 
-            # 根据原图宽高比选择最佳输出尺寸
+            # 根据原图宽高比选择最佳输出尺寸（尽量选大尺寸提升质量）
             try:
                 from PIL import Image as PILImage
                 with PILImage.open(image_path) as img:
                     orig_w, orig_h = img.size
                 ratio = orig_w / orig_h
-                if ratio > 1.3:
+                if ratio > 1.2:
                     output_size = "1536x1024"  # 横图
-                elif ratio < 0.77:
+                elif ratio < 0.83:
                     output_size = "1024x1536"  # 竖图
                 else:
-                    output_size = "1024x1024"  # 方图
+                    output_size = "1024x1024"  # 接近方图
             except Exception:
                 orig_w, orig_h = None, None
-                output_size = "1024x1024"
+                output_size = "1536x1024"  # 默认大尺寸横图
 
-            # 为 Images API 增强 prompt，注入保留原图的指令
+            # 为 Images API 增强 prompt，注入保留原图 + 高质量指令
             enhanced_prompt = (
                 f"{prompt}\n\n"
-                "IMPORTANT: Preserve the original image's composition, subject identity, "
-                "pose, proportions, clothing, camera angle, and key background elements. "
-                "Apply only the requested transformation — do not redesign the scene. "
-                "No text, watermark, logo, or extra objects unless requested."
+                "CRITICAL REQUIREMENTS:\n"
+                "- Output a HIGH-DEFINITION, high-resolution image with rich details and sharp clarity.\n"
+                "- MUST preserve the EXACT same aspect ratio and orientation as the original image.\n"
+                "- Preserve the original image's composition, subject identity, "
+                "pose, proportions, clothing, camera angle, and key background elements.\n"
+                "- Apply only the requested transformation — do not redesign the scene.\n"
+                "- No text, watermark, logo, or extra objects unless requested."
             )
 
             def _call_images_api():
@@ -245,6 +248,7 @@ async def image_transform_tool(
                     prompt=enhanced_prompt,
                     n=1,
                     size=output_size,
+                    quality="high",
                 )
 
             logger.info("Image transform: calling Images API (model=%s, size=%s)", final_model or resolved_model, output_size)
